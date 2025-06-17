@@ -1,3 +1,4 @@
+import socket
 import logging
 import time
 import uuid
@@ -52,13 +53,22 @@ def set_ensemble_context(mdib: ConsumerMdib, sdc_consumer: SdcConsumer) -> None:
     else:
         print(f'set ensemble context was successful.')
 
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return "Exception"
+    finally:
+        s.close()
 
 # main entry, will start to scan for the known provider and connect
 # runs forever and consumes metrics everafter
 if __name__ == '__main__':
     # start with discovery (MDPWS) that is running on the named adapter "Ethernet" (replace as you need it on your machine, e.g. "enet0" or "Ethernet)
     basic_logging_setup(level=logging.INFO)
-    my_discovery = WSDiscovery("127.0.0.1")
+    my_discovery = WSDiscovery(get_local_ip())
     # start the discovery
     my_discovery.start()
     # we want to search until we found one device with this client
