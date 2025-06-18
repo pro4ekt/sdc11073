@@ -1,0 +1,26 @@
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    SequenceId="1234">
+      <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+          <pm:Mds Handle="mds1">
+            <pm:Vmd Handle="vmd1">
+              <pm:Channel Handle="ch1">
+                <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="met1" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                  <pm:Unit Code="s" CodingSystem="UCUM"> </pm:Unit>
+                </pm:Metric>
+              </pm:Channel>
+            </pm:Vmd>
+          </pm:Mds>
+        </pm:MdDescription>
+        <pm:MdState>
+         <pm:State DescriptorHandle="met1" xsi:type="pm:NumericMetricState">
+           <pm:MetricValue Value="0">
+             <pm:MetricQuality Validity="Vld"> </pm:MetricQuality>
+           </pm:MetricValue>
+         </pm:State>
+        </pm:MdState>
+      </msg:Mdib>
+</msg:GetMdibResponse>

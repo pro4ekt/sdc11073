@@ -18,6 +18,7 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 
+
 # example SDC provider (device) that sends out metrics every now and then
 
 
@@ -61,7 +62,8 @@ def get_local_ip():
 if __name__ == '__main__':
     # start with discovery (MDPWS) that is running on the named adapter "Ethernet" (replace as you need it on your machine, e.g. "enet0" or "Ethernet")
     basic_logging_setup(level=logging.INFO)
-    my_discovery = WSDiscoverySingleAdapter('wlan0')
+    my_discovery = WSDiscoverySingleAdapter('WLAN')
+    a = my_discovery.get_active_addresses()
     # start the discovery
     my_discovery.start()
     # create a local mdib that will be sent out on the network, the mdib is based on a XML file
@@ -110,7 +112,6 @@ if __name__ == '__main__':
             st.MetricValue.ActiveDeterminationPeriod = 1494554822450
             st.MetricValue.Validity = pm_types.MeasurementValidity.VALID
             st.ActivationState = pm_types.ComponentActivation.ON
-
     # now iterate forever and change the value every few seconds
     metric_value = 0
     while True:
