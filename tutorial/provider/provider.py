@@ -63,7 +63,6 @@ if __name__ == '__main__':
     # start with discovery (MDPWS) that is running on the named adapter "Ethernet" (replace as you need it on your machine, e.g. "enet0" or "Ethernet")
     basic_logging_setup(level=logging.INFO)
     my_discovery = WSDiscoverySingleAdapter('WLAN')
-    a = my_discovery.get_active_addresses()
     # start the discovery
     my_discovery.start()
     # create a local mdib that will be sent out on the network, the mdib is based on a XML file
@@ -120,5 +119,5 @@ if __name__ == '__main__':
             for metricDescr in all_metric_descrs:
                 st = transaction_mgr.get_state(metricDescr.Handle)
                 st.MetricValue.Value = Decimal(metric_value)
-        print("test")
+        print(my_mdib.mdib_version)
         time.sleep(5)
