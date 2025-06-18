@@ -39,6 +39,21 @@ provider = SdcProvider(ws_discovery=adapter,
 #запуск WSDiscrovery  тд
 provider.start_all()
 
+#Время с включения прибора
+t = 0
+while t<5:
+    with provider.mdib.metric_state_transaction() as tr:
+        t = t + 1
+        state = tr.get_state("met1")
+        obj = NumericMetricValue()
+        obj.Value = Decimal(t)
+        state.MetricValue = obj
+        print(f"Времени с запуска прибора = {state.MetricValue.Value} с")
+        time.sleep(1)
+
+print(f"Прибор выключили через = {provider.mdib.entities.by_handle("met1").state.MetricValue.Value} с")
+
+
 
 
 """Тут просто всякие разные тесты для проверок этапов"""
