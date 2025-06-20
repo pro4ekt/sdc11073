@@ -49,20 +49,11 @@ def set_local_ensemble_context(mdib: ProviderMdib, ensemble_extension_string: st
         new_ensemble_context_state.Identification = [
             pm_types.InstanceIdentifier(root="1.2.3", extension_string=ensemble_extension_string)]
 
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    except Exception:
-        return "Exception"
-    finally:
-        s.close()
 
 if __name__ == '__main__':
     # start with discovery (MDPWS) that is running on the named adapter "Ethernet" (replace as you need it on your machine, e.g. "enet0" or "Ethernet")
     basic_logging_setup(level=logging.INFO)
-    my_discovery = WSDiscoverySingleAdapter('WLAN')
+    my_discovery = WSDiscoverySingleAdapter("WLAN")
     # start the discovery
     my_discovery.start()
     # create a local mdib that will be sent out on the network, the mdib is based on a XML file
@@ -95,7 +86,8 @@ if __name__ == '__main__':
     # set the local ensemble context to ease discovery based on ensemble ID
     set_local_ensemble_context(my_mdib, "MyEnsemble")
     # set the location on our device
-    """sdc_provider.set_location(my_location)"""
+    sdc_provider.publish()
+    """sdc_provider.set_location(my_location) ТУТ ГДЕ ТО ОШИБКА ПО ХОРОШЕМУ НУЖНО ПОСМОТРЕТЬ"""
     # create one local numeric metric that will change later on
     # get all metrics from the mdib (as described in the file)
     all_metric_descrs = [c for c in my_mdib.descriptions.objects if c.NODETYPE == pm.NumericMetricDescriptor]

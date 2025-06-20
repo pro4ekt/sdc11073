@@ -570,6 +570,7 @@ class WSDiscovery:
                                                      networkingthread.MULTICAST_REPEAT_PARAMS)
 
     def _send_hello(self, service: Service):
+        print("aboba")
         self._logger.info('sending hello on %s', service)
         service.increment_message_number()
         app_sequence = wsd_types.AppSequenceType()
