@@ -24,27 +24,22 @@ from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.xml_types.pm_types import MeasurementValidity
+from sdc11073.provider.components import SdcProviderComponents
+from sdc11073.roles.product import ExtendedProduct
+
+logging.basicConfig(level=logging.INFO)
 
 base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
 my_uuid = uuid.uuid5(base_uuid, "12345")
-
-def get_if_name_by_ip(ip_to_find: str) -> str:
-    for iface_name, iface_addrs in psutil.net_if_addrs().items():
-        for addr in iface_addrs:
-            if addr.family == socket.AF_INET:
-                print(f"[debug] {iface_name} = {addr.address}")
-                if addr.address == ip_to_find:
-                    return iface_name
-    raise RuntimeError(f"Не найден интерфейс с IP: {ip_to_find}")
-
-
-logging.basicConfig(level=logging.INFO)
 
 #Подгрузка mdib с файла
 mdib = ProviderMdib.from_mdib_file("mdib.xml")
 
 #Объявление компонентов(полей) провайдера
-model = ThisModelType(model_name='TestModel')
+model = ThisModelType(model_name='TestModel',
+                      manufacturer='TestManufacturer',
+                      manufacturer_url='http://testurl.com')
+components = SdcProviderComponents(role_provider_class=ExtendedProduct)
 device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
 discovery = WSDiscoverySingleAdapter("WLAN")#WLAN
 
@@ -54,7 +49,9 @@ provider = SdcProvider(ws_discovery=discovery,
                        epr=my_uuid,
                        this_model=model,
                        this_device=device,
-                       device_mdib_container=mdib)
+                       device_mdib_container=mdib,
+                       specific_components=components)
+
 #Запуск Дискавери
 discovery.start()
 
@@ -68,6 +65,10 @@ provider.publish()
 time.sleep(1)
 
 print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricValue.Value}")
+
+#Для теста consumer
+while True:
+    time.sleep(1)
 
 #Время с включения прибора
 t = 0
@@ -86,6 +87,16 @@ print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricVal
 
 """Тут просто всякие разные тесты для проверок этапов"""
 """
+#Метод для проверки имёе IPшников
+def get_if_name_by_ip(ip_to_find: str) -> str:
+    for iface_name, iface_addrs in psutil.net_if_addrs().items():
+        for addr in iface_addrs:
+            if addr.family == socket.AF_INET:
+                print(f"[debug] {iface_name} = {addr.address}")
+                if addr.address == ip_to_find:
+                    return iface_name
+    raise RuntimeError(f"Не найден интерфейс с IP: {ip_to_find}")
+
 #Проверка подтянулась ли mdib
 a = provider.mdib.entities.items()
 for handle, entity in a:
