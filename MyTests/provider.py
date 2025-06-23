@@ -61,18 +61,13 @@ provider.start_all()
 #Публикация провайлера в сеть чтобы его можно было обнаружить
 provider.publish()
 
-
-time.sleep(1)
+time.sleep(5)
 
 print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricValue.Value}")
 
-#Для теста consumer
-while True:
-    time.sleep(1)
-
 #Время с включения прибора
 t = 0
-while t<5:
+while t<100:
     with provider.mdib.metric_state_transaction() as tr:
         t = t + 1
         state = tr.get_state("met1")
@@ -80,7 +75,7 @@ while t<5:
         obj.Value = Decimal(t)
         state.MetricValue = obj
         print(f"Времени с запуска прибора = {state.MetricValue.Value} с")
-        time.sleep(1)
+        time.sleep(2)
 
 print(f"Прибор выключили через = {provider.mdib.entities.by_handle("met1").state.MetricValue.Value} с")
 print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricValue.Value}")
@@ -139,4 +134,7 @@ service = provider.hosted_services
 for name, obj in vars(service).items():
     if not name.startswith('_'):  # исключаем внутренние атрибуты
         print(f"{name} → {type(obj).__name__}")
+
+#Посмотреть конкретных подписчиков конкретного сервиса   
+subscribers = provider._subscriptions_managers['StateEvent']._subscriptions
 """

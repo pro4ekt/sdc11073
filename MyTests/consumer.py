@@ -7,6 +7,7 @@ import uuid
 from decimal import Decimal
 
 import sdc11073.entity_mdib.entity_providermdib
+from sdc11073 import observableproperties
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
@@ -31,6 +32,11 @@ def get_local_ip():
     finally:
         s.close()
 
+#Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
+def on_metric_update(metrics_by_handle: dict):
+    print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
+    print(f"Metric Value{consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
+
 logging.basicConfig(level=logging.INFO)
 
 #Создаём и запускаем discovery для поиска
@@ -47,8 +53,8 @@ if not services :
 else:
     print("There are some services")
     for s in services:
-        print(f"  Adresses: {s.x_addrs}")
-        print(f"  Types: {s.types}")
+        print(f"Adresses: {s.x_addrs}")
+        print(f"Types: {s.types}")
 
 #затычка конкретно для меня потомушо у меня ток 1 сервис
 service = services[0]
@@ -59,8 +65,15 @@ consumer = SdcConsumer.from_wsd_service(wsd_service=service,ssl_context_containe
 time.sleep(3)
 
 #Старт консьюмера
-consumer.start_all(not_subscribed_actions=periodic_actions)
+consumer.start_all()
 
+#Инициализация mdib от provider
 mdib = ConsumerMdib(consumer)
 mdib.init_mdib()
+
+#Фиксация изменений
+observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+
+while True:
+    time.sleep(1)
 

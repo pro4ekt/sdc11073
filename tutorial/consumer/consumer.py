@@ -97,7 +97,6 @@ if __name__ == '__main__':
                 # this variable will contain the data from the provider
                 my_mdib = ConsumerMdib(my_client)
                 my_mdib.init_mdib()
-                a = my_client.mdib.mdib_version
                 # we can subscribe to updates in the MDIB through the
                 # Observable Properties in order to get a callback on
                 # specific changes in the MDIB
