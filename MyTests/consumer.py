@@ -35,18 +35,22 @@ basic_logging_setup(level=logging.INFO)
 discovery = WSDiscovery(get_local_ip())
 discovery.start()
 
-print("WS-Discovery запустился")
+print("WS-Discovery started")
 
 service = discovery.search_services(timeout=3)
 
 if not service:
-    print("❌ Провайдеры не найдены")
+    print("❌ Provider wasn't found")
 else:
-    print(f"✅ Найдено {len(service)} провайдер(ов):")
+    print(f"✅ Found {len(service)} provider(s):")
     for svc in service:
         print(f"- EPR: {svc.epr}")
         print(f"  Adresses: {svc.x_addrs}")
         print(f"  Types: {svc.types}")
+
+while True:
+    print(1)
+    time.sleep(1)
 
 discovery.stop()
 

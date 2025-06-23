@@ -42,14 +42,11 @@ logging.basicConfig(level=logging.INFO)
 
 #Подгрузка mdib с файла
 mdib = ProviderMdib.from_mdib_file("mdib.xml")
-a = mdib.descriptions.NODETYPE
-#Затычки для инициалзации Provider
+
+#Объявление компонентов(полей) провайдера
 model = ThisModelType(model_name='TestModel')
 device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-
-
 discovery = WSDiscoverySingleAdapter("WLAN")#WLAN
-discovery.start()
 
 
 #Создание экземпляра Provider
@@ -58,13 +55,21 @@ provider = SdcProvider(ws_discovery=discovery,
                        this_model=model,
                        this_device=device,
                        device_mdib_container=mdib)
+#Запуск Дискавери
+discovery.start()
 
+#Запуск всех сервисов провайера
 provider.start_all()
+
+#Публикация провайлера в сеть чтобы его можно было обнаружить
 provider.publish()
-while True:
-    print(1)
-    time.sleep(1)
-"""#Время с включения прибора
+
+
+time.sleep(1)
+
+print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricValue.Value}")
+
+#Время с включения прибора
 t = 0
 while t<5:
     with provider.mdib.metric_state_transaction() as tr:
@@ -76,7 +81,8 @@ while t<5:
         print(f"Времени с запуска прибора = {state.MetricValue.Value} с")
         time.sleep(1)
 
-print(f"Прибор выключили через = {provider.mdib.entities.by_handle("met1").state.MetricValue.Value} с")"""
+print(f"Прибор выключили через = {provider.mdib.entities.by_handle("met1").state.MetricValue.Value} с")
+print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricValue.Value}")
 
 """Тут просто всякие разные тесты для проверок этапов"""
 """
@@ -116,4 +122,10 @@ with provider.mdib.metric_state_transaction() as tr:
 
 new_metric = provider.mdib.entities.by_handle("met1").state.MetricValue
 print(new_metric)
+
+#Выдача всех сервивос по именам
+service = provider.hosted_services
+for name, obj in vars(service).items():
+    if not name.startswith('_'):  # исключаем внутренние атрибуты
+        print(f"{name} → {type(obj).__name__}")
 """
