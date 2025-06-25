@@ -87,7 +87,7 @@ if __name__ == '__main__':
     # set the local ensemble context to ease discovery based on ensemble ID
     set_local_ensemble_context(my_mdib, "MyEnsemble")
     # set the location on our device
-    #sdc_provider.set_location(my_location) # ТУТ ГДЕ ТО ОШИБКА ПО ХОРОШЕМУ НУЖНО ПОСМОТРЕТЬ
+    sdc_provider.set_location(my_location) # ТУТ ГДЕ ТО ОШИБКА ПО ХОРОШЕМУ НУЖНО ПОСМОТРЕТЬ
     # create one local numeric metric that will change later on
     # get all metrics from the mdib (as described in the file)
     all_metric_descrs = [c for c in my_mdib.descriptions.objects if c.NODETYPE == pm.NumericMetricDescriptor]

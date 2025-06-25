@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import psutil
-import socket
 import logging
 import time
 import uuid
 from decimal import Decimal
 
-from attr.setters import convert
-
-import sdc11073.entity_mdib.entity_providermdib
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
 from sdc11073.mdib import ProviderMdib
@@ -27,58 +22,53 @@ from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 
-logging.basicConfig(level=logging.INFO)
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
 
-base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
-my_uuid = uuid.uuid5(base_uuid, "12345")
+    base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
+    my_uuid = uuid.uuid5(base_uuid, "12345")
 
-#Подгрузка mdib с файла
-mdib = ProviderMdib.from_mdib_file("mdib.xml")
+    # Подгрузка mdib с файла
+    mdib = ProviderMdib.from_mdib_file("mdib.xml")
 
-#Объявление компонентов(полей) провайдера
-model = ThisModelType(model_name='TestModel',
-                      manufacturer='TestManufacturer',
-                      manufacturer_url='http://testurl.com')
-components = SdcProviderComponents(role_provider_class=ExtendedProduct)
-device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-discovery = WSDiscoverySingleAdapter("WLAN")#WLAN
+    # Объявление компонентов(полей) провайдера
+    model = ThisModelType(model_name='TestModel',
+                          manufacturer='TestManufacturer',
+                          manufacturer_url='http://testurl.com')
+    components = SdcProviderComponents(role_provider_class=ExtendedProduct)
+    device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
+    discovery = WSDiscoverySingleAdapter("WLAN")  # WLAN
 
+    # Создание экземпляра Provider
+    provider = SdcProvider(ws_discovery=discovery,
+                           epr=my_uuid,
+                           this_model=model,
+                           this_device=device,
+                           device_mdib_container=mdib,
+                           specific_components=components)
 
-#Создание экземпляра Provider
-provider = SdcProvider(ws_discovery=discovery,
-                       epr=my_uuid,
-                       this_model=model,
-                       this_device=device,
-                       device_mdib_container=mdib,
-                       specific_components=components)
+    # Запуск Дискавери
+    discovery.start()
 
-#Запуск Дискавери
-discovery.start()
+    # Запуск всех сервисов провайера
+    provider.start_all()
 
-#Запуск всех сервисов провайера
-provider.start_all()
+    # Публикация провайлера в сеть чтобы его можно было обнаружить
+    provider.publish()
 
-#Публикация провайлера в сеть чтобы его можно было обнаружить
-provider.publish()
+    time.sleep(5)
 
-time.sleep(5)
-
-print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricValue.Value}")
-
-#Время с включения прибора
-t = 0
-while t<100:
-    with provider.mdib.metric_state_transaction() as tr:
-        t = t + 1
-        state = tr.get_state("met1")
-        obj = NumericMetricValue()
-        obj.Value = Decimal(t)
-        state.MetricValue = obj
-        print(f"Времени с запуска прибора = {state.MetricValue.Value} с")
-        time.sleep(2)
-
-print(f"Прибор выключили через = {provider.mdib.entities.by_handle("met1").state.MetricValue.Value} с")
-print(f"Info from mdib {provider.mdib.entities.by_handle("met1").state.MetricValue.Value}")
+    # Время с включения прибора
+    t = 0
+    while t < 100:
+        with provider.mdib.metric_state_transaction() as tr:
+            t = t + 1
+            state = tr.get_state("met1")
+            obj = NumericMetricValue()
+            obj.Value = Decimal(t)
+            state.MetricValue = obj
+            print(f"Time from start = {state.MetricValue.Value} с")
+            time.sleep(2)
 
 """Тут просто всякие разные тесты для проверок этапов"""
 """

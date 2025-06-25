@@ -37,43 +37,43 @@ def on_metric_update(metrics_by_handle: dict):
     print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
     print(f"Metric Value{consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
 
-logging.basicConfig(level=logging.INFO)
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
 
-#Создаём и запускаем discovery для поиска
-discovery = WSDiscovery(get_local_ip())
-discovery.start()
+    # Создаём и запускаем discovery для поиска
+    discovery = WSDiscovery(get_local_ip())
+    discovery.start()
 
+    # Достаём все сервиы которые были найдены в discovery
+    services = discovery.search_services(timeout=1)
 
-#Достаём все сервиы которые были найдены в discovery
-services = discovery.search_services(timeout=1)
+    # Просто вывод инфы про сервисы чтобы была
+    if not services:
+        print("No services found")
+    else:
+        print("There are some services")
+        for s in services:
+            print(f"Adresses: {s.x_addrs}")
+            print(f"Types: {s.types}")
 
-#Просто вывод инфы про сервисы чтобы была
-if not services :
-    print("No services found")
-else:
-    print("There are some services")
-    for s in services:
-        print(f"Adresses: {s.x_addrs}")
-        print(f"Types: {s.types}")
+    # затычка конкретно для меня потомушо у меня ток 1 сервис
+    service = services[0]
 
-#затычка конкретно для меня потомушо у меня ток 1 сервис
-service = services[0]
+    # Инициализация consumer
+    consumer = SdcConsumer.from_wsd_service(wsd_service=service, ssl_context_container=None)
 
-#Инициализация consumer
-consumer = SdcConsumer.from_wsd_service(wsd_service=service,ssl_context_container=None)
+    time.sleep(3)
 
-time.sleep(3)
+    # Старт консьюмера
+    consumer.start_all()
 
-#Старт консьюмера
-consumer.start_all()
+    # Инициализация mdib от provider
+    mdib = ConsumerMdib(consumer)
+    mdib.init_mdib()
 
-#Инициализация mdib от provider
-mdib = ConsumerMdib(consumer)
-mdib.init_mdib()
+    # Фиксация изменений
+    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
-#Фиксация изменений
-observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
-
-while True:
-    time.sleep(1)
+    while True:
+        time.sleep(1)
 
