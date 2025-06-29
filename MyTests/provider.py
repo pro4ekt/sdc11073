@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import platform
 import logging
 import time
 import uuid
@@ -21,6 +23,30 @@ from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
+
+def get_cpu_temperature():
+    """
+    Универсальная функция получения температуры CPU.
+    Работает на Raspberry Pi, большинстве Linux-систем.
+    На Windows и Mac возвращает заглушку.
+    """
+    system = platform.system()
+
+    if system == 'Linux':
+        # Стандартный путь для Raspberry Pi и других Linux
+        path = '/sys/class/thermal/thermal_zone0/temp'
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    raw_temp = f.read().strip()
+                    return round(int(raw_temp) / 1000.0, 1)
+            except Exception as e:
+                print(f"[Ошибка чтения температуры]: {e}")
+                return 42.0
+
+    # Если не Linux или файл не найден — вернуть заглушку
+    print("[INFO] Температура недоступна на этой системе.")
+    return 42.0
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
@@ -58,17 +84,16 @@ if __name__ == '__main__':
 
     time.sleep(5)
 
-    # Время с включения прибора
-    t = 0
-    while t < 100:
+    #Цикл для показа температуры процессора
+    while True:
         with provider.mdib.metric_state_transaction() as tr:
-            t = t + 1
+            t = get_cpu_temperature()
+            print(f"CPU Temperature: {t}")
             state = tr.get_state("met1")
             obj = NumericMetricValue()
-            obj.Value = Decimal(t)
+            obj.Value = t
             state.MetricValue = obj
-            print(f"Time from start = {state.MetricValue.Value} с")
-            time.sleep(2)
+            time.sleep(3)
 
 """Тут просто всякие разные тесты для проверок этапов"""
 """
@@ -127,4 +152,16 @@ for name, obj in vars(service).items():
 
 #Посмотреть конкретных подписчиков конкретного сервиса   
 subscribers = provider._subscriptions_managers['StateEvent']._subscriptions
+
+# Время с включения прибора
+    t = 0
+    while t < 100:
+        with provider.mdib.metric_state_transaction() as tr:
+            t = t + 1
+            state = tr.get_state("met1")
+            obj = NumericMetricValue()
+            obj.Value = Decimal(t)
+            state.MetricValue = obj
+            print(f"Time from start = {state.MetricValue.Value} с")
+            time.sleep(2)
 """
