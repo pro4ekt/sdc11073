@@ -35,7 +35,7 @@ def get_local_ip():
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
-    print(f"Metric Value{consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
+    print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)

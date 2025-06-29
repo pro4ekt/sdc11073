@@ -63,7 +63,7 @@ if __name__ == '__main__':
                           manufacturer_url='http://testurl.com')
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-    discovery = WSDiscoverySingleAdapter("WLAN")  # WLAN
+    discovery = WSDiscoverySingleAdapter("wlan0")  # WLAN
 
     # Создание экземпляра Provider
     provider = SdcProvider(ws_discovery=discovery,
@@ -91,7 +91,7 @@ if __name__ == '__main__':
             print(f"CPU Temperature: {t}")
             state = tr.get_state("met1")
             obj = NumericMetricValue()
-            obj.Value = t
+            obj.Value = Decimal(t)
             state.MetricValue = obj
             time.sleep(3)
 
