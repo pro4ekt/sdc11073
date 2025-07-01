@@ -3,10 +3,71 @@
     xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
     xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension"
     SequenceId="1">
       <msg:Mdib MdibVersion="1" SequenceId="1">
         <pm:MdDescription DescriptionVersion="1">
           <pm:Mds Handle="mds1">
+            <ext:Extension>
+             <msg:Retrievability>
+              <msg:By Method="Get"/>
+              <msg:By Method="Ep"/>
+             </msg:Retrievability>
+            </ext:Extension>
+            <pm:AlertSystem Handle="al1">
+              <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+               </ext:Extension>
+              <pm:AlertCondition Handle="alc1" Kind="Phy" Priority="Me">
+                <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+               </ext:Extension>
+                <pm:Type Code="1">
+                  <pm:ConceptDescription Lang="en-US">Problems detected</pm:ConceptDescription>
+                </pm:Type>
+              </pm:AlertCondition>
+              <pm:AlertSignal Handle="als1" Manifestation="Vis" Latching="false">
+                <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+               </ext:Extension>
+                <pm:Type Code="2">
+                  <pm:ConceptDescription Lang="en-US">Normal</pm:ConceptDescription>
+                </pm:Type>
+              </pm:AlertSignal>
+            </pm:AlertSystem>
+            <pm:SystemContext Handle="sc1" DescriptorVersion="2">
+              <ext:Extension>
+                <msg:Retrievability>
+                  <msg:By Method="Get"/>
+                  <msg:By Method="Ep"/>
+                </msg:Retrievability>
+              </ext:Extension>
+              <pm:PatientContext Handle="pc1" DescriptorVersion="2">
+                <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+            </ext:Extension>
+              </pm:PatientContext>
+              <pm:LocationContext Handle="lc1" DescriptorVersion="2">
+                <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+                </ext:Extension>
+              </pm:LocationContext>
+            </pm:SystemContext>
             <pm:Vmd Handle="vmd1">
               <pm:Channel Handle="ch1">
                 <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="met1" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
