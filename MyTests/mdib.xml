@@ -84,6 +84,8 @@
              </pm:MetricQuality>
            </pm:MetricValue>
          </pm:State>
+         <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="On" Presence="false"></pm:State>
+         <pm:State DescriptorHandle="als1" xsi:type="pm:AlertSignalState" StateVersion="1" ActivationState="On" Presence="Off"></pm:State>
         </pm:MdState>
       </msg:Mdib>
 </msg:GetMdibResponse>

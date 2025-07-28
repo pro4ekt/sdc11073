@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import keyboard
 import os
 import platform
 import logging
@@ -19,10 +20,12 @@ from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
+from sdc11073.xml_types.pm_types import AlertSignalPresence
 from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
+
 
 def get_cpu_temperature():
     """
@@ -48,6 +51,8 @@ def get_cpu_temperature():
     print("[INFO] Температура недоступна на этой системе.")
     return 42.0
 
+
+
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
 
@@ -63,7 +68,7 @@ if __name__ == '__main__':
                           manufacturer_url='http://testurl.com')
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-    discovery = WSDiscoverySingleAdapter("wlan0")  # WLAN
+    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi если на windows или wlan0 если линукс
 
     # Создание экземпляра Provider
     provider = SdcProvider(ws_discovery=discovery,
@@ -82,9 +87,32 @@ if __name__ == '__main__':
     # Публикация провайлера в сеть чтобы его можно было обнаружить
     provider.publish()
 
-    time.sleep(5)
+    t = 0
+    while True:
+        time.sleep(1)
+        t = t + 1
+        with provider.mdib.metric_state_transaction() as metric_tr:
+            state = metric_tr.get_state("met1")
+            state.MetricValue.Value = Decimal(t)
+        with provider.mdib.alert_state_transaction() as alert_tr:
+            condition = alert_tr.get_state("alc1")
+            if(t == 3):
+                condition.Presence = True
+            if (condition.Presence == True):
+                signal = alert_tr.get_state("als1")
+                signal.Presence = AlertSignalPresence.ON
+            if(t == 5):
+                print("Alarm is ON")
+            if(keyboard.is_pressed("r")):
+                condition.Presence = False
+                signal.Presence = AlertSignalPresence.OFF
+                print("YOU STOPPED THE ALARM")
+                text = "Alarm is OFF"
+                print("Prause")
+                time.sleep(10)
 
-    #Цикл для показа температуры процессора
+"""
+#Цикл для показа температуры процессора
     while True:
         with provider.mdib.metric_state_transaction() as tr:
             t = get_cpu_temperature()
@@ -94,6 +122,8 @@ if __name__ == '__main__':
             obj.Value = Decimal(t)
             state.MetricValue = obj
             time.sleep(3)
+
+"""
 
 """Тут просто всякие разные тесты для проверок этапов"""
 """
