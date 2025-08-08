@@ -7,6 +7,7 @@ import uuid
 from decimal import Decimal
 
 import sdc11073.entity_mdib.entity_providermdib
+from aiohttp.helpers import set_result
 from sdc11073 import observableproperties
 from sdc11073.definitions_sdc import SdcV1Definitions
 from sdc11073.location import SdcLocation
@@ -20,7 +21,9 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import NumericMetricValue
+from sdc11073.pysoap.msgfactory import CreatedMessage
 from sdc11073.xml_types.actions import periodic_actions
+from sdc11073.consumer.serviceclients.setservice import SetServiceClient
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -36,6 +39,7 @@ def get_local_ip():
 def on_metric_update(metrics_by_handle: dict):
     print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
     print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
+    print(f"Current Alarm State: {consumer.mdib.entities.by_handle("als1").state.Presence}")
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
@@ -73,6 +77,14 @@ if __name__ == '__main__':
 
     # Фиксация изменений
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+
+    set_service = consumer.set_service_client
+    set_result1 = set_service.set_numeric_value(operation_handle="inject",
+                                               requested_numeric_value=5)
+    time.sleep(2)
+    set_result2 = set_service.set_numeric_value(operation_handle="inject",
+                                               requested_numeric_value=10)
+
 
     while True:
         time.sleep(1)

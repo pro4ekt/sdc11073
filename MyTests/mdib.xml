@@ -44,34 +44,29 @@
                 </pm:Type>
               </pm:AlertSignal>
             </pm:AlertSystem>
-            <pm:SystemContext Handle="sc1" DescriptorVersion="2">
-              <ext:Extension>
-                <msg:Retrievability>
-                  <msg:By Method="Get"/>
-                  <msg:By Method="Ep"/>
-                </msg:Retrievability>
-              </ext:Extension>
-              <pm:PatientContext Handle="pc1" DescriptorVersion="2">
-                <ext:Extension>
-                  <msg:Retrievability>
-                    <msg:By Method="Get"/>
-                    <msg:By Method="Ep"/>
-                  </msg:Retrievability>
-            </ext:Extension>
-              </pm:PatientContext>
-              <pm:LocationContext Handle="lc1" DescriptorVersion="2">
-                <ext:Extension>
-                  <msg:Retrievability>
-                    <msg:By Method="Get"/>
-                    <msg:By Method="Ep"/>
-                  </msg:Retrievability>
-                </ext:Extension>
-              </pm:LocationContext>
+            <pm:Sco Handle="sco1" DescriptorVersion="1">
+                <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="inject" OperationTarget="liquid" DescriptorVersion="1">
+                </pm:Operation>
+            </pm:Sco>
+            <pm:SystemContext Handle="sc1" DescriptorVersion="1">
+              <pm:PatientContext Handle="pc0" />
+              <pm:LocationContext Handle="lc0" />
+              <pm:EnsembleContext Handle="ec0" />
             </pm:SystemContext>
+            <pm:Clock Handle="cl0">
+					<pm:TimeProtocol Code="532225">
+						<pm:ConceptDescription Lang="en-us">NTPv4
+						</pm:ConceptDescription>
+					</pm:TimeProtocol>
+				</pm:Clock>
+
             <pm:Vmd Handle="vmd1">
               <pm:Channel Handle="ch1">
                 <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="met1" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                   <pm:Unit Code="s" CodingSystem="UCUM"> </pm:Unit>
+                </pm:Metric>
+                <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="liquid" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+                    <pm:Unit Code="Number" CodingSystem="UCUN"></pm:Unit>
                 </pm:Metric>
               </pm:Channel>
             </pm:Vmd>
@@ -84,8 +79,15 @@
              </pm:MetricQuality>
            </pm:MetricValue>
          </pm:State>
+         <pm:State DescriptorHandle="liquid" xsi:type="pm:NumericMetricState" StateVersion="1">
+           <pm:MetricValue Value="0">
+             <pm:MetricQuality Validity="Vld">
+             </pm:MetricQuality>
+           </pm:MetricValue>
+         </pm:State>
          <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="On" Presence="false"></pm:State>
          <pm:State DescriptorHandle="als1" xsi:type="pm:AlertSignalState" StateVersion="1" ActivationState="On" Presence="Off"></pm:State>
+         <pm:State DescriptorHandle="inject" xsi:type="pm:SetValueOperationState" OperatingMode="En"></pm:State>
         </pm:MdState>
       </msg:Mdib>
 </msg:GetMdibResponse>

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import keyboard
 import os
 import platform
@@ -25,6 +27,7 @@ from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
+from sdc11073.provider.operations import SetValueOperation
 
 
 def get_cpu_temperature():
@@ -50,8 +53,6 @@ def get_cpu_temperature():
     # Если не Linux или файл не найден — вернуть заглушку
     print("[INFO] Температура недоступна на этой системе.")
     return 42.0
-
-
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
@@ -88,6 +89,11 @@ if __name__ == '__main__':
     provider.publish()
 
     t = 0
+
+    while True:
+        print("Test metric Value: ", provider.mdib.entities.by_handle("liquid").state.MetricValue.Value)
+        time.sleep(1)
+
     while True:
         time.sleep(1)
         t = t + 1
@@ -109,7 +115,7 @@ if __name__ == '__main__':
                 print("YOU STOPPED THE ALARM")
                 text = "Alarm is OFF"
                 print("Prause")
-                time.sleep(10)
+                time.sleep(1)
 
 """
 #Цикл для показа температуры процессора
