@@ -91,32 +91,7 @@ if __name__ == '__main__':
     t = 0
 
     while True:
-        print("Test metric Value: ", provider.mdib.entities.by_handle("liquid").state.MetricValue.Value)
-        time.sleep(1)
-
-    while True:
-        time.sleep(1)
         t = t + 1
-        with provider.mdib.metric_state_transaction() as metric_tr:
-            state = metric_tr.get_state("met1")
-            state.MetricValue.Value = Decimal(t)
-        with provider.mdib.alert_state_transaction() as alert_tr:
-            condition = alert_tr.get_state("alc1")
-            if(t == 3):
-                condition.Presence = True
-            if (condition.Presence == True):
-                signal = alert_tr.get_state("als1")
-                signal.Presence = AlertSignalPresence.ON
-            if(t == 5):
-                print("Alarm is ON")
-            if(keyboard.is_pressed("r")):
-                condition.Presence = False
-                signal.Presence = AlertSignalPresence.OFF
-                print("YOU STOPPED THE ALARM")
-                text = "Alarm is OFF"
-                print("Prause")
-                time.sleep(1)
-
 """
 #Цикл для показа температуры процессора
     while True:
@@ -200,4 +175,28 @@ subscribers = provider._subscriptions_managers['StateEvent']._subscriptions
             state.MetricValue = obj
             print(f"Time from start = {state.MetricValue.Value} с")
             time.sleep(2)
+            
+# Изменение метрики и Alarm
+   while True:
+        time.sleep(1)
+        t = t + 0.1
+        with provider.mdib.metric_state_transaction() as metric_tr:
+            state = metric_tr.get_state("liquid")
+            state.MetricValue.Value = Decimal(t)
+        with provider.mdib.alert_state_transaction() as alert_tr:
+            condition = alert_tr.get_state("alc1")
+            if(t == 3):
+                condition.Presence = True
+            if (condition.Presence == True):
+                signal = alert_tr.get_state("als1")
+                signal.Presence = AlertSignalPresence.ON
+            if(t == 5):
+                print("Alarm is ON")
+            if(keyboard.is_pressed("r")):
+                condition.Presence = False
+                signal.Presence = AlertSignalPresence.OFF
+                print("YOU STOPPED THE ALARM")
+                text = "Alarm is OFF"
+                print("Prause")
+                time.sleep(1)
 """

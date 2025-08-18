@@ -67,6 +67,7 @@
                 </pm:Metric>
                 <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="liquid" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
                     <pm:Unit Code="Number" CodingSystem="UCUN"></pm:Unit>
+                    <pm:TechnicalRange Lower="0" Upper="100"></pm:TechnicalRange>
                 </pm:Metric>
               </pm:Channel>
             </pm:Vmd>
