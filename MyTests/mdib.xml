@@ -32,7 +32,7 @@
                   <pm:ConceptDescription Lang="en-US">Problems detected</pm:ConceptDescription>
                 </pm:Type>
               </pm:AlertCondition>
-              <pm:AlertSignal Handle="als1" Manifestation="Vis" Latching="false">
+              <pm:AlertSignal Handle="als1" Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
                 <ext:Extension>
                   <msg:Retrievability>
                     <msg:By Method="Get"/>
@@ -45,7 +45,11 @@
               </pm:AlertSignal>
             </pm:AlertSystem>
             <pm:Sco Handle="sco1" DescriptorVersion="1">
-                <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="inject" OperationTarget="liquid" DescriptorVersion="1">
+                <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="inject" OperationTarget="liquid" DescriptorVersion="1"></pm:Operation>
+                <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="alert_op" OperationTarget="als1" Retriggerable="true">
+                    <pm:ModifiableData>Presence</pm:ModifiableData>
+                    <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                    <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
                 </pm:Operation>
             </pm:Sco>
             <pm:SystemContext Handle="sc1" DescriptorVersion="1">
@@ -62,7 +66,7 @@
 
             <pm:Vmd Handle="vmd1">
               <pm:Channel Handle="ch1">
-                <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="met1" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                <pm:Metric xsi:type="pm:StringMetricDescriptor" Handle="met1" MetricCategory="Msrmt" MetricAvailability="Cont">
                   <pm:Unit Code="s" CodingSystem="UCUM"> </pm:Unit>
                 </pm:Metric>
                 <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="liquid" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
@@ -74,19 +78,19 @@
           </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
-         <pm:State DescriptorHandle="met1" xsi:type="pm:NumericMetricState" StateVersion="1">
+         <pm:State DescriptorHandle="met1" xsi:type="pm:StringMetricState" StateVersion="1">
            <pm:MetricValue Value="0">
              <pm:MetricQuality Validity="Vld">
              </pm:MetricQuality>
            </pm:MetricValue>
          </pm:State>
          <pm:State DescriptorHandle="liquid" xsi:type="pm:NumericMetricState" StateVersion="1">
-           <pm:MetricValue Value="0">
+           <pm:MetricValue Value="100">
              <pm:MetricQuality Validity="Vld">
              </pm:MetricQuality>
            </pm:MetricValue>
          </pm:State>
-         <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="On" Presence="false"></pm:State>
+         <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="On" Presence="true"></pm:State>
          <pm:State DescriptorHandle="als1" xsi:type="pm:AlertSignalState" StateVersion="1" ActivationState="On" Presence="Off"></pm:State>
          <pm:State DescriptorHandle="inject" xsi:type="pm:SetValueOperationState" OperatingMode="En"></pm:State>
         </pm:MdState>

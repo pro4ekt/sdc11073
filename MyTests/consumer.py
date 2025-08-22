@@ -5,6 +5,7 @@ import logging
 import time
 import uuid
 from decimal import Decimal
+from copy import deepcopy
 
 import sdc11073.entity_mdib.entity_providermdib
 from aiohttp.helpers import set_result
@@ -14,10 +15,12 @@ from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
 from sdc11073.mdib import ProviderMdib, ConsumerMdib
 from sdc11073.consumer import SdcConsumer
+from sdc11073.mdib.statecontainers import AlertSignalStateContainer
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
+from sdc11073.xml_types.pm_types import AlertSignalPresence
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import NumericMetricValue
@@ -37,16 +40,18 @@ def get_local_ip():
 
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
-    print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
-    print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
-    print(f"Current Alarm State: {consumer.mdib.entities.by_handle("als1").state.Presence}")
+    if(consumer.mdib.entities.by_handle("liquid").state.MetricValue.Value == 0):
+        print("Liquid is empty, please inject more liquid")
+    #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
+    #print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
+    #print(f"Current Alarm State: {consumer.mdib.entities.by_handle("als1").state.Presence}")
 
 def get_number():
     value = Decimal(input("Input your Value: "))
     return value
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    #logging.basicConfig(level=logging.INFO)
 
     # Создаём и запускаем discovery для поиска
     discovery = WSDiscovery(get_local_ip())
@@ -70,24 +75,42 @@ if __name__ == '__main__':
     mdib = ConsumerMdib(consumer)
     mdib.init_mdib()
 
-    # Фиксация изменений
+    t = 0
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
-
-    set_service = consumer.set_service_client
-    r = consumer.mdib.entities.by_handle("liquid").descriptor.TechnicalRange[0]
-    marker = True
-    while marker:
-        value = get_number()
-        if value < r.Lower or value > r.Upper:
-            print("Value is out of range Lower: {}, Upper: {}".format(r.Lower, r.Upper))
-        else:
-            marker = False
-
-    set_result1 = set_service.set_numeric_value(operation_handle="inject",
-                                               requested_numeric_value=value)
+    print(consumer.mdib.entities.by_handle("als1").state.Presence)
+    a = consumer.mdib.entities.by_handle("als1").state
+    b = deepcopy(a)
+    b.Presence = AlertSignalPresence.ON
+    consumer.set_service_client.set_alert_state(operation_handle="alert_op",
+                                                proposed_alert_state=b)
+    time.sleep(2)
+    print(consumer.mdib.entities.by_handle("als1").state.Presence)
 
     while True:
-        time.sleep(1)
+        time.sleep(0.1)
+        r = consumer.mdib.entities.by_handle("liquid").descriptor.TechnicalRange[0]
+        if (consumer.mdib.entities.by_handle("als1").state.Presence == AlertSignalPresence.OFF):
+            marker = True
+            while marker:
+                value = get_number()
+                if value < r.Lower or value > r.Upper:
+                    print("Value is out of range Lower: {}, Upper: {}".format(r.Lower, r.Upper))
+                else:
+                    marker = False
+                    consumer.set_service_client.set_numeric_value(operation_handle="inject",
+                                                                  requested_numeric_value=value)
+        if (consumer.mdib.entities.by_handle("als1").state.Presence == AlertSignalPresence.ON):
+            if (t % 2 == 0):
+                print("Alarm State Is ON")
+                if(True):
+                    a = consumer.mdib.entities.by_handle("als1").state
+                    b = deepcopy(a)
+                    b.Presence = AlertSignalPresence.OFF
+                    consumer.set_service_client.set_alert_state(operation_handle="alert_op",
+                                                                proposed_alert_state=b)
+                    print(consumer.mdib.entities.by_handle("als1").state.Presence)
+        observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+        t = t + 1
 
 """Просто всякие разные тесты"""
 """

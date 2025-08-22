@@ -23,6 +23,7 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import AlertSignalPresence
+from sdc11073.mdib.statecontainers import AlertSignalStateContainer
 from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.provider.components import SdcProviderComponents
@@ -55,7 +56,7 @@ def get_cpu_temperature():
     return 42.0
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    #logging.basicConfig(level=logging.INFO)
 
     base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
     my_uuid = uuid.uuid5(base_uuid, "12345")
@@ -90,7 +91,29 @@ if __name__ == '__main__':
 
     t = 0
 
+    """
+    a = provider.get_operation_by_handle("inject")
+    b = provider.get_operation_by_handle("op1")
+    c = provider.mdib.entities.by_handle("op1")
+    with provider.mdib.alert_state_transaction() as alert_tr:
+        alert_tr.get_state("als1").Presence = AlertSignalPresence.ON
+    print(provider.mdib.entities.by_handle("als1").state.Presence)
+    """
+
     while True:
+        liquid_volume = provider.mdib.entities.by_handle("liquid").state.MetricValue.Value
+        if (t % 500 == 0 and liquid_volume != 0):
+            print("Liquid Volume : ",liquid_volume)
+        with provider.mdib.alert_state_transaction() as alert_tr:
+            condition = alert_tr.get_state("alc1")
+            signal = alert_tr.get_state("als1")
+            if (liquid_volume == 0):
+                condition.Presence = True
+                signal.Presence = AlertSignalPresence.ON
+                if(signal.Presence == AlertSignalPresence.ON):
+                    print("ALARM IS ON! NO MORE LIQUID!")
+                if(signal.Presence == AlertSignalPresence.OFF):
+                    print("Alarm is OFF, but there is still no liquid!")
         t = t + 1
 """
 #Цикл для показа температуры процессора
