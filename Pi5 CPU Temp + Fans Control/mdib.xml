@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" SequenceId="1">
+    <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+            <pm:Mds Handle="mds_1">
+                <pm:SystemContext Handle="sys_context_1">
+                    <pm:PatientContext Handle="pat_context_1" />
+                    <pm:LocationContext Handle="loc_context_1" />
+                    <pm:EnsembleContext Handle="ens_context_1" />
+                </pm:SystemContext>
+                <pm:Clock Handle="clock">
+                    <pm:TimeProtocol Code="532225">
+                        <pm:ConceptDescription Lang="en-us">NTPv4</pm:ConceptDescription>
+                    </pm:TimeProtocol>
+                </pm:Clock>
+
+                <pm:Vmd Handle="vmd_1">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_1">
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_1" Kind="Phy" Priority="Me">
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_1" ConditionSignaled="al_condition_1" Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
+                        </pm:AlertSignal>
+                    </pm:AlertSystem>
+                    <pm:Sco Handle="sco_1">
+                        <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="fan_control" OperationTarget="fan_rotation">
+                        </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="alert_control" OperationTarget="al_signal_1" Retriggerable="true">
+                            <pm:ModifiableData>Presence</pm:ModifiableData>
+                            <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                            <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
+                        </pm:Operation>
+                    </pm:Sco>
+
+                    <pm:Channel Handle="cpu_temp_channel">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="cpu_temp" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="celsius"></pm:Unit>
+                        </pm:Metric>
+                    </pm:Channel>
+                    <pm:Channel Handle="fan_channel">
+                        <pm:Metric xsi:type="pm:EnumStringMetricDescriptor" Handle="fan_rotation" MetricCategory="Set" MetricAvailability="Intr">
+                            <pm:Unit Code="enum"></pm:Unit>
+                            <pm:AllowedValue>
+                                <pm:Value>On</pm:Value>
+                            </pm:AllowedValue>
+                            <pm:AllowedValue>
+                                <pm:Value>Off</pm:Value>
+                            </pm:AllowedValue>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+            </pm:Mds>
+        </pm:MdDescription>
+        <pm:MdState>
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_1" ActivationState="Off" Presence="false" />
+            <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_1" ActivationState="Off" Presence="Off" />
+
+            <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="fan_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="alert_control" OperatingMode="En" />
+
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="cpu_temp">
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:EnumStringMetricState" DescriptorHandle="fan_rotation">
+                <pm:MetricValue Value="Off">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+        </pm:MdState>
+    </msg:Mdib>
+</msg:GetMdibResponse>
