@@ -51,7 +51,7 @@ def get_cpu_temperature():
                 return 42.0
 
     # Если не Linux или файл не найден — вернуть заглушку
-    print("[INFO] Температура недоступна на этой системе.")
+    #print("[INFO] Температура недоступна на этой системе.")
     return 47.0
 
 if __name__ == '__main__':
@@ -88,5 +88,18 @@ if __name__ == '__main__':
     # Публикация провайлера в сеть чтобы его можно было обнаружить
     provider.publish()
 
+    t = 0
     while True:
-        print()
+        temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
+        alert = provider.mdib.entities.by_handle("al_signal_1").state.Presence
+        print(temp)
+        print(alert)
+        with provider.mdib.metric_state_transaction() as tr:
+            state = tr.get_state("cpu_temp")
+            state.MetricValue.Value = Decimal(get_cpu_temperature()+t)
+        if(temp == 55):
+            with provider.mdib.alert_state_transaction() as tr:
+                state = tr.get_state("al_signal_1")
+                state.Presence = AlertSignalPresence.ON
+        t = t + 1
+        time.sleep(1)

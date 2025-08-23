@@ -40,14 +40,13 @@ def get_local_ip():
 
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
-    if(consumer.mdib.entities.by_handle("liquid").state.MetricValue.Value == 0):
-        print("Liquid is empty, please inject more liquid")
     #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
-    #print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("met1").state.MetricValue.Value}")
-    #print(f"Current Alarm State: {consumer.mdib.entities.by_handle("als1").state.Presence}")
+    print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
+    print(f"Current Alarm State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
 
 def get_number():
-    value = Decimal(input("Input your Value: "))
+    print("INPUT YOUR VALUE")
+    value = Decimal(input())
     return value
 
 if __name__ == '__main__':
@@ -78,4 +77,12 @@ if __name__ == '__main__':
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
     while True:
-        print()
+        alarm = consumer.mdib.entities.by_handle("al_signal_1").state.Presence
+        if(alarm == AlertSignalPresence.ON):
+            value = get_number()
+            if(value == 0):
+                a = consumer.mdib.entities.by_handle("al_signal_1").state
+                b = deepcopy(a)
+                b.Presence = AlertSignalPresence.OFF
+                consumer.set_service_client.set_alert_state(operation_handle="alert_control", proposed_alert_state=b)
+        time.sleep(1)

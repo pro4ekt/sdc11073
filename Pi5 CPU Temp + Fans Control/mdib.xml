@@ -17,6 +17,7 @@
                 <pm:Vmd Handle="vmd_1">
                     <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_1">
                         <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_1" Kind="Phy" Priority="Me">
+                            <pm:Source>cpu_temp</pm:Source>
                         </pm:AlertCondition>
                         <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_1" ConditionSignaled="al_condition_1" Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
                         </pm:AlertSignal>
