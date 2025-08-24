@@ -81,11 +81,18 @@ if __name__ == '__main__':
 
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
+    t = 0
     while True:
-        if(consumer.mdib.entities.by_handle("al_signal_1").state.Presence == "On"):
-            print("WAIT")
-            time.sleep(5)
+        cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
+        fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
+        if(cond_state and (not fan_state)):
+            if(t == 0):
+                time.sleep(5)
+                t = t + 1
             turn_fan(consumer, "On")
-        if (consumer.mdib.entities.by_handle("al_signal_1").state.Presence == "Off"):
+        if((not cond_state) and (fan_state)):
+            if (t == 0):
+                time.sleep(5)
+                t = t + 1
             turn_fan(consumer, "Off")
         time.sleep(1)

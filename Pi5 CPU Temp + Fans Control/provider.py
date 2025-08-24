@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 
+import sqlite3
 import keyboard
 import os
 import platform
@@ -32,7 +33,8 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
-THRESHOLD = 10
+COND_THRESHOLD = 10
+SIG_THRESHOLD = 12
 CPU_TEMP_HANDLE = 'cpu_temp'
 AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
@@ -71,23 +73,57 @@ def update_cpu_temp(provider, value: Decimal):
     evaluate_temp_alert(provider, value)
 
 def evaluate_temp_alert(provider, current: Decimal):
+    fan_state = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
     with provider.mdib.alert_state_transaction() as tr:
         cond_state = tr.get_state(AL_COND_HANDLE)
         sig_state = tr.get_state(AL_SIG_HANDLE)
 
-        should_fire = current >= THRESHOLD
-        is_active = cond_state.ActivationState == 'On'
+        cond_should_fire = current >= COND_THRESHOLD
+        sig_should_fire = current >= SIG_THRESHOLD
+        is_cond_active = cond_state.ActivationState == 'On'
+        is_sig_active = sig_state.ActivationState == 'On'
+        is_fan_active = fan_state == "On"
 
-        if should_fire and not is_active:
+        if cond_should_fire and (not is_cond_active):
             cond_state.ActivationState = AlertActivation.ON
-            cond_state.Presence = True  # Presence for condition is boolean
+            cond_state.Presence = True
+        elif sig_should_fire and (not is_sig_active):
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
-        elif (not should_fire) and is_active:
+        elif is_sig_active and (is_fan_active):
+            sig_state.ActivationState = AlertActivation.OFF
+            sig_state.Presence = AlertSignalPresence.OFF
+        elif (not cond_should_fire) and is_cond_active:
             cond_state.ActivationState = AlertActivation.OFF
             cond_state.Presence = False
             sig_state.ActivationState = AlertActivation.OFF
             sig_state.Presence = AlertSignalPresence.OFF
+
+def print_metrics(provider):
+    print("Curent CPU Temp : ", provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
+    print("Alarm Condition : ", provider.mdib.entities.by_handle("al_condition_1").state.ActivationState)
+    print("Alarm Signal : ", provider.mdib.entities.by_handle("al_signal_1").state.Presence)
+    print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
+
+def sqlite_logging(provider, value : bool):
+    conn = sqlite3.connect("cpu_fan.db")
+    cur = conn.cursor()
+
+    temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
+    fan = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
+    cond = provider.mdib.entities.by_handle("al_condition_1").state.ActivationState
+    sig = provider.mdib.entities.by_handle("al_signal_1").state.ActivationState
+
+    cur.execute("CREATE TABLE IF NOT EXISTS cpu_fan_data "
+                "(cpu_temp REAL, fan_speed TEXT, cond TEXT, sig TEXT)")
+    if(value):
+        cur.execute("INSERT INTO cpu_fan_data (cpu_temp, fan_speed, cond, sig) VALUES (?, ?, ?, ?)",(float(temp), str(fan), str(cond), str(sig)))
+    else:
+        cur.execute("DELETE FROM cpu_fan_data")
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -104,7 +140,7 @@ if __name__ == '__main__':
                           manufacturer_url='http://testurl.com')
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi если на windows или wlan0 если линукс
+    discovery = WSDiscoverySingleAdapter("WLAN")  # Wi-Fi если на windows или wlan0 если линукс или же WLAN
 
     # Создание экземпляра Provider
     provider = SdcProvider(ws_discovery=discovery,
@@ -124,12 +160,12 @@ if __name__ == '__main__':
     provider.publish()
 
     t = 0
+    sqlite_logging(provider, False)
+
     while True:
         update_cpu_temp(provider, Decimal(t))
-        print("Curent CPU Temp : ",provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
-        print("Alarm Condition : ",provider.mdib.entities.by_handle("al_condition_1").state.ActivationState)
-        print("Alarm Signal : ",provider.mdib.entities.by_handle("al_signal_1").state.Presence)
-        print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
+        print_metrics(provider)
+        sqlite_logging(provider, True)
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
             t = t - 1
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
