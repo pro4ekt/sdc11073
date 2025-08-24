@@ -42,6 +42,7 @@ def get_local_ip():
 def on_metric_update(metrics_by_handle: dict):
     #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
     print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
+    print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
     print(f"Current Alarm State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
 
 def get_number():
@@ -49,8 +50,12 @@ def get_number():
     value = Decimal(input())
     return value
 
+def turn_fan(consumer, state: str):
+    consumer.set_service_client.set_string(operation_handle="fan_control",
+                                           requested_string=state)
+
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    #logging.basicConfig(level=logging.INFO)
 
     # Создаём и запускаем discovery для поиска
     discovery = WSDiscovery(get_local_ip())
@@ -77,12 +82,10 @@ if __name__ == '__main__':
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
     while True:
-        alarm = consumer.mdib.entities.by_handle("al_signal_1").state.Presence
-        if(alarm == AlertSignalPresence.ON):
-            value = get_number()
-            if(value == 0):
-                a = consumer.mdib.entities.by_handle("al_signal_1").state
-                b = deepcopy(a)
-                b.Presence = AlertSignalPresence.OFF
-                consumer.set_service_client.set_alert_state(operation_handle="alert_control", proposed_alert_state=b)
+        if(consumer.mdib.entities.by_handle("al_signal_1").state.Presence == "On"):
+            print("WAIT")
+            time.sleep(5)
+            turn_fan(consumer, "On")
+        if (consumer.mdib.entities.by_handle("al_signal_1").state.Presence == "Off"):
+            turn_fan(consumer, "Off")
         time.sleep(1)

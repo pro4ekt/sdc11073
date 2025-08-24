@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 
 import keyboard
 import os
@@ -23,12 +24,18 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import AlertSignalPresence
+from sdc11073.xml_types.pm_types import AlertActivation
 from sdc11073.mdib.statecontainers import AlertSignalStateContainer
 from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
+
+THRESHOLD = 10
+CPU_TEMP_HANDLE = 'cpu_temp'
+AL_COND_HANDLE = 'al_condition_1'
+AL_SIG_HANDLE = 'al_signal_1'
 
 def get_cpu_temperature():
     """
@@ -54,8 +61,36 @@ def get_cpu_temperature():
     #print("[INFO] Температура недоступна на этой системе.")
     return 47.0
 
+def update_cpu_temp(provider, value: Decimal):
+    # 1. Write new temperature
+    with provider.mdib.metric_state_transaction() as tr:
+        temp_state = tr.get_state(CPU_TEMP_HANDLE)
+        mv = temp_state.MetricValue
+        mv.Value = value
+    # 2. Evaluate alert
+    evaluate_temp_alert(provider, value)
+
+def evaluate_temp_alert(provider, current: Decimal):
+    with provider.mdib.alert_state_transaction() as tr:
+        cond_state = tr.get_state(AL_COND_HANDLE)
+        sig_state = tr.get_state(AL_SIG_HANDLE)
+
+        should_fire = current >= THRESHOLD
+        is_active = cond_state.ActivationState == 'On'
+
+        if should_fire and not is_active:
+            cond_state.ActivationState = AlertActivation.ON
+            cond_state.Presence = True  # Presence for condition is boolean
+            sig_state.ActivationState = AlertActivation.ON
+            sig_state.Presence = AlertSignalPresence.ON
+        elif (not should_fire) and is_active:
+            cond_state.ActivationState = AlertActivation.OFF
+            cond_state.Presence = False
+            sig_state.ActivationState = AlertActivation.OFF
+            sig_state.Presence = AlertSignalPresence.OFF
+
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    #logging.basicConfig(level=logging.INFO)
 
     base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
     my_uuid = uuid.uuid5(base_uuid, "12345")
@@ -90,16 +125,13 @@ if __name__ == '__main__':
 
     t = 0
     while True:
-        temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
-        alert = provider.mdib.entities.by_handle("al_signal_1").state.Presence
-        print(temp)
-        print(alert)
-        with provider.mdib.metric_state_transaction() as tr:
-            state = tr.get_state("cpu_temp")
-            state.MetricValue.Value = Decimal(get_cpu_temperature()+t)
-        if(temp == 55):
-            with provider.mdib.alert_state_transaction() as tr:
-                state = tr.get_state("al_signal_1")
-                state.Presence = AlertSignalPresence.ON
-        t = t + 1
+        update_cpu_temp(provider, Decimal(t))
+        print("Curent CPU Temp : ",provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
+        print("Alarm Condition : ",provider.mdib.entities.by_handle("al_condition_1").state.ActivationState)
+        print("Alarm Signal : ",provider.mdib.entities.by_handle("al_signal_1").state.Presence)
+        print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
+        if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
+            t = t - 1
+        if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
+            t = t + 1
         time.sleep(1)

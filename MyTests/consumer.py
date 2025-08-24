@@ -83,6 +83,8 @@ if __name__ == '__main__':
     b.Presence = AlertSignalPresence.ON
     consumer.set_service_client.set_alert_state(operation_handle="alert_op",
                                                 proposed_alert_state=b)
+    consumer.set_service_client.set_string(operation_handle="str_op",
+                                           requested_string="Hello from consumer")
     time.sleep(2)
     print(consumer.mdib.entities.by_handle("als1").state.Presence)
 
