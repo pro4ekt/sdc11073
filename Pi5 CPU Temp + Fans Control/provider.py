@@ -33,8 +33,8 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
-COND_THRESHOLD = 10
-SIG_THRESHOLD = 12
+COND_THRESHOLD = 5
+SIG_THRESHOLD = 7
 CPU_TEMP_HANDLE = 'cpu_temp'
 AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
@@ -87,7 +87,7 @@ def evaluate_temp_alert(provider, current: Decimal):
         if cond_should_fire and (not is_cond_active):
             cond_state.ActivationState = AlertActivation.ON
             cond_state.Presence = True
-        elif sig_should_fire and (not is_sig_active):
+        elif sig_should_fire and (not is_sig_active) and (not is_fan_active):
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
         elif is_sig_active and (is_fan_active):
@@ -140,7 +140,7 @@ if __name__ == '__main__':
                           manufacturer_url='http://testurl.com')
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-    discovery = WSDiscoverySingleAdapter("WLAN")  # Wi-Fi если на windows или wlan0 если линукс или же WLAN
+    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi если на windows или wlan0 если линукс или же WLAN
 
     # Создание экземпляра Provider
     provider = SdcProvider(ws_discovery=discovery,

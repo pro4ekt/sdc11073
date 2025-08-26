@@ -43,7 +43,8 @@ def on_metric_update(metrics_by_handle: dict):
     #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
     print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
     print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
-    print(f"Current Alarm State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
+    print(f"Current Alarm Signal State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
+    print(f"Current Alarm Condition State: {consumer.mdib.entities.by_handle("al_condition_1").state.Presence}")
 
 def get_number():
     print("INPUT YOUR VALUE")
@@ -81,18 +82,11 @@ if __name__ == '__main__':
 
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
-    t = 0
     while True:
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
         fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
         if(cond_state and (not fan_state)):
-            if(t == 0):
-                time.sleep(5)
-                t = t + 1
+            time.sleep(3)
             turn_fan(consumer, "On")
         if((not cond_state) and (fan_state)):
-            if (t == 0):
-                time.sleep(5)
-                t = t + 1
             turn_fan(consumer, "Off")
-        time.sleep(1)
