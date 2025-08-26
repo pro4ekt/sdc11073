@@ -41,10 +41,18 @@ def get_local_ip():
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
+    """This Part is for Provider self Fan controll"""
+    if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
+        print("Temp is too high! Fan should be ON")
+        print(print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
+    """"""
+
+    """ This Part is for Consumer Controlled Fan
     print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
     print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
     print(f"Current Alarm Signal State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
     print(f"Current Alarm Condition State: {consumer.mdib.entities.by_handle("al_condition_1").state.Presence}")
+    """
 
 def get_number():
     print("INPUT YOUR VALUE")
@@ -83,10 +91,14 @@ if __name__ == '__main__':
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
     while True:
+        print(1)
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
         fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
+        time.sleep(0.5)
+        """ This Part is for Consumer Controlled Fan
         if(cond_state and (not fan_state)):
             time.sleep(3)
             turn_fan(consumer, "On")
         if((not cond_state) and (fan_state)):
             turn_fan(consumer, "Off")
+        """

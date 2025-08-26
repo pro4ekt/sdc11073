@@ -38,6 +38,7 @@ SIG_THRESHOLD = 7
 CPU_TEMP_HANDLE = 'cpu_temp'
 AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
+FAN_HANDLE = 'fan_rotation'
 
 def get_cpu_temperature():
     """
@@ -64,12 +65,10 @@ def get_cpu_temperature():
     return 47.0
 
 def update_cpu_temp(provider, value: Decimal):
-    # 1. Write new temperature
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state(CPU_TEMP_HANDLE)
         mv = temp_state.MetricValue
         mv.Value = value
-    # 2. Evaluate alert
     evaluate_temp_alert(provider, value)
 
 def evaluate_temp_alert(provider, current: Decimal):
@@ -125,6 +124,12 @@ def sqlite_logging(provider, value : bool):
     cur.close()
     conn.close()
 
+def turn_fan(provider, state: str):
+    with provider.mdib.metric_state_transaction() as tr:
+        fan_state = tr.get_state(FAN_HANDLE)
+        mv = fan_state.MetricValue
+        mv.Value = state
+
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
 
@@ -166,6 +171,12 @@ if __name__ == '__main__':
         update_cpu_temp(provider, Decimal(t))
         print_metrics(provider)
         sqlite_logging(provider, True)
+        """This Part is for Provider self Fan controll"""
+        if(provider.mdib.entities.by_handle("al_signal_1").state.Presence == "On"):
+            turn_fan(provider, "On")
+        elif(not provider.mdib.entities.by_handle("al_condition_1").state.Presence):
+            turn_fan(provider, "Off")
+        """"""
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
             t = t - 1
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
