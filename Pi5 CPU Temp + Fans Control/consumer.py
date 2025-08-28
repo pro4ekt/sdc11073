@@ -91,6 +91,7 @@ if __name__ == '__main__':
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
     while True:
+        a = get_local_ip()
         print(1)
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
         fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"

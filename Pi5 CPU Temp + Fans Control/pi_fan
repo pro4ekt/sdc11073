@@ -1,0 +1,23 @@
+import os
+import sys
+import time
+import gpiod
+
+CHIP = '/dev/gpiochip0'
+LINE = 4
+
+settings = gpiod.LineSettings()
+settings.direction = gpiod.line.Direction.OUTPUT
+
+chip = gpiod.Chip(CHIP)
+
+req : gpiod.LineRequest = chip.request_lines(config = {LINE : settings})
+
+req.set_value(LINE, gpiod.line.Value.ACTIVE)
+print("fan is off")
+time.sleep(5)
+
+req.set_value(LINE, gpiod.line.Value.ACTIVE)
+print("fan is on")
+time.sleep(5)
+

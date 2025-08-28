@@ -4,7 +4,6 @@ from collections import Counter
 from copy import deepcopy
 
 import sqlite3
-import keyboard
 import os
 import platform
 import logging
@@ -105,7 +104,7 @@ def print_metrics(provider):
     print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
 
 def sqlite_logging(provider, value : bool):
-    conn = sqlite3.connect("cpu_fan.db")
+    conn = sqlite3.connect("Pi5 CPU Temp + Fans Control/cpu_fan.db")
     cur = conn.cursor()
 
     temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
@@ -137,7 +136,7 @@ if __name__ == '__main__':
     my_uuid = uuid.uuid5(base_uuid, "12345")
 
     # mdib from xml file
-    mdib = ProviderMdib.from_mdib_file("mdib.xml")
+    mdib = ProviderMdib.from_mdib_file("Pi5 CPU Temp + Fans Control/mdib.xml")
 
     # All necessary components for the provider
     model = ThisModelType(model_name='TestModel',
@@ -145,7 +144,7 @@ if __name__ == '__main__':
                           manufacturer_url='http://testurl.com')
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi если на windows или wlan0 если линукс или же WLAN
+    discovery = WSDiscoverySingleAdapter("wlan0")  # Wi-Fi если на windows или wlan0 если линукс или же WLAN
 
     # Создание экземпляра Provider
     provider = SdcProvider(ws_discovery=discovery,
@@ -171,12 +170,12 @@ if __name__ == '__main__':
         update_cpu_temp(provider, Decimal(t))
         print_metrics(provider)
         sqlite_logging(provider, True)
-        """This Part is for Provider self Fan controll"""
+        """This Part is for Provider self Fan controll
         if(provider.mdib.entities.by_handle("al_signal_1").state.Presence == "On"):
             turn_fan(provider, "On")
         elif(not provider.mdib.entities.by_handle("al_condition_1").state.Presence):
             turn_fan(provider, "Off")
-        """"""
+        """
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
             t = t - 1
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
