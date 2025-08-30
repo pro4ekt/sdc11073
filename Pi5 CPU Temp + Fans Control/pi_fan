@@ -2,9 +2,12 @@ import os
 import time 
 
 while True:
+    os.system("pinctrl FAN_PWM op dl")
+    print("Fan is on")
+    time.sleep(5)
     os.system("pinctrl FAN_PWM op dh")
     print("Fan is off")
     time.sleep(5)
-    os.system("pinctrl FAN_PWM op dl")
-    print("Fan is on")
+    os.system("pinctrl FAN_PWM op a0")
+    print("Fan is auto")
     time.sleep(5)
