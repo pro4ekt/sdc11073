@@ -96,10 +96,8 @@ if __name__ == '__main__':
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
         fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
         time.sleep(0.5)
-        """ This Part is for Consumer Controlled Fan
         if(cond_state and (not fan_state)):
             time.sleep(3)
             turn_fan(consumer, "On")
         if((not cond_state) and (fan_state)):
             turn_fan(consumer, "Off")
-        """

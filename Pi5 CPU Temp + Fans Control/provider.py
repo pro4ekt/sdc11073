@@ -32,8 +32,7 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
-COND_THRESHOLD = 5
-SIG_THRESHOLD = 7
+COND_THRESHOLD = 55.0
 CPU_TEMP_HANDLE = 'cpu_temp'
 AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
@@ -77,20 +76,14 @@ def evaluate_temp_alert(provider, current: Decimal):
         sig_state = tr.get_state(AL_SIG_HANDLE)
 
         cond_should_fire = current >= COND_THRESHOLD
-        sig_should_fire = current >= SIG_THRESHOLD
         is_cond_active = cond_state.ActivationState == 'On'
-        is_sig_active = sig_state.ActivationState == 'On'
         is_fan_active = fan_state == "On"
 
         if cond_should_fire and (not is_cond_active):
             cond_state.ActivationState = AlertActivation.ON
             cond_state.Presence = True
-        elif sig_should_fire and (not is_sig_active) and (not is_fan_active):
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
-        elif is_sig_active and (is_fan_active):
-            sig_state.ActivationState = AlertActivation.OFF
-            sig_state.Presence = AlertSignalPresence.OFF
         elif (not cond_should_fire) and is_cond_active:
             cond_state.ActivationState = AlertActivation.OFF
             cond_state.Presence = False
@@ -104,7 +97,7 @@ def print_metrics(provider):
     print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
 
 def sqlite_logging(provider, value : bool):
-    conn = sqlite3.connect("Pi5 CPU Temp + Fans Control/cpu_fan.db")
+    conn = sqlite3.connect("cpu_fan.db")
     cur = conn.cursor()
 
     temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
@@ -123,11 +116,14 @@ def sqlite_logging(provider, value : bool):
     cur.close()
     conn.close()
 
-def turn_fan(provider, state: str):
-    with provider.mdib.metric_state_transaction() as tr:
-        fan_state = tr.get_state(FAN_HANDLE)
-        mv = fan_state.MetricValue
-        mv.Value = state
+def fan_control(provider):
+    state = provider.mdib.entities.by_handle(FAN_HANDLE).state.MetricValue.Value
+    if platform.system() != 'Linux':
+        return
+    if state == "On":
+        os.system("pinctrl FAN_PWM op dl")
+    elif state == "Off":
+        os.system("pinctrl FAN_PWM op dh")
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -136,7 +132,7 @@ if __name__ == '__main__':
     my_uuid = uuid.uuid5(base_uuid, "12345")
 
     # mdib from xml file
-    mdib = ProviderMdib.from_mdib_file("Pi5 CPU Temp + Fans Control/mdib.xml")
+    mdib = ProviderMdib.from_mdib_file("Pi5 CPU Temp + Fans Control/mdib.xml") #Pi5 CPU Temp + Fans Control/mdib.xml в Linux или mdib.xml в винде
 
     # All necessary components for the provider
     model = ThisModelType(model_name='TestModel',
@@ -167,7 +163,9 @@ if __name__ == '__main__':
     sqlite_logging(provider, False)
 
     while True:
-        update_cpu_temp(provider, Decimal(t))
+        temperature = get_cpu_temperature()
+        update_cpu_temp(provider, Decimal(temperature))
+        fan_control(provider)
         print_metrics(provider)
         sqlite_logging(provider, True)
         """This Part is for Provider self Fan controll
@@ -176,8 +174,10 @@ if __name__ == '__main__':
         elif(not provider.mdib.entities.by_handle("al_condition_1").state.Presence):
             turn_fan(provider, "Off")
         """
+        """
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
             t = t - 1
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
             t = t + 1
+        """
         time.sleep(1)
