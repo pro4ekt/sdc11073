@@ -6,6 +6,7 @@ import time
 import uuid
 from decimal import Decimal
 from copy import deepcopy
+import mysql.connector
 
 import sdc11073.entity_mdib.entity_providermdib
 from aiohttp.helpers import set_result
@@ -53,6 +54,56 @@ def get_number():
 def turn_fan(consumer, state: str):
     consumer.set_service_client.set_string(operation_handle="fan_control",
                                            requested_string=state)
+    operation_register()
+
+def register():
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test"
+    )
+    try:
+        cur = db.cursor()
+
+        device_id = 101  # ваш жёсткий id устройства
+
+        # Проверим, есть ли уже устройство с таким id
+        cur.execute("SELECT 1 FROM devices WHERE id=%s", (device_id,))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO devices (id, name, device_type, location) VALUES (%s, %s, %s, %s)",
+                (device_id, "Consumer", "consumer", "Berlin, DE")
+            )
+        db.commit()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
+
+def operation_register():
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test"
+    )
+    try:
+        cur = db.cursor()
+        provider_id = 100
+        consumer_id = 101
+
+        cur.execute("INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
+                    (consumer_id, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "fan_control", "consumer"))
+        db.commit()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -81,6 +132,7 @@ if __name__ == '__main__':
 
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
+    register()
     t = 0
     while True:
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"

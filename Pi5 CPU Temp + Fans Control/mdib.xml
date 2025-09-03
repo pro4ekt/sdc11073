@@ -52,6 +52,7 @@
             </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
+            <pm:State xsi:type="pm:AlertSystemState" DescriptorHandle="al_system_1" ActivationState="Off"/>
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_1" ActivationState="Off" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_1" ActivationState="Off" Presence="Off" />
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import decimal
 from collections import Counter
 from copy import deepcopy
 
@@ -11,6 +12,7 @@ import logging
 import time
 import uuid
 from decimal import Decimal
+import mysql.connector
 
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
@@ -65,6 +67,7 @@ def get_cpu_temperature():
 
 def update_cpu_temp(provider, value: Decimal):
     # 1. Write new temperature
+
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state(CPU_TEMP_HANDLE)
         mv = temp_state.MetricValue
@@ -79,25 +82,23 @@ def evaluate_temp_alert(provider, current: Decimal):
         sig_state = tr.get_state(AL_SIG_HANDLE)
 
         cond_should_fire = current >= COND_THRESHOLD
-        sig_should_fire = current >= SIG_THRESHOLD
         is_cond_active = cond_state.ActivationState == 'On'
-        is_sig_active = sig_state.ActivationState == 'On'
         is_fan_active = fan_state == "On"
+        id = 1
 
         if cond_should_fire and (not is_cond_active):
             cond_state.ActivationState = AlertActivation.ON
             cond_state.Presence = True
-        elif sig_should_fire and (not is_sig_active):
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
-        elif is_sig_active and (is_fan_active):
-            sig_state.ActivationState = AlertActivation.OFF
-            sig_state.Presence = AlertSignalPresence.OFF
+            alarm_register()
         elif (not cond_should_fire) and is_cond_active:
             cond_state.ActivationState = AlertActivation.OFF
             cond_state.Presence = False
             sig_state.ActivationState = AlertActivation.OFF
             sig_state.Presence = AlertSignalPresence.OFF
+            alarm_resolve(id)
+            id = id + 1
 
 def print_metrics(provider):
     print("Curent CPU Temp : ", provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
@@ -124,6 +125,160 @@ def sqlite_logging(provider, value : bool):
     conn.commit()
     cur.close()
     conn.close()
+
+def register():
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test"
+    )
+    try:
+        cur = db.cursor()
+
+        device_id = 100  # ваш жёсткий id устройства
+
+        # Проверим, есть ли уже устройство с таким id
+        cur.execute("SELECT 1 FROM devices WHERE id=%s", (device_id,))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO devices (id, name, device_type, location) VALUES (%s, %s, %s, %s)",
+                (device_id, "Provider", "provider", "Berlin, DE")
+            )
+
+        # Жёсткие id метрик
+        metric_cpu_id = 200
+        metric_fan_id = 201
+
+        cur.execute("SELECT 1 FROM metrics WHERE id=%s", (metric_cpu_id,))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO metrics (id, device_id, name, unit, threshold) VALUES (%s, %s, %s, %s, %s)",
+                (metric_cpu_id, device_id, "cpu_temp", "C", 54)
+            )
+
+        cur.execute("SELECT 1 FROM metrics WHERE id=%s", (metric_fan_id,))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO metrics (id, device_id, name, unit, threshold) VALUES (%s, %s, %s, %s, %s)",
+                (metric_fan_id, device_id, "fan_rotation", "bool", 999)
+            )
+
+        operation_fan_control = 300
+        operation_alert_control = 301
+        db.commit()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
+
+def metric_register(metric_id : int, value : Decimal):
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test"
+    )
+    try:
+        cur = db.cursor()
+        cur.execute(  "INSERT INTO observations (metric_id, time, value) VALUES (%s, %s, %s)",(metric_id, time.strftime("%Y-%m-%d %H:%M:%S"), value, ))
+        db.commit()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
+
+def operation_register():
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test"
+    )
+    try:
+        cur = db.cursor()
+        provider_id = 100
+
+        cur.execute(
+            "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
+            (provider_id, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "provider"))
+        db.commit()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
+
+def alarm_register():
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test")
+    try:
+        cur = db.cursor()
+
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            "INSERT INTO alarms (metric_id, state, triggered_at, threshold) VALUES (%s, %s, %s, %s)",
+            (200, "firing", now, 54))
+        alarm_id = cur.lastrowid
+        db.commit()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
+
+def alarm_resolve(alarm_id: int):
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test"
+    )
+    try:
+        cur = db.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            "UPDATE alarms SET state=%s, resolved_at=%s WHERE id=%s",
+            ("resolved", now, alarm_id)
+        )
+        db.commit()
+        return cur.rowcount == 1
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
+
+def delete_db():
+    conn = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET FOREIGN_KEY_CHECKS=0")
+        for tbl in ['observations', 'alarms', 'operations', 'metrics', 'devices']:
+            cur.execute(f"TRUNCATE TABLE {tbl}")
+        cur.execute("SET FOREIGN_KEY_CHECKS=1")
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except:
+            pass
+
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -160,12 +315,21 @@ if __name__ == '__main__':
     provider.publish()
 
     t = 0
+
+    with provider.mdib.alert_state_transaction() as tr:
+        cond_state = tr.get_state(AL_COND_HANDLE)
+        cond_state.ActivationState = AlertActivation.OFF
+
     sqlite_logging(provider, False)
+    delete_db()
+    register()
 
     while True:
         update_cpu_temp(provider, Decimal(t))
         print_metrics(provider)
         sqlite_logging(provider, True)
+        a = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
+        metric_register(200, Decimal(a))
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
             t = t - 1
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
