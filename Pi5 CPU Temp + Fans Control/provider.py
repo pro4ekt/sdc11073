@@ -40,6 +40,17 @@ SIG_THRESHOLD = 12
 CPU_TEMP_HANDLE = 'cpu_temp'
 AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
+DEVICE_ID = 0
+TEMP_ID = 0
+
+def _connect_db():
+
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test")
+    return db
 
 def get_cpu_temperature():
     """
@@ -127,46 +138,38 @@ def sqlite_logging(provider, value : bool):
     conn.close()
 
 def register():
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test"
-    )
+    db = _connect_db()
+
     try:
         cur = db.cursor()
 
-        device_id = 100  # ваш жёсткий id устройства
+        # 🔹 Вставляем устройство без проверки
+        cur.execute(
+            "INSERT INTO devices (name, device_type, location) VALUES (%s, %s, %s)",
+            ("Provider", "provider", "Würzburg, DE")
+        )
+        device_id = cur.lastrowid  # Получаем сгенерированный ID
+        global DEVICE_ID
+        DEVICE_ID = device_id # сохраняем в глобальную переменную device id в базе данных
 
-        # Проверим, есть ли уже устройство с таким id
-        cur.execute("SELECT 1 FROM devices WHERE id=%s", (device_id,))
-        if not cur.fetchone():
+        # 🔹 Вставляем метрики, связанные с этим устройством
+        metrics = [
+            ("cpu_temp", "C", 54),
+            ("fan_rotation", "bool", 999)
+        ]
+
+        for name, unit, threshold in metrics:
             cur.execute(
-                "INSERT INTO devices (id, name, device_type, location) VALUES (%s, %s, %s, %s)",
-                (device_id, "Provider", "provider", "Berlin, DE")
+                "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
+                (device_id, name, unit, threshold)
             )
+            metric_id = cur.lastrowid  # если нужно использовать дальше
+            if name == "cpu_temp":
+                global TEMP_ID
+                TEMP_ID = metric_id
 
-        # Жёсткие id метрик
-        metric_cpu_id = 200
-        metric_fan_id = 201
-
-        cur.execute("SELECT 1 FROM metrics WHERE id=%s", (metric_cpu_id,))
-        if not cur.fetchone():
-            cur.execute(
-                "INSERT INTO metrics (id, device_id, name, unit, threshold) VALUES (%s, %s, %s, %s, %s)",
-                (metric_cpu_id, device_id, "cpu_temp", "C", 54)
-            )
-
-        cur.execute("SELECT 1 FROM metrics WHERE id=%s", (metric_fan_id,))
-        if not cur.fetchone():
-            cur.execute(
-                "INSERT INTO metrics (id, device_id, name, unit, threshold) VALUES (%s, %s, %s, %s, %s)",
-                (metric_fan_id, device_id, "fan_rotation", "bool", 999)
-            )
-
-        operation_fan_control = 300
-        operation_alert_control = 301
         db.commit()
+
     finally:
         try:
             cur.close()
@@ -174,13 +177,9 @@ def register():
         except:
             pass
 
-def metric_register(metric_id : int, value : Decimal):
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test"
-    )
+def observation_register(metric_id : int, value : Decimal):
+    db = _connect_db()
+
     try:
         cur = db.cursor()
         cur.execute(  "INSERT INTO observations (metric_id, time, value) VALUES (%s, %s, %s)",(metric_id, time.strftime("%Y-%m-%d %H:%M:%S"), value, ))
@@ -328,8 +327,8 @@ if __name__ == '__main__':
         update_cpu_temp(provider, Decimal(t))
         print_metrics(provider)
         sqlite_logging(provider, True)
-        a = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
-        metric_register(200, Decimal(a))
+        cpu_temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
+        observation_register(TEMP_ID, Decimal(cpu_temp))
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
             t = t - 1
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
