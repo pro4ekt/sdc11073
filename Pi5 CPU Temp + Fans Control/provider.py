@@ -42,15 +42,7 @@ AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
 DEVICE_ID = 0
 TEMP_ID = 0
-
-def _connect_db():
-
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test")
-    return db
+TEMP_ALARM_ID = 0
 
 def get_cpu_temperature():
     """
@@ -117,6 +109,7 @@ def print_metrics(provider):
     print("Alarm Signal : ", provider.mdib.entities.by_handle("al_signal_1").state.Presence)
     print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
 
+
 def sqlite_logging(provider, value : bool):
     conn = sqlite3.connect("cpu_fan.db")
     cur = conn.cursor()
@@ -136,6 +129,16 @@ def sqlite_logging(provider, value : bool):
     conn.commit()
     cur.close()
     conn.close()
+
+
+def _connect_db():
+
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234",
+        database="test")
+    return db
 
 def register():
     db = _connect_db()
@@ -192,19 +195,13 @@ def observation_register(metric_id : int, value : Decimal):
             pass
 
 def operation_register():
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test"
-    )
+    db = _connect_db()
+
     try:
         cur = db.cursor()
-        provider_id = 100
-
         cur.execute(
             "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-            (provider_id, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "provider"))
+            (DEVICE_ID, DEVICE_ID, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "provider"))
         db.commit()
     finally:
         try:
@@ -214,19 +211,18 @@ def operation_register():
             pass
 
 def alarm_register():
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test")
+    db = _connect_db()
     try:
         cur = db.cursor()
 
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         cur.execute(
-            "INSERT INTO alarms (metric_id, state, triggered_at, threshold) VALUES (%s, %s, %s, %s)",
-            (200, "firing", now, 54))
+            "INSERT INTO alarms (metric_id, device_id, state, triggered_at, threshold) VALUES (%s, %s, %s, %s, %s)",
+            (TEMP_ID, DEVICE_ID, "firing", now, 54))
         alarm_id = cur.lastrowid
+        global TEMP_ALARM_ID
+        TEMP_ALARM_ID = alarm_id
+
         db.commit()
     finally:
         try:
@@ -236,12 +232,7 @@ def alarm_register():
             pass
 
 def alarm_resolve(alarm_id: int):
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test"
-    )
+    db = _connect_db()
     try:
         cur = db.cursor()
         now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -250,7 +241,6 @@ def alarm_resolve(alarm_id: int):
             ("resolved", now, alarm_id)
         )
         db.commit()
-        return cur.rowcount == 1
     finally:
         try:
             cur.close()
