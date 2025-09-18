@@ -16,7 +16,7 @@
 
                 <pm:Vmd Handle="vmd_1">
                     <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_1">
-                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_1" Kind="Phy" Priority="Me">
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_1" Kind="Phy" Priority="None">
                             <pm:Source>cpu_temp</pm:Source>
                         </pm:AlertCondition>
                         <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_1" ConditionSignaled="al_condition_1" Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
@@ -52,7 +52,8 @@
             </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
-            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_1" ActivationState="Off" Presence="false" />
+            <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_1" ActivationState="On" />
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_1" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_1" ActivationState="Off" Presence="Off" />
 
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="fan_control" OperatingMode="En" />

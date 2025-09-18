@@ -90,8 +90,8 @@
              </pm:MetricQuality>
            </pm:MetricValue>
          </pm:State>
-         <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="On" Presence="true"></pm:State>
-         <pm:State DescriptorHandle="als1" xsi:type="pm:AlertSignalState" StateVersion="1" ActivationState="On" Presence="Off"></pm:State>
+         <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="Off" Presence="false"></pm:State>
+         <pm:State DescriptorHandle="als1" xsi:type="pm:AlertSignalState" StateVersion="1" ActivationState="Off" Presence="Off"></pm:State>
          <pm:State DescriptorHandle="inject" xsi:type="pm:SetValueOperationState" OperatingMode="En"></pm:State>
         </pm:MdState>
       </msg:Mdib>

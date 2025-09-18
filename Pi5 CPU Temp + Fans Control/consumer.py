@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mysql.connector
 import socket
 import logging
 import time
@@ -27,6 +28,8 @@ from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.pysoap.msgfactory import CreatedMessage
 from sdc11073.xml_types.actions import periodic_actions
 from sdc11073.consumer.serviceclients.setservice import SetServiceClient
+
+DEVICE_ID = 0
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -62,6 +65,61 @@ def get_number():
 def turn_fan(consumer, state: str):
     consumer.set_service_client.set_string(operation_handle="fan_control",
                                            requested_string=state)
+    operation_register("fan_control")
+
+def _connect_db():
+
+    db = mysql.connector.connect(
+        host="192.168.0.102",
+        user="testuser1",
+        password="1234",
+        database="test")
+    return db
+
+def register():
+    db = _connect_db()
+
+    try:
+        cur = db.cursor()
+
+        # 🔹 Вставляем устройство без проверки
+        cur.execute(
+            "INSERT INTO devices (name, device_type, location) VALUES (%s, %s, %s)",
+            ("Consumer", "consumer", "Würzburg, DE")
+        )
+        device_id = cur.lastrowid  # Получаем сгенерированный ID
+        global DEVICE_ID
+        DEVICE_ID = device_id # сохраняем в глобальную переменную device id в базе данных
+
+        db.commit()
+
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
+
+def operation_register(op_type: str):
+    db = _connect_db()
+
+    try:
+        cur = db.cursor()
+        if(op_type == "fan_control"):
+            cur.execute(
+                "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
+                (DEVICE_ID, DEVICE_ID, time.strftime("%Y-%m-%d %H:%M:%S"), "fan_control", "consumer"))
+        elif(op_type == "alert_control"):
+            cur.execute(
+                "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
+                (DEVICE_ID, DEVICE_ID, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "consumer"))
+        db.commit()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except:
+            pass
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -89,10 +147,9 @@ if __name__ == '__main__':
     mdib.init_mdib()
 
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+    register()
 
     while True:
-        a = get_local_ip()
-        print(1)
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
         fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
         time.sleep(0.5)
