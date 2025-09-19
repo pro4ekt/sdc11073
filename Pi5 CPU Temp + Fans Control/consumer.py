@@ -56,6 +56,9 @@ def turn_fan(consumer, state: str):
                                            requested_string=state)
     operation_register()
 
+def threshold_controll(consumer, value: Decimal):
+    consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
+
 def register():
     db = mysql.connector.connect(
         host="localhost",

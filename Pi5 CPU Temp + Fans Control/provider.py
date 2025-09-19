@@ -35,8 +35,6 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
-COND_THRESHOLD = 10
-SIG_THRESHOLD = 12
 CPU_TEMP_HANDLE = 'cpu_temp'
 AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
@@ -80,14 +78,14 @@ def update_cpu_temp(provider, value: Decimal):
 
 def evaluate_temp_alert(provider, current: Decimal):
     fan_state = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
+    threshold = provider.mdib.entities.by_handle("temp_threshold").state.MetricValue.Value
     with provider.mdib.alert_state_transaction() as tr:
         cond_state = tr.get_state(AL_COND_HANDLE)
         sig_state = tr.get_state(AL_SIG_HANDLE)
 
-        cond_should_fire = current >= COND_THRESHOLD
+        cond_should_fire = current >= threshold
         is_cond_active = cond_state.ActivationState == 'On'
         is_fan_active = fan_state == "On"
-        id = 1
 
         if cond_should_fire and (not is_cond_active):
             cond_state.ActivationState = AlertActivation.ON
@@ -101,7 +99,6 @@ def evaluate_temp_alert(provider, current: Decimal):
             sig_state.ActivationState = AlertActivation.OFF
             sig_state.Presence = AlertSignalPresence.OFF
             alarm_resolve(id)
-            id = id + 1
 
 def print_metrics(provider):
     print("Curent CPU Temp : ", provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
@@ -249,22 +246,18 @@ def alarm_resolve(alarm_id: int):
             pass
 
 def delete_db():
-    conn = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test")
+    db = _connect_db()
     try:
-        cur = conn.cursor()
+        cur = db.cursor()
         cur.execute("SET FOREIGN_KEY_CHECKS=0")
         for tbl in ['observations', 'alarms', 'operations', 'metrics', 'devices']:
             cur.execute(f"TRUNCATE TABLE {tbl}")
         cur.execute("SET FOREIGN_KEY_CHECKS=1")
-        conn.commit()
+        db.commit()
     finally:
         try:
             cur.close()
-            conn.close()
+            db.close()
         except:
             pass
 
