@@ -23,6 +23,7 @@
                         </pm:AlertSignal>
                     </pm:AlertSystem>
                     <pm:Sco Handle="sco_1">
+                        <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="threshold_control" OperationTarget="temp_threshold" />
                         <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="fan_control" OperationTarget="fan_rotation">
                         </pm:Operation>
                         <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="alert_control" OperationTarget="al_signal_1" Retriggerable="true">
@@ -34,6 +35,9 @@
 
                     <pm:Channel Handle="cpu_temp_channel">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="cpu_temp" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="celsius"></pm:Unit>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temp_threshold" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="celsius"></pm:Unit>
                         </pm:Metric>
                     </pm:Channel>
@@ -58,8 +62,14 @@
 
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="fan_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="alert_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetValueOperationState" DescriptorHandle="threshold_control" OperatingMode="En" />
 
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="cpu_temp">
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temp_threshold">
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
