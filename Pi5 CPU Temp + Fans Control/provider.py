@@ -70,6 +70,7 @@ def update_cpu_temp(provider, value: Decimal):
         temp_state = tr.get_state(CPU_TEMP_HANDLE)
         mv = temp_state.MetricValue
         mv.Value = value
+    observation_register(TEMP_ID, value)
     evaluate_temp_alert(provider, value)
 
 def evaluate_temp_alert(provider, current: Decimal):
@@ -89,11 +90,13 @@ def evaluate_temp_alert(provider, current: Decimal):
             cond_state.Presence = True
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
+            alarm_register()
         elif (not cond_should_fire) and is_cond_active:
             cond_state.ActivationState = AlertActivation.OFF
             cond_state.Presence = False
             sig_state.ActivationState = AlertActivation.OFF
             sig_state.Presence = AlertSignalPresence.OFF
+            alarm_resolve(TEMP_ALARM_ID)
 
 def print_metrics(provider):
     print("Curent CPU Temp : ", provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
