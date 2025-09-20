@@ -65,11 +65,11 @@ def get_number():
 def turn_fan(consumer, state: str):
     consumer.set_service_client.set_string(operation_handle="fan_control",
                                            requested_string=state)
-    operation_register("fan_control")
+    operation_register(consumer, "fan_control")
 
 def threshold_control(consumer, value: Decimal):
     consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
-    operation_register("threshold_control")
+    operation_register(consumer, "threshold_control")
 
 def _connect_db():
 
@@ -104,19 +104,24 @@ def register():
         except:
             pass
 
-def operation_register(op_type: str):
+def operation_register(consumer ,op_type: str):
     db = _connect_db()
+    provider_id = consumer.mdib.entities.by_handle("device_id").state.MetricValue.Value
 
     try:
         cur = db.cursor()
         if(op_type == "fan_control"):
             cur.execute(
                 "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-                (DEVICE_ID, DEVICE_ID, time.strftime("%Y-%m-%d %H:%M:%S"), "fan_control", "consumer"))
+                (DEVICE_ID, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "fan_control", "consumer"))
         elif(op_type == "alert_control"):
             cur.execute(
                 "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-                (DEVICE_ID, DEVICE_ID, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "consumer"))
+                (DEVICE_ID, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "consumer"))
+        elif (op_type == "threshold_control"):
+            cur.execute(
+                "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
+                (DEVICE_ID, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "threshold_control", "consumer"))
         db.commit()
     finally:
         try:
@@ -150,8 +155,12 @@ if __name__ == '__main__':
     mdib = ConsumerMdib(consumer)
     mdib.init_mdib()
 
-    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
     register()
+
+    value = Decimal(input("Enter a number: "))
+    threshold_control(consumer, value)
+
+    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
     while True:
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"

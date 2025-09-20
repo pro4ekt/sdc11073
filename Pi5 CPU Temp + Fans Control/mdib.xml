@@ -40,6 +40,9 @@
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temp_threshold" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="celsius"></pm:Unit>
                         </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_id" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="id"></pm:Unit>
+                        </pm:Metric>
                     </pm:Channel>
                     <pm:Channel Handle="fan_channel">
                         <pm:Metric xsi:type="pm:EnumStringMetricDescriptor" Handle="fan_rotation" MetricCategory="Set" MetricAvailability="Intr">
@@ -50,6 +53,11 @@
                             <pm:AllowedValue>
                                 <pm:Value>Off</pm:Value>
                             </pm:AllowedValue>
+                        </pm:Metric>
+                    </pm:Channel>
+                    <pm:Channel Handle="sense-hat_channel">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="sense-hat_metric" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="code"></pm:Unit>
                         </pm:Metric>
                     </pm:Channel>
                 </pm:Vmd>
@@ -76,6 +84,16 @@
             </pm:State>
             <pm:State xsi:type="pm:EnumStringMetricState" DescriptorHandle="fan_rotation">
                 <pm:MetricValue Value="Off">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="sense-hat_metric" >
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
+                <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
             </pm:State>

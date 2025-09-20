@@ -33,7 +33,6 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
-COND_THRESHOLD = 55.0
 CPU_TEMP_HANDLE = 'cpu_temp'
 AL_COND_HANDLE = 'al_condition_1'
 AL_SIG_HANDLE = 'al_signal_1'
@@ -75,12 +74,13 @@ def update_cpu_temp(provider, value: Decimal):
 
 def evaluate_temp_alert(provider, current: Decimal):
     fan_state = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
+    threshold = provider.mdib.entities.by_handle("temp_threshold").state.MetricValue.Value
     with provider.mdib.alert_state_transaction() as tr:
         cond_state = tr.get_state(AL_COND_HANDLE)
         sig_state = tr.get_state(AL_SIG_HANDLE)
 
 
-        cond_should_fire = current >= COND_THRESHOLD
+        cond_should_fire = current >= threshold
         is_cond_active = cond_state.Presence
         is_fan_active = fan_state == "On"
 
@@ -100,6 +100,8 @@ def print_metrics(provider):
     print("Alarm Condition : ", provider.mdib.entities.by_handle("al_condition_1").state.ActivationState)
     print("Alarm Signal : ", provider.mdib.entities.by_handle("al_signal_1").state.Presence)
     print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
+    print("Temp Threshold : ", provider.mdib.entities.by_handle("temp_threshold").state.MetricValue.Value)
+    print("-----------------------------------------------------")
 
 def fan_control(provider):
     state = provider.mdib.entities.by_handle(FAN_HANDLE).state.MetricValue.Value
@@ -286,6 +288,10 @@ if __name__ == '__main__':
 
     delete_db()
     register()
+
+    with provider.mdib.metric_state_transaction() as tr:
+        id = tr.get_state("device_id")
+        id.MetricValue.Value = Decimal(DEVICE_ID)
 
     while True:
         temperature = get_cpu_temperature()
