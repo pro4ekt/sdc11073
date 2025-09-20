@@ -75,7 +75,7 @@ def _connect_db():
 
     db = mysql.connector.connect(
         host="192.168.0.102",
-        user="testuser1",
+        user="testuser2",
         password="1234",
         database="test")
     return db

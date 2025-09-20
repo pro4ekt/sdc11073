@@ -104,6 +104,7 @@ def print_metrics(provider):
     print("-----------------------------------------------------")
 
 def fan_control(provider):
+    #pinctl FAN_PWM a0 это на пай вернуть чтобы система автоматически контролировала вентилятор
     state = provider.mdib.entities.by_handle(FAN_HANDLE).state.MetricValue.Value
     if platform.system() != 'Linux':
         return
