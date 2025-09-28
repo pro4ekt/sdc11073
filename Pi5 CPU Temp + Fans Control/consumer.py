@@ -42,8 +42,7 @@ def get_local_ip():
         s.close()
 
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
-def on_metric_update(metrics_by_handle: dict):
-    #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
+def on_metric_update(consumer):
     """This Part is for Provider self Fan controll"""
     if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
         print("Temp is too high! Fan should be ON")
@@ -167,7 +166,7 @@ if __name__ == '__main__':
     threshold_control(consumer1, value)
 
     # Metric update binding, allows consumer to observe all updates from provider and "customize" it
-    observableproperties.bind(mdib1, metrics_by_handle=on_metric_update)
+    observableproperties.bind(mdib1, metrics_by_handle=on_metric_update(consumer1))
 
     # A loop in which all processes take place, for example continuous temperature checking and logging.
     while True:
