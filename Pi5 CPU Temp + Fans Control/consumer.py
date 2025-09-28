@@ -141,36 +141,41 @@ if __name__ == '__main__':
     services = discovery.search_services(timeout=1)
 
     # Just for the tests
-    service = services[0]
+    service1 = services[0]
+    service2 = services[1]
 
     # Initialization consumer from the service we found
-    consumer = SdcConsumer.from_wsd_service(wsd_service=service, ssl_context_container=None)
+    consumer1 = SdcConsumer.from_wsd_service(wsd_service=service1, ssl_context_container=None)
+    consumer2 = SdcConsumer.from_wsd_service(wsd_service=service1, ssl_context_container=None)
 
     time.sleep(1)
 
     #Start background threads, read metadata from device, instantiate detected port type clients and subscribe
-    consumer.start_all()
+    consumer1.start_all()
+    consumer2.start_all()
 
     #Copy mdib from provider to consumer
-    mdib = ConsumerMdib(consumer)
+    mdib1 = ConsumerMdib(consumer1)
+    mdib2 = ConsumerMdib(consumer2)
     #And initialize it
-    mdib.init_mdib()
+    mdib1.init_mdib()
+    mdib2.init_mdib()
 
     register()
 
     value = Decimal(input("Enter a number: "))
-    threshold_control(consumer, value)
+    threshold_control(consumer1, value)
 
     # Metric update binding, allows consumer to observe all updates from provider and "customize" it
-    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+    observableproperties.bind(mdib1, metrics_by_handle=on_metric_update)
 
     # A loop in which all processes take place, for example continuous temperature checking and logging.
     while True:
-        cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
-        fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
+        cond_state = consumer1.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
+        fan_state = consumer1.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
         time.sleep(0.5)
         if(cond_state and (not fan_state)):
             time.sleep(3)
-            turn_fan(consumer, "On")
+            turn_fan(consumer1, "On")
         if((not cond_state) and (fan_state)):
-            turn_fan(consumer, "Off")
+            turn_fan(consumer1, "Off")
