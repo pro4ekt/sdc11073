@@ -133,26 +133,27 @@ def operation_register(consumer ,op_type: str):
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
 
-    # Создаём и запускаем discovery для поиска
+    #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
     discovery = WSDiscovery(get_local_ip())
     discovery.start()
 
-    # Достаём все сервиы которые были найдены в discovery
+    #Writing down all the services we found in the network
     services = discovery.search_services(timeout=1)
 
-    # затычка конкретно для меня потомушо у меня ток 1 сервис
+    # Just for the tests
     service = services[0]
 
-    # Инициализация consumer
+    # Initialization consumer from the service we found
     consumer = SdcConsumer.from_wsd_service(wsd_service=service, ssl_context_container=None)
 
     time.sleep(1)
 
-    # Старт консьюмера
+    #Start background threads, read metadata from device, instantiate detected port type clients and subscribe
     consumer.start_all()
 
-    # Инициализация mdib от provider
+    #Copy mdib from provider to consumer
     mdib = ConsumerMdib(consumer)
+    #And initialize it
     mdib.init_mdib()
 
     register()
@@ -160,8 +161,10 @@ if __name__ == '__main__':
     value = Decimal(input("Enter a number: "))
     threshold_control(consumer, value)
 
+    # Metric update binding, allows consumer to observe all updates from provider and "customize" it
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
+    # A loop in which all processes take place, for example continuous temperature checking and logging.
     while True:
         cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
         fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"

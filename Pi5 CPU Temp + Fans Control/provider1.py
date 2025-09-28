@@ -75,22 +75,25 @@ def update_cpu_temp(provider, value: Decimal):
 
 def evaluate_temp_alert(provider, current: Decimal):
     fan_state = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
+    # get threshold of CPU temperature
     threshold = provider.mdib.entities.by_handle("temp_threshold").state.MetricValue.Value
+    # transaction for alert state changes
     with provider.mdib.alert_state_transaction() as tr:
         cond_state = tr.get_state(AL_COND_HANDLE)
         sig_state = tr.get_state(AL_SIG_HANDLE)
-
-
+        # evaluate if condition should fire
         cond_should_fire = current >= threshold
+        # get current states
         is_cond_active = cond_state.Presence
         is_fan_active = fan_state == "On"
-
+        # if condition should fire and is not active yet -> activate condition and signal
         if cond_should_fire and (not is_cond_active):
             cond_state.ActivationState = AlertActivation.ON
             cond_state.Presence = True
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
             alarm_register()
+        # if condition should not fire and is active -> deactivate condition and signal
         elif (not cond_should_fire) and is_cond_active:
             cond_state.ActivationState = AlertActivation.OFF
             cond_state.Presence = False
@@ -253,21 +256,26 @@ def delete_db():
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
 
+    #UUID objects (universally unique identifiers) according to RFC 4122
     base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
-    my_uuid = uuid.uuid5(base_uuid, "12345")
+    my_uuid = uuid.uuid5(base_uuid, "test_provider")
 
-    # mdib from xml file
+    # getting mdib from xml file and converting it to mdib.py object
     mdib = ProviderMdib.from_mdib_file("mdib.xml")
 
     # All necessary components for the provider
+
     model = ThisModelType(model_name='TestModel',
                           manufacturer='TestManufacturer',
                           manufacturer_url='http://testurl.com')
+    #Dependency injection: This class defines which component implementations the sdc provider will use
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
+    #ThisDeviceType object with friendly name and serial number
     device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi если на windows или wlan0 если линукс или же WLAN
+    #UDP based discovery on single network adapter
+    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi or WLAN if on windows or wlan0 if Linux
 
-    # Создание экземпляра Provider
+    #Assambling everything which was created above to implement SDC Provider object
     provider = SdcProvider(ws_discovery=discovery,
                            epr=my_uuid,
                            this_model=model,
@@ -275,16 +283,14 @@ if __name__ == '__main__':
                            device_mdib_container=mdib,
                            specific_components=components)
 
-    # Запуск Дискавери
+    # Discovery start
     discovery.start()
 
-    # Запуск всех сервисов провайера
+    # Starting all Services of provider
     provider.start_all()
 
-    # Публикация провайлера в сеть чтобы его можно было обнаружить
+    # Publishing the provider into Network to make it visible for consumers
     provider.publish()
-
-    t = 0
 
     with provider.mdib.alert_state_transaction() as tr:
         cond_state = tr.get_state(AL_COND_HANDLE)
@@ -297,6 +303,7 @@ if __name__ == '__main__':
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID)
 
+    # A loop in which all processes take place, for example continuous temperature checking and logging.
     while True:
         temperature = get_cpu_temperature()
         update_cpu_temp(provider, Decimal(temperature))

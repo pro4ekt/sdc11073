@@ -15,13 +15,16 @@
                 </pm:Clock>
 
                 <pm:Vmd Handle="vmd_1">
+                    <!-- Alert System -->
                     <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_1">
                         <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_1" Kind="Phy" Priority="None">
                             <pm:Source>cpu_temp</pm:Source>
                         </pm:AlertCondition>
-                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_1" ConditionSignaled="al_condition_1" Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_1" ConditionSignaled="al_condition_1"
+                                        Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
                         </pm:AlertSignal>
                     </pm:AlertSystem>
+                    <!-- Operations to enable remote control  -->
                     <pm:Sco Handle="sco_1">
                         <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="threshold_control" OperationTarget="temp_threshold" />
                         <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="fan_control" OperationTarget="fan_rotation">
@@ -33,6 +36,8 @@
                         </pm:Operation>
                     </pm:Sco>
 
+                    <!-- Separate channels for various types of metrics   -->
+                    <!-- Channel for CPU Information   -->
                     <pm:Channel Handle="cpu_temp_channel">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="cpu_temp" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="celsius"></pm:Unit>
@@ -44,6 +49,7 @@
                             <pm:Unit Code="id"></pm:Unit>
                         </pm:Metric>
                     </pm:Channel>
+                    <!-- Channel for Fan Control -->
                     <pm:Channel Handle="fan_channel">
                         <pm:Metric xsi:type="pm:EnumStringMetricDescriptor" Handle="fan_rotation" MetricCategory="Set" MetricAvailability="Intr">
                             <pm:Unit Code="enum"></pm:Unit>
