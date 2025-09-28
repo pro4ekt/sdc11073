@@ -258,10 +258,10 @@ if __name__ == '__main__':
 
     #UUID objects (universally unique identifiers) according to RFC 4122
     base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
-    my_uuid = uuid.uuid5(base_uuid, "test_provider")
+    my_uuid = uuid.uuid5(base_uuid, "test_provider_1")
 
     # getting mdib from xml file and converting it to mdib.py object
-    mdib = ProviderMdib.from_mdib_file("mdib.xml")
+    mdib = ProviderMdib.from_mdib_file("mdib1.xml")
 
     # All necessary components for the provider
 

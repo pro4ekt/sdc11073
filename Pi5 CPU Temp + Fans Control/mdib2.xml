@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" SequenceId="1">
+    <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+            <pm:Mds Handle="mds_1">
+                <pm:SystemContext Handle="sys_context_1">
+                    <pm:PatientContext Handle="pat_context_1" />
+                    <pm:LocationContext Handle="loc_context_1" />
+                    <pm:EnsembleContext Handle="ens_context_1" />
+                </pm:SystemContext>
+                <pm:Clock Handle="clock">
+                    <pm:TimeProtocol Code="532225">
+                        <pm:ConceptDescription Lang="en-us">NTPv4</pm:ConceptDescription>
+                    </pm:TimeProtocol>
+                </pm:Clock>
+
+                <pm:Vmd Handle="vmd_1">
+                    <pm:Channel Handle="sense-hat_channel">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="sense-hat_metric" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="code"></pm:Unit>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+            </pm:Mds>
+        </pm:MdDescription>
+        <pm:MdState>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="sense-hat_metric" >
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+        </pm:MdState>
+    </msg:Mdib>
+</msg:GetMdibResponse>
