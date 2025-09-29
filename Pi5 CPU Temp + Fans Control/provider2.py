@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 
-import mysql.connector
 import sqlite3
 import os
 import platform
@@ -33,6 +32,8 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
+from sense_hat import SenseHat
+
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
 
@@ -41,7 +42,7 @@ if __name__ == '__main__':
     my_uuid = uuid.uuid5(base_uuid, "test_provider_2")
 
     # getting mdib from xml file and converting it to mdib.py object
-    mdib = ProviderMdib.from_mdib_file("mdib2.xml")
+    mdib = ProviderMdib.from_mdib_file("Pi5 CPU Temp + Fans Control/mdib2.xml")
 
     # All necessary components for the provider
 
@@ -53,7 +54,7 @@ if __name__ == '__main__':
     #ThisDeviceType object with friendly name and serial number
     device = ThisDeviceType(friendly_name='TestDevice2', serial_number='123456')
     #UDP based discovery on single network adapter
-    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi or WLAN if on windows or wlan0 if Linux
+    discovery = WSDiscoverySingleAdapter("wlan0")  # Wi-Fi or WLAN if on windows or wlan0 if Linux
 
     #Assambling everything which was created above to implement SDC Provider object
     provider = SdcProvider(ws_discovery=discovery,
@@ -73,5 +74,12 @@ if __name__ == '__main__':
     provider.publish()
 
     while True:
-        print(1)
+        sense = SenseHat()
+        
+        with provider.mdib.metric_state_transaction() as tr:
+            hat_state = tr.get_state("sense-hat_metric")
+            mv = hat_state.MetricValue
+            mv.Value = Decimal(sense.humidity)
+        print(provider.mdib.entities.by_handle("sense-hat_metric").state.MetricValue.Value)
         time.sleep(1)
+        

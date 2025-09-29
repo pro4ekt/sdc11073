@@ -1,0 +1,23 @@
+import time
+from sense_hat import SenseHat
+
+sense = SenseHat()
+
+red = (255, 0, 0)
+green = (0, 255, 0)
+blue = (0, 0, 255)
+
+sense.clear()  # no arguments defaults to off
+time.sleep(1)
+sense.clear(red)  # passing in an RGB tuple
+time.sleep(1)
+sense.clear(green)  # passing in an RGB tuple
+time.sleep(1)
+sense.clear(blue)  # passing in an RGB tuple
+time.sleep(1)
+sense.clear(255, 255, 255)  # passing in r, g and b values of a colour
+time.sleep(1)
+sense.clear()
+
+humidity = sense.get_humidity()
+print("Humidity: %s %%rH" % humidity)
