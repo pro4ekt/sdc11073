@@ -221,8 +221,11 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    delete_db()
     register()
+
+    with provider.mdib.metric_state_transaction() as tr:
+        id = tr.get_state("device_id")
+        id.MetricValue.Value = Decimal(DEVICE_ID) 
 
     while True:
         sense = SenseHat()
