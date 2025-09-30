@@ -42,11 +42,11 @@ def get_local_ip():
         s.close()
 
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
-def on_metric_update(consumer):
+def on_metric_update(metrics_by_handle: dict):
     """This Part is for Provider self Fan controll"""
-    if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
+    if(consumer1.mdib.entities.by_handle("al_condition_1").state.Presence):
         print("Temp is too high! Fan should be ON")
-        print(print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
+        print(print(f"Curent CPU Temperature : {consumer1.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
     """"""
 
     """ This Part is for Consumer Controlled Fan
@@ -145,7 +145,7 @@ if __name__ == '__main__':
 
     # Initialization consumer from the service we found
     consumer1 = SdcConsumer.from_wsd_service(wsd_service=service1, ssl_context_container=None)
-    consumer2 = SdcConsumer.from_wsd_service(wsd_service=service1, ssl_context_container=None)
+    consumer2 = SdcConsumer.from_wsd_service(wsd_service=service2, ssl_context_container=None)
 
     time.sleep(1)
 
@@ -163,18 +163,18 @@ if __name__ == '__main__':
     register()
 
     value = Decimal(input("Enter a number: "))
-    threshold_control(consumer1, value)
+    threshold_control(consumer2, value)
 
     # Metric update binding, allows consumer to observe all updates from provider and "customize" it
-    observableproperties.bind(mdib1, metrics_by_handle=on_metric_update(consumer1))
+    # observableproperties.bind(mdib1, metrics_by_handle=on_metric_update)
 
     # A loop in which all processes take place, for example continuous temperature checking and logging.
     while True:
-        cond_state = consumer1.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
-        fan_state = consumer1.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
+        cond_state = consumer2.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
+        fan_state = consumer2.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
         time.sleep(0.5)
         if(cond_state and (not fan_state)):
             time.sleep(3)
-            turn_fan(consumer1, "On")
+            turn_fan(consumer2, "On")
         if((not cond_state) and (fan_state)):
-            turn_fan(consumer1, "Off")
+            turn_fan(consumer2, "Off")

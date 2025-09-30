@@ -19,11 +19,19 @@
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="sense-hat_metric" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="code"></pm:Unit>
                         </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_id" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="id"></pm:Unit>
+                        </pm:Metric>
                     </pm:Channel>
                 </pm:Vmd>
             </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="sense-hat_metric" >
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
