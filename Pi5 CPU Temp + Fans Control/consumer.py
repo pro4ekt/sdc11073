@@ -7,6 +7,8 @@ import time
 import uuid
 from decimal import Decimal
 from copy import deepcopy
+import asyncio
+import threading
 
 import sdc11073.entity_mdib.entity_providermdib
 from aiohttp.helpers import set_result
@@ -30,6 +32,7 @@ from sdc11073.xml_types.actions import periodic_actions
 from sdc11073.consumer.serviceclients.setservice import SetServiceClient
 
 DEVICE_ID = 0
+SERVICES = []
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -44,9 +47,9 @@ def get_local_ip():
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     """This Part is for Provider self Fan controll"""
-    if(consumer2.mdib.entities.by_handle("al_condition_1").state.Presence):
+    if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
         print("Temp is too high! Fan should be ON")
-        print(print(f"Curent CPU Temperature : {consumer2.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
+        print(print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
     """"""
 
     """ This Part is for Consumer Controlled Fan
@@ -64,12 +67,13 @@ def get_number():
 def turn_fan(consumer, state: str):
     consumer.set_service_client.set_string(operation_handle="fan_control",
                                            requested_string=state)
-    operation_register(consumer, "fan_control")
+    #operation_register(consumer, "fan_control")
 
 def threshold_control(consumer, value: Decimal):
     consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
-    operation_register(consumer, "threshold_control")
+    #operation_register(consumer, "threshold_control")
 
+'''
 def _connect_db():
 
     db = mysql.connector.connect(
@@ -128,53 +132,75 @@ def operation_register(consumer ,op_type: str):
             db.close()
         except:
             pass
+'''
+
+def handle_services(services):
+    # process or store results (thread-safe access if you mutate shared state)
+    print(f"Found {len(services)} services")
+
+async def discovery_loop(local_ip: str, timeout: float = 1.0, interval: float = 5.0):
+    discovery = WSDiscovery(local_ip)
+    discovery.start()
+    try:
+        while True:
+            services = await asyncio.to_thread(discovery.search_services, timeout=timeout)
+            handle_services(services)
+            if services != []:
+                SERVICES.append(services)
+            await asyncio.sleep(interval)
+    finally:
+        try:
+            discovery.stop()
+        except Exception:
+            pass
+
+def start_discovery_in_background(local_ip: str):
+    def runner():
+        asyncio.run(discovery_loop(local_ip, timeout=1.0, interval=5.0))
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    return t
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
 
     #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
-    discovery = WSDiscovery(get_local_ip())
-    discovery.start()
+    # Asynchronous discovery only; everything else remains synchronous
+    start_discovery_in_background(get_local_ip())
 
-    #Writing down all the services we found in the network
-    services = discovery.search_services(timeout=1)
+    while(SERVICES == []):
+        print("No services found yet, waiting...")
+        time.sleep(1)
 
-    # Just for the tests
-    service1 = services[0]
-    service2 = services[1]
 
     # Initialization consumer from the service we found
-    consumer1 = SdcConsumer.from_wsd_service(wsd_service=service1, ssl_context_container=None)
-    consumer2 = SdcConsumer.from_wsd_service(wsd_service=service2, ssl_context_container=None)
+    consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0], ssl_context_container=None)
 
     time.sleep(1)
 
     #Start background threads, read metadata from device, instantiate detected port type clients and subscribe
-    consumer1.start_all()
-    consumer2.start_all()
+    consumer.start_all()
 
     #Copy mdib from provider to consumer
-    mdib1 = ConsumerMdib(consumer1)
-    mdib2 = ConsumerMdib(consumer2)
+    mdib = ConsumerMdib(consumer)
     #And initialize it
-    mdib1.init_mdib()
-    mdib2.init_mdib()
+    mdib.init_mdib()
 
-    register()
+    #register()
 
     value = Decimal(input("Enter a number: "))
-    threshold_control(consumer2, value)
+    threshold_control(consumer, value)
 
     # Metric update binding, allows consumer to observe all updates from provider and "customize" it
-    observableproperties.bind(mdib2, metrics_by_handle=on_metric_update)
+    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
     # A loop in which all processes take place, for example continuous temperature checking and logging.
     while True:
-        cond_state = consumer2.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
-        fan_state = consumer2.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
+        cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
+        fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
         time.sleep(0.5)
         if(cond_state and (not fan_state)):
             time.sleep(3)
-            turn_fan(consumer2, "On")
+            turn_fan(consumer, "On")
         if((not cond_state) and (fan_state)):
-            turn_fan(consumer2, "Off")
+            turn_fan(consumer, "Off")
