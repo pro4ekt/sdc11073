@@ -163,7 +163,6 @@ def start_discovery_in_background(local_ip: str):
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
-
     #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
     # Asynchronous discovery only; everything else remains synchronous
     start_discovery_in_background(get_local_ip())
@@ -174,7 +173,7 @@ if __name__ == '__main__':
 
 
     # Initialization consumer from the service we found
-    consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0], ssl_context_container=None)
+    consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0][0], ssl_context_container=None)
 
     time.sleep(1)
 
