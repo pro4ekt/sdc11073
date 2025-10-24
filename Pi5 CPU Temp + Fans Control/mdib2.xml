@@ -16,7 +16,13 @@
 
                 <pm:Vmd Handle="vmd_1">
                     <pm:Channel Handle="sense-hat_channel">
-                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="sense-hat_metric" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="humidity" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="code"></pm:Unit>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temperature" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="code"></pm:Unit>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="pressure" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="code"></pm:Unit>
                         </pm:Metric>
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_id" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
@@ -32,7 +38,17 @@
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
             </pm:State>
-            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="sense-hat_metric" >
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="humidity" >
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temperature" >
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="pressure" >
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
