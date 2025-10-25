@@ -42,9 +42,14 @@ def get_local_ip():
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
-    print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
-    print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
-    print(f"Current Alarm State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
+    try:
+        print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
+        print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
+        print(f"Current Alarm State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
+    except:
+        pass
+    finally:
+        pass
 
 def get_number():
     print("INPUT YOUR VALUE")
@@ -109,7 +114,7 @@ def operation_register():
             pass
 
 if __name__ == '__main__':
-    #logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
 
     # Создаём и запускаем discovery для поиска
     discovery = WSDiscovery(get_local_ip())
@@ -119,35 +124,27 @@ if __name__ == '__main__':
     services = discovery.search_services(timeout=1)
 
     # затычка конкретно для меня потомушо у меня ток 1 сервис
-    service = services[0]
+    service1 = services[0]
+    service2 = services[1]
 
     # Инициализация consumer
-    consumer = SdcConsumer.from_wsd_service(wsd_service=service, ssl_context_container=None)
+    consumer1 = SdcConsumer.from_wsd_service(wsd_service=service1, ssl_context_container=None)
+    consumer2 = SdcConsumer.from_wsd_service(wsd_service=service2, ssl_context_container=None)
 
     time.sleep(1)
 
     # Старт консьюмера
-    consumer.start_all()
+    consumer1.start_all()
+    consumer2.start_all()
 
     # Инициализация mdib от provider
-    mdib = ConsumerMdib(consumer)
-    mdib.init_mdib()
+    mdib1 = ConsumerMdib(consumer1)
+    mdib1.init_mdib()
+    mdib2 = ConsumerMdib(consumer2)
+    mdib2.init_mdib()
 
-    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
-
-    register()
+    observableproperties.bind(mdib1, metrics_by_handle=on_metric_update)
     t = 0
     while True:
-        cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
-        fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
-        if(cond_state and (not fan_state)):
-            if(t == 0):
-                time.sleep(5)
-                t = t + 1
-            turn_fan(consumer, "On")
-        if((not cond_state) and (fan_state)):
-            if (t == 0):
-                time.sleep(5)
-                t = t + 1
-            turn_fan(consumer, "Off")
+        print(consumer1.mdib.entities.by_handle("sense-hat_metric").state.MetricValue.Value)
         time.sleep(1)
