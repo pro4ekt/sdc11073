@@ -59,20 +59,6 @@ def on_metric_update(metrics_by_handle: dict):
     print(f"Current Alarm Condition State: {consumer.mdib.entities.by_handle("al_condition_1").state.Presence}")
     """
 
-def get_number():
-    print("INPUT YOUR VALUE")
-    value = Decimal(input())
-    return value
-
-def turn_fan(consumer, state: str):
-    consumer.set_service_client.set_string(operation_handle="fan_control",
-                                           requested_string=state)
-    #operation_register(consumer, "fan_control")
-
-def threshold_control(consumer, value: Decimal):
-    consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
-    #operation_register(consumer, "threshold_control")
-
 '''
 def _connect_db():
 
@@ -163,43 +149,27 @@ def start_discovery_in_background(local_ip: str):
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
-    #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
-    # Asynchronous discovery only; everything else remains synchronous
     start_discovery_in_background(get_local_ip())
 
     while(SERVICES == []):
         print("No services found yet, waiting...")
         time.sleep(1)
 
-
-    # Initialization consumer from the service we found
     consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0][0], ssl_context_container=None)
 
     time.sleep(1)
-
-    #Start background threads, read metadata from device, instantiate detected port type clients and subscribe
     consumer.start_all()
 
-    #Copy mdib from provider to consumer
     mdib = ConsumerMdib(consumer)
-    #And initialize it
     mdib.init_mdib()
 
-    #register()
-
-    value = Decimal(input("Enter a number: "))
-    threshold_control(consumer, value)
-
-    # Metric update binding, allows consumer to observe all updates from provider and "customize" it
     observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
-    # A loop in which all processes take place, for example continuous temperature checking and logging.
+    sig_state = consumer.mdib.entities.by_handle("al_signal").state
+    sig_state.Presence = AlertSignalPresence.OFF
+
+    consumer.set_service_client.set_alert_state(operation_handle="alert_control",
+                                                proposed_alert_state=sig_state)
+
     while True:
-        cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
-        fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
         time.sleep(0.5)
-        if(cond_state and (not fan_state)):
-            time.sleep(3)
-            turn_fan(consumer, "On")
-        if((not cond_state) and (fan_state)):
-            turn_fan(consumer, "Off")
