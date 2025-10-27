@@ -157,7 +157,6 @@ if __name__ == '__main__':
 
     consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0][0], ssl_context_container=None)
 
-    time.sleep(1)
     consumer.start_all()
 
     mdib = ConsumerMdib(consumer)
