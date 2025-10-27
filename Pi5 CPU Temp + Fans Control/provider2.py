@@ -93,7 +93,6 @@ def metrics_info(provider):
     print("Pressure = ", provider.mdib.entities.by_handle("pressure").state.MetricValue.Value)
 
 
-
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
 
@@ -139,6 +138,17 @@ if __name__ == '__main__':
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID) 
 
+    with provider.mdib.alert_state_transaction() as tr:
+        cond_state = tr.get_state("al_condition")
+        sig_state = tr.get_state("al_signal")
+        cond_state.ActivationState = AlertActivation.ON
+        sig_state.ActivationState = AlertActivation.ON
+        cond_state.Presence = False
+        sig_state.Presence = AlertSignalPresence.OFF
+
+
+    t = 0
+    
     while True:
         sense = SenseHat()
         sense.clear()
@@ -147,6 +157,26 @@ if __name__ == '__main__':
         temperature = sense.temperature
         pressure = sense.pressure
 
+        if(provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF):
+            sense.clear(0,255,0)
+        if(provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.ON):
+            sense.clear(255,0,0)
+
+        elif(t == 5):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition")
+                cond_state.Presence = True
+                sig_state = tr.get_state("al_signal")
+                sig_state.Presence = AlertSignalPresence.ON
+
+        a = provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF
+        b = provider.mdib.entities.by_handle("al_condition").state.Presence == True
+        if a and b:
+            sense.clear(255,180,0)
+        
+        t = t + 1
+        time.sleep(1)
+        """
         update_humidity(provider, Decimal(humidity))
         update_temperature(provider, Decimal(temperature))
         update_pressure(provider, Decimal(pressure))
@@ -155,4 +185,6 @@ if __name__ == '__main__':
             show_number(i, 200, 0, 60)
             time.sleep(0.2)
         time.sleep(1)
+
+        """
         

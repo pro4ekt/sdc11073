@@ -15,6 +15,21 @@
                 </pm:Clock>
 
                 <pm:Vmd Handle="vmd_1">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system">
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition" Kind="Phy" Priority="None">
+                            <pm:Source>cpu_temp</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal" ConditionSignaled="al_condition"
+                                        Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
+                        </pm:AlertSignal>
+                    </pm:AlertSystem>
+                     <pm:Sco Handle="sco_1">
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="alert_control" OperationTarget="al_signal" Retriggerable="true">
+                            <pm:ModifiableData>Presence</pm:ModifiableData>
+                            <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                            <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
+                        </pm:Operation>
+                    </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="humidity" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="code"></pm:Unit>
@@ -33,6 +48,12 @@
             </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
+            <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system" ActivationState="On" />
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition" ActivationState="On" Presence="false" />
+            <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal" ActivationState="On" Presence="Off" />
+
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="alert_control" OperatingMode="En" />
+            
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />

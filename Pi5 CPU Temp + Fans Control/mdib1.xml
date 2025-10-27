@@ -72,7 +72,7 @@
         <pm:MdState>
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_1" ActivationState="On" />
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_1" ActivationState="On" Presence="false" />
-            <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_1" ActivationState="Off" Presence="Off" />
+            <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_1" ActivationState="Off" Presence="Off"/>
 
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="fan_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="alert_control" OperatingMode="En" />
