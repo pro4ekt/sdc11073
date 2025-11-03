@@ -66,6 +66,16 @@ def show_number(val, r, g, b):
   if (abs_val > 9): show_digit(tens, OFFSET_LEFT, OFFSET_TOP, r, g, b)
   show_digit(units, OFFSET_LEFT+4, OFFSET_TOP, r, g, b)
 
+def background(r, g, b):
+  pixels = sense.get_pixels()
+  new_pixels = []
+  for pixel in pixels:
+    if pixel == [0,0,0]:
+      new_pixels.append((r,g,b))
+    else:
+      new_pixels.append(pixel)
+  sense.set_pixels(new_pixels)
+
 def update_humidity(provider, value: Decimal):
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state("humidity")
@@ -87,6 +97,17 @@ def update_pressure(provider, value: Decimal):
         mv.Value = value
     #observation_register(HUMIDITY_ID, value)
 
+def alarm_eveluation(provider, value):
+    a = provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF
+    b = provider.mdib.entities.by_handle("al_condition").state.Presence == True
+
+    if a and (not b):
+        background(0,150,0)
+    if a and b:
+        background(0,0,150)
+    if (not a) and b:
+        background(150,0,0)
+            
 def metrics_info(provider):
     print("Humidity = ", provider.mdib.entities.by_handle("humidity").state.MetricValue.Value)
     print("Temperature = ", provider.mdib.entities.by_handle("temperature").state.MetricValue.Value)
@@ -146,9 +167,7 @@ if __name__ == '__main__':
         cond_state.Presence = False
         sig_state.Presence = AlertSignalPresence.OFF
 
-
     t = 0
-    
     while True:
         sense = SenseHat()
         sense.clear()
@@ -157,34 +176,23 @@ if __name__ == '__main__':
         temperature = sense.temperature
         pressure = sense.pressure
 
-        if(provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF):
-            sense.clear(0,255,0)
-        if(provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.ON):
-            sense.clear(255,0,0)
-
-        elif(t == 5):
+        update_humidity(provider, Decimal(humidity))
+        update_temperature(provider, Decimal(temperature))
+        update_pressure(provider, Decimal(pressure))
+        metrics_info(provider)
+        show_number(int(temperature), 255, 255, 255)
+        alarm_eveluation(provider, temperature)
+        if(t == 5):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition")
+                cond_state.Presence = True
+                sig_state = tr.get_state("al_signal")
+                sig_state.Presence = AlertSignalPresence.OFF
+        if(t == 10):
             with provider.mdib.alert_state_transaction() as tr:
                 cond_state = tr.get_state("al_condition")
                 cond_state.Presence = True
                 sig_state = tr.get_state("al_signal")
                 sig_state.Presence = AlertSignalPresence.ON
-
-        a = provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF
-        b = provider.mdib.entities.by_handle("al_condition").state.Presence == True
-        if a and b:
-            sense.clear(255,180,0)
-        
         t = t + 1
         time.sleep(1)
-        """
-        update_humidity(provider, Decimal(humidity))
-        update_temperature(provider, Decimal(temperature))
-        update_pressure(provider, Decimal(pressure))
-        metrics_info(provider)
-        for i in range(int(humidity), int(humidity)+1):
-            show_number(i, 200, 0, 60)
-            time.sleep(0.2)
-        time.sleep(1)
-
-        """
-        
