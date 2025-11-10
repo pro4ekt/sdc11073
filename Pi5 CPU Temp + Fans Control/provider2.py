@@ -11,6 +11,7 @@ import logging
 import time
 import uuid
 from decimal import Decimal
+import threading
 
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
@@ -35,6 +36,8 @@ from sdc11073.provider.operations import SetValueOperation
 
 from sense_hat import SenseHat
 
+sense = SenseHat()
+show_temp = True
 DEVICE_ID = 0
 OFFSET_LEFT = 1
 OFFSET_TOP = 2
@@ -113,10 +116,20 @@ def metrics_info(provider):
     print("Temperature = ", provider.mdib.entities.by_handle("temperature").state.MetricValue.Value)
     print("Pressure = ", provider.mdib.entities.by_handle("pressure").state.MetricValue.Value)
 
+def joystick():
+    global show_temp
+    while True:
+        events = sense.stick.get_events()
+        for e in events:
+         if e.action == "pressed":
+             show_temp = not show_temp
+        time.sleep(0.05)
+
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
-
+    t = threading.Thread(target=joystick, daemon=True)
+    t.start()
     #UUID objects (universally unique identifiers) according to RFC 4122
     base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050231}')
     my_uuid = uuid.uuid5(base_uuid, "test_provider_2")
@@ -169,7 +182,6 @@ if __name__ == '__main__':
 
     t = 0
     while True:
-        sense = SenseHat()
         sense.clear()
         
         humidity = sense.humidity
@@ -180,7 +192,10 @@ if __name__ == '__main__':
         update_temperature(provider, Decimal(temperature))
         update_pressure(provider, Decimal(pressure))
         metrics_info(provider)
-        show_number(int(temperature), 255, 255, 255)
+        if(show_temp):
+           show_number(int(temperature), 255, 255, 255)
+        else:
+           show_number(int(humidity), 255, 255, 255)
         alarm_eveluation(provider, temperature)
         """
         if(t == 5):
