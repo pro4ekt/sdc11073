@@ -33,6 +33,7 @@ from sdc11073.consumer.serviceclients.setservice import SetServiceClient
 
 DEVICE_ID = 0
 SERVICES = []
+CONSUMERS = []
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -73,67 +74,6 @@ def threshold_control(consumer, value: Decimal):
     consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
     #operation_register(consumer, "threshold_control")
 
-'''
-def _connect_db():
-
-    db = mysql.connector.connect(
-        host="192.168.0.102",
-        user="testuser2",
-        password="1234",
-        database="test")
-    return db
-
-def register():
-    db = _connect_db()
-
-    try:
-        cur = db.cursor()
-
-        # 🔹 Вставляем устройство без проверки
-        cur.execute(
-            "INSERT INTO devices (name, device_type, location) VALUES (%s, %s, %s)",
-            ("Consumer", "consumer", "Würzburg, DE")
-        )
-        device_id = cur.lastrowid  # Получаем сгенерированный ID
-        global DEVICE_ID
-        DEVICE_ID = device_id # сохраняем в глобальную переменную device id в базе данных
-
-        db.commit()
-
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-
-def operation_register(consumer ,op_type: str):
-    db = _connect_db()
-    provider_id = consumer.mdib.entities.by_handle("device_id").state.MetricValue.Value
-
-    try:
-        cur = db.cursor()
-        if(op_type == "fan_control"):
-            cur.execute(
-                "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-                (DEVICE_ID, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "fan_control", "consumer"))
-        elif(op_type == "alert_control"):
-            cur.execute(
-                "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-                (DEVICE_ID, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "consumer"))
-        elif (op_type == "threshold_control"):
-            cur.execute(
-                "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-                (DEVICE_ID, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "threshold_control", "consumer"))
-        db.commit()
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-'''
-
 def handle_services(services):
     # process or store results (thread-safe access if you mutate shared state)
     print(f"Found {len(services)} services")
@@ -147,6 +87,7 @@ async def discovery_loop(local_ip: str, timeout: float = 1.0, interval: float = 
             handle_services(services)
             if services != []:
                 SERVICES.append(services)
+                CONSUMERS.append(SdcConsumer.from_wsd_service(wsd_service=services, ssl_context_container=None))
             await asyncio.sleep(interval)
     finally:
         try:
