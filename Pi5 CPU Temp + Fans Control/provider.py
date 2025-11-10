@@ -3,6 +3,7 @@ from __future__ import annotations
 import decimal
 from collections import Counter
 from copy import deepcopy
+from myDbClass.dbworker import DBWorker
 
 import sqlite3
 import keyboard
@@ -92,175 +93,17 @@ def evaluate_temp_alert(provider, current: Decimal):
             cond_state.Presence = True
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
-            alarm_register()
         elif (not cond_should_fire) and is_cond_active:
             cond_state.ActivationState = AlertActivation.OFF
             cond_state.Presence = False
             sig_state.ActivationState = AlertActivation.OFF
             sig_state.Presence = AlertSignalPresence.OFF
-            alarm_resolve(id)
 
 def print_metrics(provider):
     print("Curent CPU Temp : ", provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
     print("Alarm Condition : ", provider.mdib.entities.by_handle("al_condition_1").state.ActivationState)
     print("Alarm Signal : ", provider.mdib.entities.by_handle("al_signal_1").state.Presence)
     print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
-
-
-def sqlite_logging(provider, value : bool):
-    conn = sqlite3.connect("cpu_fan.db")
-    cur = conn.cursor()
-
-    temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
-    fan = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
-    cond = provider.mdib.entities.by_handle("al_condition_1").state.ActivationState
-    sig = provider.mdib.entities.by_handle("al_signal_1").state.ActivationState
-
-    cur.execute("CREATE TABLE IF NOT EXISTS cpu_fan_data "
-                "(cpu_temp REAL, fan_speed TEXT, cond TEXT, sig TEXT)")
-    if(value):
-        cur.execute("INSERT INTO cpu_fan_data (cpu_temp, fan_speed, cond, sig) VALUES (?, ?, ?, ?)",(float(temp), str(fan), str(cond), str(sig)))
-    else:
-        cur.execute("DELETE FROM cpu_fan_data")
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def _connect_db():
-
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test")
-    return db
-
-def register():
-    db = _connect_db()
-
-    try:
-        cur = db.cursor()
-
-        # 🔹 Вставляем устройство без проверки
-        cur.execute(
-            "INSERT INTO devices (name, device_type, location) VALUES (%s, %s, %s)",
-            ("Provider", "provider", "Würzburg, DE")
-        )
-        device_id = cur.lastrowid  # Получаем сгенерированный ID
-        global DEVICE_ID
-        DEVICE_ID = device_id # сохраняем в глобальную переменную device id в базе данных
-
-        # 🔹 Вставляем метрики, связанные с этим устройством
-        metrics = [
-            ("cpu_temp", "C", 54),
-            ("fan_rotation", "bool", 999)
-        ]
-
-        for name, unit, threshold in metrics:
-            cur.execute(
-                "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
-                (device_id, name, unit, threshold)
-            )
-            metric_id = cur.lastrowid  # если нужно использовать дальше
-            if name == "cpu_temp":
-                global TEMP_ID
-                TEMP_ID = metric_id
-
-        db.commit()
-
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-
-def observation_register(metric_id : int, value : Decimal):
-    db = _connect_db()
-
-    try:
-        cur = db.cursor()
-        cur.execute(  "INSERT INTO observations (metric_id, time, value) VALUES (%s, %s, %s)",(metric_id, time.strftime("%Y-%m-%d %H:%M:%S"), value, ))
-        db.commit()
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-
-def operation_register():
-    db = _connect_db()
-
-    try:
-        cur = db.cursor()
-        cur.execute(
-            "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-            (DEVICE_ID, DEVICE_ID, time.strftime("%Y-%m-%d %H:%M:%S"), "alert_control", "provider"))
-        db.commit()
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-
-def alarm_register():
-    db = _connect_db()
-    try:
-        cur = db.cursor()
-
-        now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute(
-            "INSERT INTO alarms (metric_id, device_id, state, triggered_at, threshold) VALUES (%s, %s, %s, %s, %s)",
-            (TEMP_ID, DEVICE_ID, "firing", now, 54))
-        alarm_id = cur.lastrowid
-        global TEMP_ALARM_ID
-        TEMP_ALARM_ID = alarm_id
-
-        db.commit()
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-
-def alarm_resolve(alarm_id: int):
-    db = _connect_db()
-    try:
-        cur = db.cursor()
-        now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute(
-            "UPDATE alarms SET state=%s, resolved_at=%s WHERE id=%s",
-            ("resolved", now, alarm_id)
-        )
-        db.commit()
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-
-def delete_db():
-    db = _connect_db()
-    try:
-        cur = db.cursor()
-        cur.execute("SET FOREIGN_KEY_CHECKS=0")
-        for tbl in ['observations', 'alarms', 'operations', 'metrics', 'devices']:
-            cur.execute(f"TRUNCATE TABLE {tbl}")
-        cur.execute("SET FOREIGN_KEY_CHECKS=1")
-        db.commit()
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
-
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -293,6 +136,12 @@ if __name__ == '__main__':
     # Запуск всех сервисов провайера
     provider.start_all()
 
+    db = DBWorker(host="192.168.0.102", user="testuser2", password="1234", database="test", mdib=mdib)
+
+    db.register(device_name="Test_DBWorker", device_type="consumer", device_location="DE")
+
+    DEVICE_ID = db.device_id
+
     # Публикация провайлера в сеть чтобы его можно было обнаружить
     provider.publish()
 
@@ -302,16 +151,11 @@ if __name__ == '__main__':
         cond_state = tr.get_state(AL_COND_HANDLE)
         cond_state.ActivationState = AlertActivation.OFF
 
-    sqlite_logging(provider, False)
-    delete_db()
-    register()
 
     while True:
         update_cpu_temp(provider, Decimal(t))
         print_metrics(provider)
-        sqlite_logging(provider, True)
         cpu_temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
-        observation_register(TEMP_ID, Decimal(cpu_temp))
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):
             t = t - 1
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):

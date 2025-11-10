@@ -7,6 +7,7 @@ import uuid
 from decimal import Decimal
 from copy import deepcopy
 import mysql.connector
+from myDbClass import dbworker
 
 import sdc11073.entity_mdib.entity_providermdib
 from aiohttp.helpers import set_result
@@ -28,6 +29,13 @@ from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.pysoap.msgfactory import CreatedMessage
 from sdc11073.xml_types.actions import periodic_actions
 from sdc11073.consumer.serviceclients.setservice import SetServiceClient
+import asyncio
+import threading
+
+from myDbClass.dbworker import DBWorker
+
+DEVICE_ID = 0
+SERVICES = []
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -40,12 +48,12 @@ def get_local_ip():
         s.close()
 
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
-def on_metric_update(metrics_by_handle: dict):
+#def on_metric_update(metrics_by_handle: dict):
     #print(f"Got update on Metric with handle: {list(metrics_by_handle.keys())}")
     try:
         print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
-        print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
-        print(f"Current Alarm State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
+        #print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
+        #print(f"Current Alarm State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
     except:
         pass
     finally:
@@ -59,62 +67,47 @@ def get_number():
 def turn_fan(consumer, state: str):
     consumer.set_service_client.set_string(operation_handle="fan_control",
                                            requested_string=state)
-    operation_register()
 
 def threshold_controll(consumer, value: Decimal):
     consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
 
-def register():
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test"
-    )
+def handle_services(services):
+    # process or store results (thread-safe access if you mutate shared state)
+    print(f"Found {len(services)} services")
+
+async def discovery_loop(local_ip: str, timeout: float = 1.0, interval: float = 5.0):
+    discovery = WSDiscovery(local_ip)
+    discovery.start()
     try:
-        cur = db.cursor()
-
-        device_id = 101  # ваш жёсткий id устройства
-
-        # Проверим, есть ли уже устройство с таким id
-        cur.execute("SELECT 1 FROM devices WHERE id=%s", (device_id,))
-        if not cur.fetchone():
-            cur.execute(
-                "INSERT INTO devices (id, name, device_type, location) VALUES (%s, %s, %s, %s)",
-                (device_id, "Consumer", "consumer", "Berlin, DE")
-            )
-        db.commit()
+        while True:
+            services = await asyncio.to_thread(discovery.search_services, timeout=timeout)
+            handle_services(services)
+            if services != []:
+                SERVICES.append(services)
+            await asyncio.sleep(interval)
     finally:
         try:
-            cur.close()
-            db.close()
-        except:
+            discovery.stop()
+        except Exception:
             pass
 
-def operation_register():
-    db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="1234",
-        database="test"
-    )
-    try:
-        cur = db.cursor()
-        provider_id = 100
-        consumer_id = 101
-
-        cur.execute("INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-                    (consumer_id, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), "fan_control", "consumer"))
-        db.commit()
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except:
-            pass
+def start_discovery_in_background(local_ip: str):
+    def runner():
+        asyncio.run(discovery_loop(local_ip, timeout=1.0, interval=5.0))
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    return t
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    #logging.basicConfig(level=logging.INFO)
+
+    db = DBWorker(host="192.168.0.102", user="testuser2", password="1234", database="test")
+
+    db.register(device_name="Test_DBWorker", device_type="consumer", device_location="DE")
+
+    while (SERVICES == []):
+        print("No services found yet, waiting...")
+        time.sleep(1)
 
     # Создаём и запускаем discovery для поиска
     discovery = WSDiscovery(get_local_ip())
@@ -143,7 +136,7 @@ if __name__ == '__main__':
     mdib2 = ConsumerMdib(consumer2)
     mdib2.init_mdib()
 
-    observableproperties.bind(mdib1, metrics_by_handle=on_metric_update)
+    #observableproperties.bind(mdib1, metrics_by_handle=on_metric_update)
     t = 0
     while True:
         print(consumer1.mdib.entities.by_handle("sense-hat_metric").state.MetricValue.Value)
