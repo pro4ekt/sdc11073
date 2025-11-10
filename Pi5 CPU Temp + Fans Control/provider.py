@@ -67,14 +67,13 @@ def get_cpu_temperature():
     #print("[INFO] Температура недоступна на этой системе.")
     return 47.0
 
-def update_cpu_temp(provider, value: Decimal):
-    # 1. Write new temperature
+def update_cpu_temp(provider: SdcProvider, value: Decimal, db: DBWorker):
 
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state(CPU_TEMP_HANDLE)
         mv = temp_state.MetricValue
         mv.Value = value
-    # 2. Evaluate alert
+    db.observation_register(metric_handle=CPU_TEMP_HANDLE, value=value)
     evaluate_temp_alert(provider, value)
 
 def evaluate_temp_alert(provider, current: Decimal):
@@ -155,7 +154,7 @@ if __name__ == '__main__':
 
 
     while True:
-        update_cpu_temp(provider, Decimal(t))
+        update_cpu_temp(provider, Decimal(t), db)
         print_metrics(provider)
         cpu_temp = provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"):

@@ -52,7 +52,6 @@ class DBWorker:
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
@@ -64,12 +63,11 @@ class DBWorker:
                     metric = m[1]
                     break
             cur.execute("INSERT INTO observations (metric_id, time, value) VALUES (%s, %s, %s)",
-                        (metric[1], time.strftime("%Y-%m-%d %H:%M:%S"), value))
+                        (metric, time.strftime("%Y-%m-%d %H:%M:%S"), value))
             self.db.commit()
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
