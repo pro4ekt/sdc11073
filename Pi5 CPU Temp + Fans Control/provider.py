@@ -74,9 +74,9 @@ def update_cpu_temp(provider: SdcProvider, value: Decimal, db: DBWorker):
         mv = temp_state.MetricValue
         mv.Value = value
     db.observation_register(metric_handle=CPU_TEMP_HANDLE, value=value)
-    evaluate_temp_alert(provider, value)
+    evaluate_temp_alert(provider, value, db)
 
-def evaluate_temp_alert(provider, current: Decimal):
+def evaluate_temp_alert(provider: SdcProvider, current: Decimal, db: DBWorker):
     fan_state = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
     threshold = provider.mdib.entities.by_handle("temp_threshold").state.MetricValue.Value
     with provider.mdib.alert_state_transaction() as tr:
@@ -92,11 +92,14 @@ def evaluate_temp_alert(provider, current: Decimal):
             cond_state.Presence = True
             sig_state.ActivationState = AlertActivation.ON
             sig_state.Presence = AlertSignalPresence.ON
-        elif (not cond_should_fire) and is_cond_active:
+            db.alarm_register(metric_handle=CPU_TEMP_HANDLE)
+        #elif (not cond_should_fire) and is_cond_active:
+        elif (current >= 15) and is_cond_active:
             cond_state.ActivationState = AlertActivation.OFF
             cond_state.Presence = False
             sig_state.ActivationState = AlertActivation.OFF
             sig_state.Presence = AlertSignalPresence.OFF
+            db.alarm_resolve(metric_handle=CPU_TEMP_HANDLE)
 
 def print_metrics(provider):
     print("Curent CPU Temp : ", provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
@@ -136,6 +139,8 @@ if __name__ == '__main__':
     provider.start_all()
 
     db = DBWorker(host="192.168.0.102", user="testuser2", password="1234", database="test", mdib=mdib)
+
+    db.delete_db()
 
     db.register(device_name="Test_DBWorker", device_type="consumer", device_location="DE")
 

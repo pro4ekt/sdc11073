@@ -69,7 +69,7 @@
                 </pm:MetricValue>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temp_threshold">
-                <pm:MetricValue Value="0">
+                <pm:MetricValue Value="7">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
             </pm:State>

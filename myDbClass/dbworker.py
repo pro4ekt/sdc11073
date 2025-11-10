@@ -81,7 +81,6 @@ class DBWorker:
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
@@ -98,20 +97,19 @@ class DBWorker:
                 "INSERT INTO alarms (metric_id, device_id, state, triggered_at, threshold) VALUES (%s, %s, %s, %s, %s)",
                 (metric_id, self.device_id, "firing", now, 0))
             alarm_id = cur.lastrowid
-            self.alarms.append([alarm_id, metric_id , "firing"])
+            self.alarms.append([alarm_id, metric_id , metric_handle, "firing"])
             self.db.commit()
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
-    def alarm_resolve(self, metric_id: int):
+    def alarm_resolve(self, metric_handle: str):
 
         try:
             for a in self.alarms:
-                if (a[1] == metric_id):
+                if (a[2] == metric_handle):
                     alarm = a
                     break
             cur = self.db.cursor()
@@ -125,7 +123,6 @@ class DBWorker:
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
@@ -140,6 +137,6 @@ class DBWorker:
         finally:
             try:
                 cur.close()
-                self.db.close()
+                #self.db.close()
             except:
                 pass
