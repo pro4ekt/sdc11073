@@ -102,7 +102,7 @@ def alarm_eveluation(provider, value):
     b = provider.mdib.entities.by_handle("al_condition").state.Presence == True
 
     if a and (not b):
-        background(0,150,0)
+        background(0,100,0)
     if a and b:
         background(0,0,150)
     if (not a) and b:
@@ -182,13 +182,21 @@ if __name__ == '__main__':
         metrics_info(provider)
         show_number(int(temperature), 255, 255, 255)
         alarm_eveluation(provider, temperature)
+        """
         if(t == 5):
             with provider.mdib.alert_state_transaction() as tr:
                 cond_state = tr.get_state("al_condition")
                 cond_state.Presence = True
                 sig_state = tr.get_state("al_signal")
                 sig_state.Presence = AlertSignalPresence.OFF
-        if(t == 10):
+        """
+        if(int(temperature) < 33):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition")
+                cond_state.Presence = False
+                sig_state = tr.get_state("al_signal")
+                sig_state.Presence = AlertSignalPresence.OFF
+        if(int(temperature) > 33):
             with provider.mdib.alert_state_transaction() as tr:
                 cond_state = tr.get_state("al_condition")
                 cond_state.Presence = True
