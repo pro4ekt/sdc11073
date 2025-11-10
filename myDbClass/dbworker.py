@@ -35,25 +35,23 @@ class DBWorker:
             self.device_id = device_id
 
             obj = self.mdib.descriptions.objects
+            metrics_descriptors = []
 
             for containers in obj:
                 type_name = type(containers).__name__
-                if "MetricDescriptor" in type_name:
-                    self.metrics.append(containers)
+                if "NumericMetricDescriptor" in type_name:
+                    metrics_descriptors.append(containers)
 
-            for metric in self.metrics:
-                if(metric.Handle != "device_id"):
-                    cur.execute(
-                        "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
-                        (self.device_id, metric.Handle, metric.Unit, 0)
-                    )
-                    self.metrics.append([metric.Handle, cur.lastrowid])
+            for metric in metrics_descriptors:
+                cur.execute(
+                    "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
+                    (self.device_id, metric.Handle, metric.Unit.Code, 0))
+                self.metrics.append([metric.Handle, cur.lastrowid])
 
             self.db.commit()
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
@@ -65,12 +63,11 @@ class DBWorker:
                     metric = m[1]
                     break
             cur.execute("INSERT INTO observations (metric_id, time, value) VALUES (%s, %s, %s)",
-                        (metric[1], time.strftime("%Y-%m-%d %H:%M:%S"), value))
+                        (metric, time.strftime("%Y-%m-%d %H:%M:%S"), value))
             self.db.commit()
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
@@ -84,7 +81,6 @@ class DBWorker:
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
@@ -101,20 +97,19 @@ class DBWorker:
                 "INSERT INTO alarms (metric_id, device_id, state, triggered_at, threshold) VALUES (%s, %s, %s, %s, %s)",
                 (metric_id, self.device_id, "firing", now, 0))
             alarm_id = cur.lastrowid
-            self.alarms.append([alarm_id, metric_id , "firing"])
+            self.alarms.append([alarm_id, metric_id , metric_handle, "firing"])
             self.db.commit()
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
-    def alarm_resolve(self, metric_id: int):
+    def alarm_resolve(self, metric_handle: str):
 
         try:
             for a in self.alarms:
-                if (a[1] == metric_id):
+                if (a[2] == metric_handle):
                     alarm = a
                     break
             cur = self.db.cursor()
@@ -128,7 +123,6 @@ class DBWorker:
         finally:
             try:
                 cur.close()
-                self.db.close()
             except:
                 pass
 
@@ -143,6 +137,6 @@ class DBWorker:
         finally:
             try:
                 cur.close()
-                self.db.close()
+                #self.db.close()
             except:
                 pass

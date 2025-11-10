@@ -1,3 +1,3 @@
-from MyDbClass import dbworker
+from myDbClass import dbworker
 
 print(1)
