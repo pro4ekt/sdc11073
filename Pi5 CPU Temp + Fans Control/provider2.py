@@ -194,9 +194,28 @@ if __name__ == '__main__':
         metrics_info(provider)
         if(show_temp):
            show_number(int(temperature), 255, 255, 255)
+           if(int(temperature) < 33):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition")
+                cond_state.Presence = False
+                sig_state = tr.get_state("al_signal")
+                sig_state.Presence = AlertSignalPresence.OFF
+           if(int(temperature) > 33):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition")
+                cond_state.Presence = True
+                sig_state = tr.get_state("al_signal")
+                sig_state.Presence = AlertSignalPresence.ON
         else:
            show_number(int(humidity), 255, 255, 255)
+           with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition")
+                cond_state.Presence = False
+                sig_state = tr.get_state("al_signal")
+                sig_state.Presence = AlertSignalPresence.OFF
         alarm_eveluation(provider, temperature)
+
+        
         """
         if(t == 5):
             with provider.mdib.alert_state_transaction() as tr:
@@ -205,17 +224,5 @@ if __name__ == '__main__':
                 sig_state = tr.get_state("al_signal")
                 sig_state.Presence = AlertSignalPresence.OFF
         """
-        if(int(temperature) < 33):
-            with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
-                cond_state.Presence = False
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.OFF
-        if(int(temperature) > 33):
-            with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
-                cond_state.Presence = True
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.ON
         t = t + 1
         time.sleep(1)
