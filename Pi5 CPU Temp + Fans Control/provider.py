@@ -142,6 +142,8 @@ if __name__ == '__main__':
 
     DEVICE_ID = db.device_id
 
+    a = db.metrics
+
     # Публикация провайлера в сеть чтобы его можно было обнаружить
     provider.publish()
 

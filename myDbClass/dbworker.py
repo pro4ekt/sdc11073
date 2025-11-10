@@ -35,21 +35,18 @@ class DBWorker:
             self.device_id = device_id
 
             obj = self.mdib.descriptions.objects
+            metrics_descriptors = []
 
             for containers in obj:
                 type_name = type(containers).__name__
-                if "MetricDescriptor" in type_name:
-                    self.metrics.append(containers)
+                if "NumericMetricDescriptor" in type_name:
+                    metrics_descriptors.append(containers)
 
-            """
-            for metric in self.metrics:
-                if(metric.Handle != "device_id"):
-                    cur.execute(
-                        "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
-                        (self.device_id, metric.Handle, metric.Unit, 0)
-                    )
-                    self.metrics.append([metric.Handle, cur.lastrowid])
-            """
+            for metric in metrics_descriptors:
+                cur.execute(
+                    "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
+                    (self.device_id, metric.Handle, metric.Unit.Code, 0))
+                self.metrics.append([metric.Handle, cur.lastrowid])
 
             self.db.commit()
         finally:
