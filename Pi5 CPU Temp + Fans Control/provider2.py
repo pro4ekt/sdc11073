@@ -40,7 +40,7 @@ sense = SenseHat()
 show_temp = True
 DEVICE_ID = 0
 OFFSET_LEFT = 1
-OFFSET_TOP = 2
+OFFSET_TOP = 3
 
 NUMS =[1,1,1,1,0,1,1,0,1,1,0,1,1,1,1,  # 0
        0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,  # 1
@@ -79,6 +79,22 @@ def background(r, g, b):
       new_pixels.append(pixel)
   sense.set_pixels(new_pixels)
 
+def t_show(r, g, b):
+    sense.set_pixel(0,0,r,g,b)
+    sense.set_pixel(1,0,r,g,b)
+    sense.set_pixel(2,0,r,g,b)
+    sense.set_pixel(1,1,r,g,b)
+    sense.set_pixel(1,2,r,g,b)
+
+def h_show(r, g, b):
+    sense.set_pixel(0,0,r,g,b)
+    sense.set_pixel(0,1,r,g,b)
+    sense.set_pixel(0,2,r,g,b)
+    sense.set_pixel(1,1,r,g,b)
+    sense.set_pixel(2,2,r,g,b)
+    sense.set_pixel(2,1,r,g,b)
+    sense.set_pixel(2,0,r,g,b)
+
 def update_humidity(provider, value: Decimal):
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state("humidity")
@@ -100,7 +116,25 @@ def update_pressure(provider, value: Decimal):
         mv.Value = value
     #observation_register(HUMIDITY_ID, value)
 
-def alarm_eveluation(provider, value):
+def temp_alarm_eveluation(provider, value):
+
+    lowTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
+    highTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
+    
+    if((int(value) > highTempThreshold) or (int(value) < lowTempThreshold)):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition_temperature")
+                cond_state.Presence = True
+                sig_state = tr.get_state("al_signal_temperature")
+                sig_state.Presence = AlertSignalPresence.ON
+            if(int(value) < lowTempThreshold):
+                background(51, 153, 255)
+            else:
+                background(255,51,51)              
+    else:
+       background(51, 204, 51)
+    """
+    esli potom budy delt timeout
     a = provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF
     b = provider.mdib.entities.by_handle("al_condition").state.Presence == True
 
@@ -110,11 +144,36 @@ def alarm_eveluation(provider, value):
         background(0,0,150)
     if (not a) and b:
         background(150,0,0)
-            
+
+    if(int(value) < lowTempThreshold):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition")
+                cond_state.Presence = False
+                sig_state = tr.get_state("al_signal")
+                sig_state.Presence = AlertSignalPresence.OF
+    """
+
+def hum_alarm_eveluaton(provider, value):
+
+    lowHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower)
+    highHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper)
+    
+    if((int(value) > highHumThreshold) or (int(value) < lowHumThreshold)):
+            with provider.mdib.alert_state_transaction() as tr:
+                cond_state = tr.get_state("al_condition_humidity")
+                cond_state.Presence = True
+                sig_state = tr.get_state("al_signal_humidity")
+                sig_state.Presence = AlertSignalPresence.ON
+            if(int(value) < lowHumThreshold):
+                background(204,153,102)
+            else:
+                background(51,102,204)              
+    else:
+       background(51,204,51)
+
 def metrics_info(provider):
     print("Humidity = ", provider.mdib.entities.by_handle("humidity").state.MetricValue.Value)
     print("Temperature = ", provider.mdib.entities.by_handle("temperature").state.MetricValue.Value)
-    print("Pressure = ", provider.mdib.entities.by_handle("pressure").state.MetricValue.Value)
 
 def joystick():
     global show_temp
@@ -172,57 +231,26 @@ if __name__ == '__main__':
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID) 
 
-    with provider.mdib.alert_state_transaction() as tr:
-        cond_state = tr.get_state("al_condition")
-        sig_state = tr.get_state("al_signal")
-        cond_state.ActivationState = AlertActivation.ON
-        sig_state.ActivationState = AlertActivation.ON
-        cond_state.Presence = False
-        sig_state.Presence = AlertSignalPresence.OFF
-
-    t = 0
     while True:
         sense.clear()
         
         humidity = sense.humidity
         temperature = sense.temperature
-        pressure = sense.pressure
 
         update_humidity(provider, Decimal(humidity))
         update_temperature(provider, Decimal(temperature))
-        update_pressure(provider, Decimal(pressure))
         metrics_info(provider)
-        if(show_temp):
-           show_number(int(temperature), 255, 255, 255)
-           if(int(temperature) < 33):
-            with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
-                cond_state.Presence = False
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.OFF
-           if(int(temperature) > 33):
-            with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
-                cond_state.Presence = True
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.ON
-        else:
-           show_number(int(humidity), 255, 255, 255)
-           with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
-                cond_state.Presence = False
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.OFF
-        alarm_eveluation(provider, temperature)
 
-        
-        """
-        if(t == 5):
-            with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
-                cond_state.Presence = True
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.OFF
-        """
-        t = t + 1
-        time.sleep(1)
+        lowTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
+        highTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
+
+        if(show_temp):
+           t_show(255,255,255)
+           show_number(int(temperature), 20, 20, 20)
+           temp_alarm_eveluation(provider, temperature)
+        else:
+           h_show(255,255,0)
+           show_number(int(humidity), 20, 20, 20)
+           hum_alarm_eveluaton(provider, humidity)
+
+        time.sleep(1) 
