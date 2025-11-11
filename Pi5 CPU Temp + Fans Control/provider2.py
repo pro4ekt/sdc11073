@@ -184,6 +184,54 @@ def joystick():
              show_temp = not show_temp
         time.sleep(0.05)
 
+def first_start(provider):
+    sense.show_message("Started SDC-mode")
+
+    lowTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
+    highTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
+    midTemp=int((highTempThreshold-lowTempThreshold)/2)
+
+    lowHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower)
+    highHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper)
+    midHum=int((highHumThreshold-lowHumThreshold)/2)
+
+    sense.clear()
+    t_show(255,255,255)
+    show_number(lowTempThreshold, 20, 20, 20)
+    background(51, 153, 255)
+    time.sleep(2)
+
+    sense.clear()
+    t_show(255,255,255)
+    show_number(midTemp, 20, 20, 20)
+    background(51, 204, 51)
+    time.sleep(2)
+
+    sense.clear()
+    t_show(255,255,255)
+    show_number(highTempThreshold, 20, 20, 20)
+    background(255,51,51)
+    time.sleep(2)
+
+    sense.clear()
+    h_show(255,255,255)
+    show_number(lowHumThreshold, 20, 20, 20)
+    background(204,153,102)
+    time.sleep(2)
+
+    sense.clear()
+    h_show(255,255,255)
+    show_number(midHum, 20, 20, 20)
+    background(51,204,51)
+    time.sleep(2)
+
+    sense.clear()
+    h_show(255,255,255)
+    show_number(highHumThreshold, 20, 20, 20)
+    background(51,204,51)
+    time.sleep(2)
+
+
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -230,6 +278,8 @@ if __name__ == '__main__':
     with provider.mdib.metric_state_transaction() as tr:
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID) 
+
+    first_start(provider)
 
     while True:
         sense.clear()
