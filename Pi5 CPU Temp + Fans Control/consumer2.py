@@ -33,6 +33,8 @@ from sdc11073.consumer.serviceclients.setservice import SetServiceClient
 
 DEVICE_ID = 0
 SERVICES = []
+SERVICES_Flag = False
+flag = True
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -46,12 +48,12 @@ def get_local_ip():
 
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
-    """This Part is for Provider self Fan controll"""
+    """This Part is for Provider self Fan controll
     if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
         print("Temp is too high! Fan should be ON")
         print(print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
-    """"""
-
+    """
+    print("Temperature : ",consumer.mdib.entities.by_handle("temperature").state.MetricValue.Value)
     """ This Part is for Consumer Controlled Fan
     print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
     print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
@@ -121,54 +123,85 @@ def operation_register(consumer ,op_type: str):
 '''
 
 def handle_services(services):
-    # process or store results (thread-safe access if you mutate shared state)
-    print(f"Found {len(services)} services")
+    if(SERVICES_Flag):
+        return
+    if(services == []):
+        print("No services found yet, waiting...")
+    if(services != []):
+        print("Found services")
 
-async def discovery_loop(local_ip: str, timeout: float = 1.0, interval: float = 5.0):
+
+async def discovery_loop(local_ip: str, timeout: float = 0.25, interval: float = 0.5):
     discovery = WSDiscovery(local_ip)
     discovery.start()
     try:
         while True:
-            services = await asyncio.to_thread(discovery.search_services, timeout=timeout)
-            handle_services(services)
-            if services != []:
-                SERVICES.append(services)
-            await asyncio.sleep(interval)
+            global SERVICES
+            if(SERVICES == []):
+                services = await asyncio.to_thread(discovery.search_services, timeout=timeout)
+                handle_services(services)
+                SERVICES = services
+                if services != []:
+                    global SERVICES_Flag
+                    SERVICES_Flag = True
+                await asyncio.sleep(interval)
+            else:
+                await asyncio.sleep(interval)
     finally:
         try:
             discovery.stop()
         except Exception:
             pass
 
-def start_discovery_in_background(local_ip: str):
+def start_discovery_in_background(local_ip: str, timeout: float = 0.1, interval: float = 0.1):
     def runner():
-        asyncio.run(discovery_loop(local_ip, timeout=1.0, interval=5.0))
+        asyncio.run(discovery_loop(local_ip, timeout, interval))
     t = threading.Thread(target=runner, daemon=True)
     t.start()
     return t
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
-    start_discovery_in_background(get_local_ip())
-
-    while(SERVICES == []):
-        print("No services found yet, waiting...")
-        time.sleep(1)
-
-    consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0][0], ssl_context_container=None)
-
-    consumer.start_all()
-
-    mdib = ConsumerMdib(consumer)
-    mdib.init_mdib()
-
-    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
-
-    sig_state = consumer.mdib.entities.by_handle("al_signal").state
-    sig_state.Presence = AlertSignalPresence.OFF
-
-    consumer.set_service_client.set_alert_state(operation_handle="alert_control",
-                                                proposed_alert_state=sig_state)
-
+    discovery_thread = start_discovery_in_background(get_local_ip())
     while True:
-        time.sleep(0.5)
+        """
+        if(SERVICES == []):
+            print("No services found yet, waiting...")
+            time.sleep(1)
+        """
+        if (SERVICES_Flag):
+            while True:
+                if flag:
+                    consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0], ssl_context_container=None)
+
+                    consumer.start_all()
+
+                    mdib = ConsumerMdib(consumer)
+                    mdib.init_mdib()
+
+                    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+
+                    #sub = consumer.subscription_manager.is_subscribed
+                    flag = False
+
+                #time.sleep(1)
+
+                try:
+                    mrg = consumer.subscription_mgr.subscriptions
+                    for key, value in mrg.items():
+                        if value.is_subscribed is False:
+                            SERVICES_Flag = False
+                            SERVICES = []
+                            flag = True
+                            consumer.stop_all()
+                            discovery_thread.join()
+                            break
+                except Exception:
+                    break
+                finally:
+                    pass
+
+    #sig_state = consumer.mdib.entities.by_handle("al_signal").state
+    #sig_state.Presence = AlertSignalPresence.OFF
+
+    #consumer.set_service_client.set_alert_state(operation_handle="alert_control",proposed_alert_state=sig_state)
