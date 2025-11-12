@@ -130,7 +130,7 @@ def temp_alarm_eveluation(provider, value):
             if(int(value) < lowTempThreshold):
                 background(51, 153, 255)
             else:
-                background(255,51,51)              
+                background(130,0,0)              
     else:
        background(51, 204, 51)
     """
@@ -182,56 +182,64 @@ def joystick():
         for e in events:
          if e.action == "pressed":
              show_temp = not show_temp
+             start = time.time()
+         """
+         if e.action == "held":
+             duration = time.time() - start
+             if(duration > 3):
+              os.execvp("python3", ["python3", "Pi5 CPU Temp + Fans Control/sensestart.py"])
+         """
         time.sleep(0.05)
 
 def first_start(provider):
-    sense.show_message("Started SDC-mode")
+
+    
+    #sense.show_message("Started SDC-mode")
 
     lowTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
     highTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
-    midTemp=int((highTempThreshold-lowTempThreshold)/2)
+    midTemp=int((highTempThreshold+lowTempThreshold)/2)
 
     lowHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower)
     highHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper)
-    midHum=int((highHumThreshold-lowHumThreshold)/2)
+    midHum=int((highHumThreshold+lowHumThreshold)/2)
 
     sense.clear()
     t_show(255,255,255)
-    show_number(lowTempThreshold, 20, 20, 20)
+    show_number(lowTempThreshold, 255, 165, 40)
     background(51, 153, 255)
     time.sleep(2)
 
     sense.clear()
     t_show(255,255,255)
-    show_number(midTemp, 20, 20, 20)
+    show_number(midTemp, 255, 165, 40)
     background(51, 204, 51)
     time.sleep(2)
 
     sense.clear()
     t_show(255,255,255)
-    show_number(highTempThreshold, 20, 20, 20)
+    show_number(highTempThreshold, 255, 165, 40)
     background(255,51,51)
     time.sleep(2)
 
     sense.clear()
     h_show(255,255,255)
-    show_number(lowHumThreshold, 20, 20, 20)
+    show_number(lowHumThreshold, 255, 100, 40)
     background(204,153,102)
     time.sleep(2)
 
     sense.clear()
     h_show(255,255,255)
-    show_number(midHum, 20, 20, 20)
+    show_number(midHum, 255, 100, 40)
     background(51,204,51)
     time.sleep(2)
 
     sense.clear()
     h_show(255,255,255)
-    show_number(highHumThreshold, 20, 20, 20)
-    background(51,204,51)
+    show_number(highHumThreshold, 255, 100, 40)
+    background(51,102,204) 
+    
     time.sleep(2)
-
-
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -288,6 +296,7 @@ if __name__ == '__main__':
         temperature = sense.temperature
 
         update_humidity(provider, Decimal(humidity))
+    
         update_temperature(provider, Decimal(temperature))
         metrics_info(provider)
 
@@ -295,12 +304,13 @@ if __name__ == '__main__':
         highTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
 
         if(show_temp):
-           t_show(255,255,255)
-           show_number(int(temperature), 20, 20, 20)
+           t_show(255, 255, 0)
+           show_number(int(temperature+0.5), 255, 165, 40)
+
            temp_alarm_eveluation(provider, temperature)
         else:
-           h_show(255,255,0)
-           show_number(int(humidity), 20, 20, 20)
+           h_show(255, 255, 0)
+           show_number(int(humidity+0.5), 255, 100, 40)
            hum_alarm_eveluaton(provider, humidity)
 
         time.sleep(1) 

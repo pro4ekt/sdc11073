@@ -3,9 +3,10 @@ import asyncio
 import threading
 import time
 import os
+import subprocess
 
 OFFSET_LEFT = 1
-OFFSET_TOP = 2
+OFFSET_TOP = 3
 
 sense = SenseHat()
 show_temp = True
@@ -45,10 +46,14 @@ def joystick():
          if e.action == "pressed":
              show_temp = not show_temp
              start = time.time()
+         """
          if e.action == "held":
              duration = time.time() - start
              if(duration > 3):
-              os.execvp("python3", ["python3", "Pi5 CPU Temp + Fans Control/provider2.py"])
+              #os.execvp("python3", ["python3", "Pi5 CPU Temp + Fans Control/provider2.py"])
+              scr1 = subprocess.Popen(["python3", "Pi5 CPU Temp + Fans Control/provider2.py"])
+              
+         """
         time.sleep(0.05)
 
 def display():
@@ -66,7 +71,13 @@ def temp():
         
     temperature = sense.temperature
 
-    show_number(int(temperature), 255, 255, 255)
+    sense.set_pixel(0,0,255,255,255)
+    sense.set_pixel(1,0,255,255,255)
+    sense.set_pixel(2,0,255,255,255)
+    sense.set_pixel(1,1,255,255,255)
+    sense.set_pixel(1,2,255,255,255)
+
+    show_number(int(temperature+0.5), 255, 255, 255)
 
     time.sleep(1)
 
@@ -75,8 +86,15 @@ def hum():
         
     humidity = sense.humidity
 
-    show_number(int(humidity), 255, 255, 255)
+    sense.set_pixel(0,0,255, 255, 255)
+    sense.set_pixel(0,1,255, 255, 255)
+    sense.set_pixel(0,2,255, 255, 255)
+    sense.set_pixel(1,1,255, 255, 255)
+    sense.set_pixel(2,2,255, 255, 255)
+    sense.set_pixel(2,1,255, 255, 255)
+    sense.set_pixel(2,0,255, 255, 255)
 
+    show_number(int(humidity+0.5), 255, 255, 255)
     time.sleep(1)
 
 if __name__ == '__main__':
