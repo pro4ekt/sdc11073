@@ -34,6 +34,7 @@ from sdc11073.consumer.serviceclients.setservice import SetServiceClient
 DEVICE_ID = 0
 SERVICES = []
 CONSUMERS = []
+FOUND = False
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -48,11 +49,12 @@ def get_local_ip():
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     """This Part is for Provider self Fan controll"""
+    print("Temperature : ", consumer.mdib.entities.by_handle("temperature").state.MetricValue.Value)
+    """
     if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
         print("Temp is too high! Fan should be ON")
         print(print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
-    """"""
-
+    """
     """ This Part is for Consumer Controlled Fan
     print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
     print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
@@ -106,25 +108,50 @@ if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
     #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
     # Asynchronous discovery only; everything else remains synchronous
-    start_discovery_in_background(get_local_ip())
+    while True:
+        discovery = WSDiscovery(get_local_ip())
+        discovery.start()
 
-    while(SERVICES == []):
-        print("No services found yet, waiting...")
+        service = discovery.search_services()
+
+        while not FOUND:
+            service = discovery.search_services()
+            print("Searching for services...")
+            if (service != []):
+                print("Found services, connecting to the first one...")
+                FOUND = True
+                break
+
+        # Initialization consumer from the service we found
+        consumer = SdcConsumer.from_wsd_service(wsd_service=service[0], ssl_context_container=None)
+
         time.sleep(1)
+        # Start background threads, read metadata from device, instantiate detected port type clients and subscribe
+        consumer.start_all()
 
+        # Copy mdib from provider to consumer
+        mdib = ConsumerMdib(consumer)
+        # And initialize it
+        mdib.init_mdib()
 
-    # Initialization consumer from the service we found
-    consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0][0], ssl_context_container=None)
+        observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
-    time.sleep(1)
-    #Start background threads, read metadata from device, instantiate detected port type clients and subscribe
-    consumer.start_all()
-
-    #Copy mdib from provider to consumer
-    mdib = ConsumerMdib(consumer)
-    #And initialize it
-    mdib.init_mdib()
-
+        while True:
+            try:
+                mrg = consumer.subscription_mgr.subscriptions
+                for key, value in mrg.items():
+                    if value.is_subscribed is False:
+                        consumer.stop_all()
+                        FOUND = False
+                        break
+            except Exception:
+                break
+            finally:
+                if(FOUND):
+                    pass
+                else:
+                    break
+    """
     value = Decimal(input("Enter a number: "))
     threshold_control(consumer, value)
 
@@ -141,3 +168,4 @@ if __name__ == '__main__':
             turn_fan(consumer, "On")
         if((not cond_state) and (fan_state)):
             turn_fan(consumer, "Off")
+    """
