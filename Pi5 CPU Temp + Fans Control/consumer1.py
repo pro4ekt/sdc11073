@@ -9,6 +9,7 @@ from decimal import Decimal
 from copy import deepcopy
 import asyncio
 import threading
+import keyboard
 
 import sdc11073.entity_mdib.entity_providermdib
 from aiohttp.helpers import set_result
@@ -49,11 +50,20 @@ def get_local_ip():
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     """This Part is for Provider self Fan controll"""
-    print("Temperature : ", consumer.mdib.entities.by_handle("temperature").state.MetricValue.Value)
+    print(f"Temperature: {round(float(consumer.mdib.entities.by_handle('temperature').state.MetricValue.Value), 2)} °C "
+          f"Humidity: {round(float(consumer.mdib.entities.by_handle('humidity').state.MetricValue.Value), 2)} %")
+
     """
     if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
         print("Temp is too high! Fan should be ON")
         print(print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
+    def turn_fan(consumer, state: str):
+        consumer.set_service_client.set_string(operation_handle="fan_control",
+                                           requested_string=state)
+    #operation_register(consumer, "fan_control")
+    def threshold_control(consumer, value: Decimal):
+    consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
+    #operation_register(consumer, "threshold_control")
     """
     """ This Part is for Consumer Controlled Fan
     print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
@@ -67,14 +77,11 @@ def get_number():
     value = Decimal(input())
     return value
 
-def turn_fan(consumer, state: str):
-    consumer.set_service_client.set_string(operation_handle="fan_control",
-                                           requested_string=state)
-    #operation_register(consumer, "fan_control")
-
-def threshold_control(consumer, value: Decimal):
-    consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
-    #operation_register(consumer, "threshold_control")
+def alarm_control(consumer):
+    a = consumer.mdib.entities.by_handle("al_signal_temperature").state
+    b = deepcopy(a)
+    b.Presence = AlertSignalPresence.OFF
+    consumer.set_service_client.set_alert_state(operation_handle="temperature_alert_control", proposed_alert_state=b)
 
 def handle_services(services):
     # process or store results (thread-safe access if you mutate shared state)
@@ -104,10 +111,24 @@ def start_discovery_in_background(local_ip: str):
     t.start()
     return t
 
+def test():
+    print("ABOBA")
+
+def button_pressed(future: asyncio.Future):
+    try:
+        keyboard.on_press_key("space", lambda _: alarm_control(consumer))
+    except Exception:
+        print("Ты на прЫколе?")
+    finally:
+        pass
+
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
     #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
     # Asynchronous discovery only; everything else remains synchronous
+    t = threading.Thread(target=button_pressed, daemon=True)
+    t.start()
+
     while True:
         discovery = WSDiscovery(get_local_ip())
         discovery.start()
@@ -138,6 +159,14 @@ if __name__ == '__main__':
 
         while True:
             try:
+                if FOUND:
+                    a = consumer.mdib.entities.by_handle("al_signal_temperature").state
+                    b = deepcopy(a)
+                    b.Presence = AlertSignalPresence.OFF
+
+                    if (a.Presence == AlertSignalPresence.ON):
+                        alarm_control(consumer, b, "temperature_alert_control")
+
                 mrg = consumer.subscription_mgr.subscriptions
                 for key, value in mrg.items():
                     if value.is_subscribed is False:

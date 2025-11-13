@@ -169,7 +169,7 @@ if __name__ == '__main__':
             print("No services found yet, waiting...")
             time.sleep(1)
         """
-        if (SERVICES_Flag):
+        if (SERVICES_Flag and SERVICES[0] != None):
             while True:
                 if flag:
                     consumer = SdcConsumer.from_wsd_service(wsd_service=SERVICES[0], ssl_context_container=None)
@@ -194,7 +194,6 @@ if __name__ == '__main__':
                             SERVICES = []
                             flag = True
                             consumer.stop_all()
-                            discovery_thread.join()
                             break
                 except Exception:
                     break
