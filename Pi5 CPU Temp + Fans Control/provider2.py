@@ -16,6 +16,7 @@ import sounddevice as sd
 import numpy as np
 from sense_hat import SenseHat
 
+from myproviderimpl import MySdcProvider
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
 from sdc11073.mdib import ProviderMdib
@@ -42,6 +43,8 @@ show_temp = True
 DEVICE_ID = 0
 OFFSET_LEFT = 1
 OFFSET_TOP = 3
+REQUEST = {"temperature":False, "humidity":False}
+TIME_T = 0
 
 NUMS =[1,1,1,1,0,1,1,0,1,1,0,1,1,1,1,  # 0
        0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,  # 1
@@ -59,7 +62,7 @@ def sound(duration,frequncy):
 
     t = np.linspace(0,duration,int(sample_rate*duration), endpoint=False)
 
-    wave = 0.5 * np.sin(2*np.pi*frequncy*t)
+    wave = 0.1 * np.sin(2*np.pi*frequncy*t)
 
     sd.play(wave,sample_rate)
     sd.wait()
@@ -127,7 +130,7 @@ def update_pressure(provider, value: Decimal):
         mv.Value = value
     #observation_register(HUMIDITY_ID, value)
 
-def temp_alarm_eveluation(provider, value):
+def temp_alarm_eveluation(provider, value, timeout):
 
     lowTempThreshold=provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
     highTempThreshold=provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
@@ -137,12 +140,16 @@ def temp_alarm_eveluation(provider, value):
                 cond_state = tr.get_state("al_condition_temperature")
                 cond_state.Presence = True
                 sig_state = tr.get_state("al_signal_temperature")
-                sig_state.Presence = AlertSignalPresence.ON
+                if(timeout):
+                    sig_state.Presence = AlertSignalPresence.OFF
+                else:
+                    sig_state.Presence = AlertSignalPresence.ON
             if(value < lowTempThreshold):
                 background(51, 153, 255)
             else:
                 background(130,0,0)      
-                sound(1,440)        
+                if(provider.mdib.entities.by_handle("al_signal_temperature").state.Presence == AlertSignalPresence.ON):
+                    sound(1,420)        
     else:
        background(51, 204, 51)
     """
@@ -180,7 +187,8 @@ def hum_alarm_eveluaton(provider, value):
                 background(204,153,102)
             else:
                 background(51,102,204)
-                sound(1,440)              
+                if(provider.mdib.entities.by_handle("al_signal_humidity").state.Presence == AlertSignalPresence.ON):
+                    sound(1,440)               
     else:
        background(51,204,51)
 
@@ -278,7 +286,7 @@ if __name__ == '__main__':
     discovery = WSDiscoverySingleAdapter("wlan0")  # Wi-Fi or WLAN if on windows or wlan0 if Linux
 
     #Assambling everything which was created above to implement SDC Provider object
-    provider = SdcProvider(ws_discovery=discovery,
+    provider = MySdcProvider(ws_discovery=discovery,
                            epr=my_uuid,
                            this_model=model,
                            this_device=device,
@@ -303,8 +311,16 @@ if __name__ == '__main__':
     #first_start(provider)
 
     while True:
+        t = time.time()
         sense.clear()
         
+        if(provider.requests != []):
+            #print(provider.requests[0].raw_data)
+            #provider.find_string_in_request(provider.requests[0], "temperature_alert_control")
+            REQUEST["temperature"] = True
+            TIME_T = time.time()
+            provider.requests.pop(0)
+
         humidity = sense.humidity
         temperature = sense.temperature
 
@@ -319,8 +335,19 @@ if __name__ == '__main__':
         if(show_temp):
            t_show(255, 255, 0)
            show_number(int(temperature+0.5), 255, 165, 40)
-
-           temp_alarm_eveluation(provider, temperature)
+           if(REQUEST["temperature"] == True):
+               if(t - TIME_T < 3):
+                temp_alarm_eveluation(provider, temperature, True)
+                time.sleep(1)
+                continue
+               else:
+                temp_alarm_eveluation(provider, temperature, False)
+                REQUEST["temperature"] = False
+                TIME_T = 0
+                time.sleep(1)
+                continue
+                    
+           temp_alarm_eveluation(provider, temperature, False)        
         else:
            h_show(255, 255, 0)
            show_number(int(humidity+0.5), 255, 100, 40)

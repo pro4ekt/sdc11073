@@ -20,7 +20,7 @@
                             <pm:Source>temperature</pm:Source>
                         </pm:AlertCondition>
                         <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_temperature" ConditionSignaled="al_condition_temperature"
-                                        Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
+                                        Manifestation="Aud" SignalDelegationSupported="true" Latching="true">
                         </pm:AlertSignal>
                     </pm:AlertSystem>
                     <pm:Sco Handle="sco_1">
@@ -49,7 +49,7 @@
                             <pm:Source>temperature</pm:Source>
                         </pm:AlertCondition>
                         <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_humidity" ConditionSignaled="al_condition_humidity"
-                                        Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
+                                        Manifestation="Aud" SignalDelegationSupported="true" Latching="true">
                         </pm:AlertSignal>
                     </pm:AlertSystem>
                     <pm:Sco Handle="sco_2">
@@ -89,13 +89,13 @@
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
-                <pm:PhysiologicalRange Lower="18" Upper="20"></pm:PhysiologicalRange>
+                <pm:PhysiologicalRange Lower="18" Upper="200"></pm:PhysiologicalRange>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temperature" >
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
-                <pm:PhysiologicalRange Lower="36" Upper="38"></pm:PhysiologicalRange>
+                <pm:PhysiologicalRange Lower="30" Upper="35"></pm:PhysiologicalRange>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="pressure" >
                 <pm:MetricValue Value="0">
