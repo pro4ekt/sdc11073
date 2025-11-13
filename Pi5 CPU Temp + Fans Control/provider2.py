@@ -12,6 +12,9 @@ import time
 import uuid
 from decimal import Decimal
 import threading
+import sounddevice as sd
+import numpy as np
+from sense_hat import SenseHat
 
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
@@ -34,8 +37,6 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
-from sense_hat import SenseHat
-
 sense = SenseHat()
 show_temp = True
 DEVICE_ID = 0
@@ -52,6 +53,16 @@ NUMS =[1,1,1,1,0,1,1,0,1,1,0,1,1,1,1,  # 0
        1,1,1,0,0,1,0,1,0,1,0,0,1,0,0,  # 7
        1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,  # 8
        1,1,1,1,0,1,1,1,1,0,0,1,0,0,1]  # 9
+
+def sound(duration,frequncy):
+    sample_rate = 44100
+
+    t = np.linspace(0,duration,int(sample_rate*duration), endpoint=False)
+
+    wave = 0.5 * np.sin(2*np.pi*frequncy*t)
+
+    sd.play(wave,sample_rate)
+    sd.wait()
 
 # Displays a single digit (0-9)
 def show_digit(val, xd, yd, r, g, b):
@@ -118,19 +129,20 @@ def update_pressure(provider, value: Decimal):
 
 def temp_alarm_eveluation(provider, value):
 
-    lowTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
-    highTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
+    lowTempThreshold=provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
+    highTempThreshold=provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
     
-    if((int(value) > highTempThreshold) or (int(value) < lowTempThreshold)):
+    if((value > highTempThreshold) or (value < lowTempThreshold)):
             with provider.mdib.alert_state_transaction() as tr:
                 cond_state = tr.get_state("al_condition_temperature")
                 cond_state.Presence = True
                 sig_state = tr.get_state("al_signal_temperature")
                 sig_state.Presence = AlertSignalPresence.ON
-            if(int(value) < lowTempThreshold):
+            if(value < lowTempThreshold):
                 background(51, 153, 255)
             else:
-                background(130,0,0)              
+                background(130,0,0)      
+                sound(1,440)        
     else:
        background(51, 204, 51)
     """
@@ -155,19 +167,20 @@ def temp_alarm_eveluation(provider, value):
 
 def hum_alarm_eveluaton(provider, value):
 
-    lowHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower)
-    highHumThreshold=int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper)
+    lowHumThreshold= provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
+    highHumThreshold= provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
     
-    if((int(value) > highHumThreshold) or (int(value) < lowHumThreshold)):
+    if((value > highHumThreshold) or (value < lowHumThreshold)):
             with provider.mdib.alert_state_transaction() as tr:
                 cond_state = tr.get_state("al_condition_humidity")
                 cond_state.Presence = True
                 sig_state = tr.get_state("al_signal_humidity")
                 sig_state.Presence = AlertSignalPresence.ON
-            if(int(value) < lowHumThreshold):
+            if(value < lowHumThreshold):
                 background(204,153,102)
             else:
-                background(51,102,204)              
+                background(51,102,204)
+                sound(1,440)              
     else:
        background(51,204,51)
 
@@ -287,7 +300,7 @@ if __name__ == '__main__':
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID) 
 
-    first_start(provider)
+    #first_start(provider)
 
     while True:
         sense.clear()

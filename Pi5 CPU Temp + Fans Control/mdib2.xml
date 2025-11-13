@@ -24,7 +24,7 @@
                         </pm:AlertSignal>
                     </pm:AlertSystem>
                     <pm:Sco Handle="sco_1">
-                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="alert_control" OperationTarget="al_signal" Retriggerable="true">
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="temperature_alert_control" OperationTarget="al_signal_temperature" Retriggerable="true">
                             <pm:ModifiableData>Presence</pm:ModifiableData>
                             <pm:ModifiableData>ActivationState</pm:ModifiableData>
                             <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
@@ -52,6 +52,13 @@
                                         Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
                         </pm:AlertSignal>
                     </pm:AlertSystem>
+                    <pm:Sco Handle="sco_2">
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="humidity_alert_control" OperationTarget="al_signal_humidity" Retriggerable="true">
+                            <pm:ModifiableData>Presence</pm:ModifiableData>
+                            <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                            <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
+                        </pm:Operation>
+                    </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel_2">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="humidity" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="code"></pm:Unit>
@@ -70,7 +77,8 @@
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_humidity" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_humidity" ActivationState="On" Presence="Off" />
 
-            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="alert_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="temperature_alert_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />
             
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
                 <pm:MetricValue Value="0">
