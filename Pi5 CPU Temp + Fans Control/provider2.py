@@ -79,7 +79,7 @@ if __name__ == '__main__':
 
     # Discovery start
     discovery.start()
-
+    a = provider.mdib.entities.by_handle("device_id").state.PhysiologicalRange[0].Lower
     # Starting all Services of provider
     provider.start_all()
     a = provider.mdib.entities.by_handle("device_id").state.PhysiologicalRange[0].Lower

@@ -27,13 +27,13 @@
                     <!-- Operations to enable remote control  -->
                     <pm:Sco Handle="sco_1">
                         <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="threshold_control" OperationTarget="temp_threshold" />
-                        <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="fan_control" OperationTarget="fan_rotation">
-                        </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="fan_control" OperationTarget="fan_rotation"></pm:Operation>
                         <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="alert_control" OperationTarget="al_signal_1" Retriggerable="true">
                             <pm:ModifiableData>Presence</pm:ModifiableData>
                             <pm:ModifiableData>ActivationState</pm:ModifiableData>
                             <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
                         </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetComponentStateOperationDescriptor"  Handle="metric_op" OperationTarget="cpu_temp"></pm:Operation>
                     </pm:Sco>
 
                     <!-- Separate channels for various types of metrics   -->
