@@ -126,61 +126,7 @@ def button_pressed(fut: asyncio.Future):
     keyboard.on_press_key("space", handle)
     keyboard.wait("esc")  # поток живёт, пока не нажмут Esc
 
-async def main():
-    #logging.basicConfig(level=logging.INFO)
-    #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
-    # Asynchronous discovery only; everything else remains synchronous
-    while True:
-        fut = asyncio.Future()
-        global FIRST
-        if (FIRST):
-            t = threading.Thread(target=button_pressed, args=(fut,), daemon=True)
-            t.start()
-            FIRST = False
 
-        while True:
-            discovery = WSDiscovery(get_local_ip())
-            discovery.start()
-
-            service = discovery.search_services()
-
-            global FOUND
-            while not FOUND:
-                service = discovery.search_services()
-                print("Searching for services...")
-                if (service != []):
-                    print("Found services, connecting to the first one...")
-                    FOUND = True
-                    break
-
-            # Initialization consumer from the service we found
-            consumer = SdcConsumer.from_wsd_service(wsd_service=service[0], ssl_context_container=None)
-
-            time.sleep(1)
-            # Start background threads, read metadata from device, instantiate detected port type clients and subscribe
-            consumer.start_all()
-
-            # Copy mdib from provider to consumer
-            mdib = ConsumerMdib(consumer)
-            # And initialize it
-            mdib.init_mdib()
-
-            fut.set_result(consumer)
-
-            observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
-
-            while True:
-                if FOUND:
-                    marker = True
-                    mrg = consumer.subscription_mgr.subscriptions
-                    for key, value in mrg.items():
-                        if value.is_subscribed is False:
-                            consumer.stop_all()
-                            FOUND = False
-                            marker = False
-                            break
-                    if(not marker):
-                        break
     """
     value = Decimal(input("Enter a number: "))
     threshold_control(consumer, value)
@@ -216,5 +162,68 @@ async def main():
                        else:
                            break
                    """
+
+
+async def main():
+    # logging.basicConfig(level=logging.INFO)
+
+    # Создаем Future и запускаем поток для клавиш ОДИН РАЗ
+    fut = asyncio.Future()
+    t = threading.Thread(target=button_pressed, args=(fut,), daemon=True)
+    t.start()
+
+    # Основной цикл для обнаружения и подключения
+    while True:
+        discovery = WSDiscovery(get_local_ip())
+        discovery.start()
+
+        service = []
+        while not service:
+            print("Searching for services...")
+            service = discovery.search_services()
+            if service:
+                print("Found services, connecting...")
+                break
+            await asyncio.sleep(1)  # Даем время на поиск, чтобы не грузить CPU
+
+        discovery.stop()
+
+        # Инициализация consumer
+        consumer = SdcConsumer.from_wsd_service(wsd_service=service[0], ssl_context_container=None)
+        consumer.start_all()
+
+        mdib = ConsumerMdib(consumer)
+        mdib.init_mdib()
+
+        # Устанавливаем результат в Future.
+        # Если Future уже имеет результат, это вызовет ошибку.
+        # Используем try/except, чтобы установить результат только один раз.
+        if not fut.done():
+            fut.set_result(consumer)
+
+        observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+
+        # Цикл проверки соединения
+        while True:
+            await asyncio.sleep(2)  # Проверяем не слишком часто
+            is_connected = True
+            mrg = consumer.subscription_mgr.subscriptions
+            if not mrg:  # Если подписок нет, считаем, что соединение потеряно
+                is_connected = False
+            else:
+                for sub in mrg.values():
+                    if not sub.is_subscribed:
+                        is_connected = False
+                        break
+
+            if not is_connected:
+                print("Connection lost, restarting discovery...")
+                consumer.stop_all()
+                # Сбрасываем Future, чтобы при следующем подключении он снова заполнился
+                # новым объектом consumer.
+                if fut.done():
+                    fut = asyncio.Future()
+                break
+
 
 asyncio.run(main())
