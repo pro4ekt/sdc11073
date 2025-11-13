@@ -37,42 +37,47 @@ def get_local_ip():
 def on_metric_update(metrics_by_handle: dict):
     print("Metric update received (make later)")
 
-
-def alarm_control(consumer: SdcConsumer):
+def alarm_control(consumer, alert_handle: str, operation_handle: str):
     if not consumer or not consumer.mdib:
-        print("Cannot control alarm: Consumer not ready or mdib is missing.")
+        print("Cannot control alarm: consumer not ready.")
         return
     try:
-        alert_state_container = consumer.mdib.entities.by_handle("al_signal_temperature").state
+        alert_state_container = consumer.mdib.entities.by_handle(alert_handle).state
         if alert_state_container.Presence == AlertSignalPresence.ON:
-            print("Alarm is ON, sending request to turn it OFF.")
-            # Create a copy and modify it for the request
+            print(f"Alarm '{alert_handle}' is ON, turning OFF...")
             proposed_state = deepcopy(alert_state_container)
             proposed_state.Presence = AlertSignalPresence.OFF
-            consumer.set_service_client.set_alert_state(operation_handle="temperature_alert_control",
-                                                        proposed_alert_state=proposed_state)
+            consumer.set_service_client.set_alert_state(
+                operation_handle=operation_handle,
+                proposed_alert_state=proposed_state
+            )
         else:
-            print("There is no active alarm to turn OFF.")
+            print(f"No active alarm for '{alert_handle}'.")
     except KeyError:
-        print("Could not find 'al_signal_temperature' in MDIB. Is the provider correct?")
+        print(f"Alert handle '{alert_handle}' not found in MDIB.")
     except Exception as e:
-        print(f"An error occurred in alarm_control: {e}")
-
+        print(f"alarm_control error for '{alert_handle}': {e}")
 
 def button_pressed_worker(state: SharedState):
-    """This function runs in a separate thread and handles key presses."""
+    def with_consumer(action_name, fn):
+        c = state.consumer
+        if not c:
+            print(f"{action_name}: no active consumer connection.")
+            return
+        fn(c)
 
-    def handle_space_press(_):
-        # Directly access the shared consumer object
-        current_consumer = state.consumer
-        if current_consumer:
-            print("Space pressed, attempting to control alarm...")
-            alarm_control(current_consumer)
-        else:
-            print("Space pressed, but no active consumer connection.")
+    # Map keys to actions
+    def temp_action(c):
+        alarm_control(c, "al_signal_temperature", "temperature_alert_control")
 
-    keyboard.on_press_key("space", handle_space_press)
-    print("Keyboard listener started. Press 'space' to silence alarm, 'esc' to exit.")
+    def humidity_action(c):
+        alarm_control(c, "al_signal_humidity", "humidity_alert_control")
+
+    # Register hotkeys
+    keyboard.add_hotkey("t", lambda: with_consumer("Temp", temp_action))
+    keyboard.add_hotkey("h", lambda: with_consumer("Humidity", humidity_action))
+
+    print("Keyboard: [t]=Temperature, [h]=Humidity, [esc]=exit")
     keyboard.wait("esc")
     print("Keyboard listener stopped.")
 
