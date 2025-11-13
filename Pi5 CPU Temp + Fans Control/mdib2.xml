@@ -29,10 +29,12 @@
                             <pm:ModifiableData>ActivationState</pm:ModifiableData>
                             <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
                         </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="temperature_threshold_control" OperationTarget="temperature" Retriggerable="true">
+                        </pm:Operation>
                     </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel_1">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temperature" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
-                            <pm:Unit Code="code"></pm:Unit>
+                            <pm:Unit Code="°"></pm:Unit>
                         </pm:Metric>
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="pressure" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="code"></pm:Unit>
@@ -61,7 +63,7 @@
                     </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel_2">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="humidity" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
-                            <pm:Unit Code="code"></pm:Unit>
+                            <pm:Unit Code="%"></pm:Unit>
                         </pm:Metric>
                     </pm:Channel>
                 </pm:Vmd>
@@ -79,6 +81,7 @@
 
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="temperature_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="temperature_threshold_control" OperatingMode="En" />
             
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
                 <pm:MetricValue Value="0">
@@ -95,7 +98,7 @@
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
-                <pm:PhysiologicalRange Lower="30" Upper="35"></pm:PhysiologicalRange>
+                <pm:PhysiologicalRange Lower="45" Upper="47"></pm:PhysiologicalRange>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="pressure" >
                 <pm:MetricValue Value="0">

@@ -146,8 +146,8 @@ def temp_alarm_eveluation(provider, value, timeout):
                     sig_state.Presence = AlertSignalPresence.ON
             if(value < lowTempThreshold):
                 background(51, 153, 255)
+                sound(1,420,0.5)
             else:
-
                 background(130,0,0)      
                 if(provider.mdib.entities.by_handle("al_signal_temperature").state.Presence == AlertSignalPresence.ON):
                     sound(1,420,0.5)        
@@ -189,6 +189,7 @@ def hum_alarm_eveluation(provider, value, timeout):
                     sig_state.Presence = AlertSignalPresence.ON
             if(value < lowHumThreshold):
                 background(204,153,102)
+                sound(1,640,0.5)  
             else:
                 background(51,102,204)
                 if(provider.mdib.entities.by_handle("al_signal_humidity").state.Presence == AlertSignalPresence.ON):
@@ -297,6 +298,7 @@ if __name__ == '__main__':
                            device_mdib_container=mdib,
                            specific_components=components)
 
+
     # Discovery start
     discovery.start()
 
@@ -317,6 +319,10 @@ if __name__ == '__main__':
     while True:
         t = time.time()
         sense.clear()
+        print("Temp Low = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower))
+        print("Temp High = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper))
+        print("Hum Low = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower))
+        print("Hum High = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper))
         
         if(provider.requests != []):
             temp = provider.find_string_in_request(provider.requests[0], "temperature_alert_control")
@@ -334,6 +340,7 @@ if __name__ == '__main__':
 
         update_humidity(provider, Decimal(humidity))
     
+
         update_temperature(provider, Decimal(temperature))
         metrics_info(provider)
 
@@ -344,7 +351,7 @@ if __name__ == '__main__':
            t_show(255, 255, 0)
            show_number(int(temperature+0.5), 255, 165, 40)
            if(REQUEST["temperature"] == True):
-               if(t - TIME_T < 7):
+               if(t - TIME_T < 3):
                 temp_alarm_eveluation(provider, temperature, True)
                 time.sleep(1)
                 continue
@@ -360,7 +367,7 @@ if __name__ == '__main__':
            h_show(255, 255, 0)
            show_number(int(humidity+0.5), 255, 100, 40)
            if(REQUEST["humidity"] == True):
-               if(t - TIME_H < 7):
+               if(t - TIME_H < 6):
                 hum_alarm_eveluation(provider, humidity, True)
                 time.sleep(1)
                 continue
@@ -370,7 +377,6 @@ if __name__ == '__main__':
                 TIME_H = 0
                 time.sleep(1)
                 continue
-                    
            hum_alarm_eveluation(provider, humidity, False)  
 
         time.sleep(1) 
