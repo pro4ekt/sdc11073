@@ -45,6 +45,7 @@ OFFSET_LEFT = 1
 OFFSET_TOP = 3
 REQUEST = {"temperature":False, "humidity":False}
 TIME_T = 0
+TIME_H = 0
 
 NUMS =[1,1,1,1,0,1,1,0,1,1,0,1,1,1,1,  # 0
        0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,  # 1
@@ -57,12 +58,11 @@ NUMS =[1,1,1,1,0,1,1,0,1,1,0,1,1,1,1,  # 0
        1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,  # 8
        1,1,1,1,0,1,1,1,1,0,0,1,0,0,1]  # 9
 
-def sound(duration,frequncy):
+def sound(duration,frequncy, amplitude=1):
     sample_rate = 44100
-
     t = np.linspace(0,duration,int(sample_rate*duration), endpoint=False)
 
-    wave = 0.1 * np.sin(2*np.pi*frequncy*t)
+    wave = amplitude * np.sin(2*np.pi*frequncy*t)
 
     sd.play(wave,sample_rate)
     sd.wait()
@@ -147,9 +147,10 @@ def temp_alarm_eveluation(provider, value, timeout):
             if(value < lowTempThreshold):
                 background(51, 153, 255)
             else:
+
                 background(130,0,0)      
                 if(provider.mdib.entities.by_handle("al_signal_temperature").state.Presence == AlertSignalPresence.ON):
-                    sound(1,420)        
+                    sound(1,420,0.5)        
     else:
        background(51, 204, 51)
     """
@@ -172,7 +173,7 @@ def temp_alarm_eveluation(provider, value, timeout):
                 sig_state.Presence = AlertSignalPresence.OF
     """
 
-def hum_alarm_eveluaton(provider, value):
+def hum_alarm_eveluation(provider, value, timeout):
 
     lowHumThreshold= provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
     highHumThreshold= provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
@@ -182,13 +183,16 @@ def hum_alarm_eveluaton(provider, value):
                 cond_state = tr.get_state("al_condition_humidity")
                 cond_state.Presence = True
                 sig_state = tr.get_state("al_signal_humidity")
-                sig_state.Presence = AlertSignalPresence.ON
+                if(timeout):
+                    sig_state.Presence = AlertSignalPresence.OFF
+                else:
+                    sig_state.Presence = AlertSignalPresence.ON
             if(value < lowHumThreshold):
                 background(204,153,102)
             else:
                 background(51,102,204)
                 if(provider.mdib.entities.by_handle("al_signal_humidity").state.Presence == AlertSignalPresence.ON):
-                    sound(1,440)               
+                    sound(1,640,0.5)               
     else:
        background(51,204,51)
 
@@ -315,10 +319,14 @@ if __name__ == '__main__':
         sense.clear()
         
         if(provider.requests != []):
-            #print(provider.requests[0].raw_data)
-            #provider.find_string_in_request(provider.requests[0], "temperature_alert_control")
-            REQUEST["temperature"] = True
-            TIME_T = time.time()
+            temp = provider.find_string_in_request(provider.requests[0], "temperature_alert_control")
+            hum = provider.find_string_in_request(provider.requests[0], "humidity_alert_control")
+            if(hum):
+                REQUEST["humidity"] = True
+                TIME_H = t
+            if(temp):
+                REQUEST["temperature"] = True
+                TIME_T = t
             provider.requests.pop(0)
 
         humidity = sense.humidity
@@ -336,7 +344,7 @@ if __name__ == '__main__':
            t_show(255, 255, 0)
            show_number(int(temperature+0.5), 255, 165, 40)
            if(REQUEST["temperature"] == True):
-               if(t - TIME_T < 3):
+               if(t - TIME_T < 7):
                 temp_alarm_eveluation(provider, temperature, True)
                 time.sleep(1)
                 continue
@@ -351,6 +359,18 @@ if __name__ == '__main__':
         else:
            h_show(255, 255, 0)
            show_number(int(humidity+0.5), 255, 100, 40)
-           hum_alarm_eveluaton(provider, humidity)
+           if(REQUEST["humidity"] == True):
+               if(t - TIME_H < 7):
+                hum_alarm_eveluation(provider, humidity, True)
+                time.sleep(1)
+                continue
+               else:
+                hum_alarm_eveluation(provider, humidity, False)
+                REQUEST["humidity"] = False
+                TIME_H = 0
+                time.sleep(1)
+                continue
+                    
+           hum_alarm_eveluation(provider, humidity, False)  
 
         time.sleep(1) 

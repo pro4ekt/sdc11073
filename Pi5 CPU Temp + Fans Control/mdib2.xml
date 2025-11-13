@@ -89,7 +89,7 @@
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
-                <pm:PhysiologicalRange Lower="18" Upper="200"></pm:PhysiologicalRange>
+                <pm:PhysiologicalRange Lower="18" Upper="20"></pm:PhysiologicalRange>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temperature" >
                 <pm:MetricValue Value="0">
