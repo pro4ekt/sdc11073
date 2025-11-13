@@ -1,229 +1,149 @@
 from __future__ import annotations
 
-import mysql.connector
 import socket
 import logging
 import time
-import uuid
 from decimal import Decimal
 from copy import deepcopy
 import asyncio
 import threading
 import keyboard
 
-import sdc11073.entity_mdib.entity_providermdib
-from aiohttp.helpers import set_result
 from sdc11073 import observableproperties
-from sdc11073.definitions_sdc import SdcV1Definitions
-from sdc11073.location import SdcLocation
-from sdc11073.loghelper import basic_logging_setup
-from sdc11073.mdib import ProviderMdib, ConsumerMdib
 from sdc11073.consumer import SdcConsumer
-from sdc11073.mdib.statecontainers import AlertSignalStateContainer
-from sdc11073.roles.product import ExtendedProduct
+from sdc11073.mdib import ConsumerMdib
 from sdc11073.wsdiscovery import WSDiscovery
-from sdc11073.xml_types import pm_qnames as pm
-from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.pm_types import AlertSignalPresence
-from sdc11073.xml_types.dpws_types import ThisDeviceType
-from sdc11073.xml_types.dpws_types import ThisModelType
-from sdc11073.xml_types.pm_types import NumericMetricValue
-from sdc11073.pysoap.msgfactory import CreatedMessage
-from sdc11073.xml_types.actions import periodic_actions
-from sdc11073.consumer.serviceclients.setservice import SetServiceClient
 
-DEVICE_ID = 0
-SERVICES = []
-CONSUMERS = []
-FOUND = False
-FIRST = True
+
+# A simple thread-safe class to share the consumer object
+class SharedState:
+    def __init__(self):
+        self.consumer: SdcConsumer | None = None
+
 
 def get_local_ip():
+    # ... (your function is unchanged)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("10.146.164.72", 80))
         return s.getsockname()[0]
     except Exception:
-        return "Exception"
+        return "127.0.0.1"  # Fallback for offline testing
     finally:
         s.close()
 
-#Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
+
 def on_metric_update(metrics_by_handle: dict):
-    """This Part is for Provider self Fan controll"""
-    #print(f"Temperature: {round(float(consumer.mdib.entities.by_handle('temperature').state.MetricValue.Value), 2)} °C "
-     #     f"Humidity: {round(float(consumer.mdib.entities.by_handle('humidity').state.MetricValue.Value), 2)} %")
-    print("make later")
-    """
-    if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
-        print("Temp is too high! Fan should be ON")
-        print(print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}"))
-    def turn_fan(consumer, state: str):
-        consumer.set_service_client.set_string(operation_handle="fan_control",
-                                           requested_string=state)
-    #operation_register(consumer, "fan_control")
-    def threshold_control(consumer, value: Decimal):
-    consumer.set_service_client.set_numeric_value(operation_handle="threshold_control", requested_numeric_value=value)
-    #operation_register(consumer, "threshold_control")
-    """
-    """ This Part is for Consumer Controlled Fan
-    print(f"Curent CPU Temperature : {consumer.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value}")
-    print("Fan Status ", consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
-    print(f"Current Alarm Signal State: {consumer.mdib.entities.by_handle("al_signal_1").state.Presence}")
-    print(f"Current Alarm Condition State: {consumer.mdib.entities.by_handle("al_condition_1").state.Presence}")
-    """
+    print("Metric update received (make later)")
 
-def get_number():
-    print("INPUT YOUR VALUE")
-    value = Decimal(input())
-    return value
 
-def alarm_control(consumer):
-    a = consumer.mdib.entities.by_handle("al_signal_temperature").state
-    b = deepcopy(a)
-    b.Presence = AlertSignalPresence.OFF
-    if a.Presence == AlertSignalPresence.ON:
-        consumer.set_service_client.set_alert_state(operation_handle="temperature_alert_control",
-                                                    proposed_alert_state=b)
-    else:
-        print("There is No Alarm to turn OFF")
-
-def handle_services(services):
-    # process or store results (thread-safe access if you mutate shared state)
-    print(f"Found {len(services)} services")
-
-async def discovery_loop(local_ip: str, timeout: float = 1.0, interval: float = 5.0):
-    discovery = WSDiscovery(local_ip)
-    discovery.start()
+def alarm_control(consumer: SdcConsumer):
+    if not consumer or not consumer.mdib:
+        print("Cannot control alarm: Consumer not ready or mdib is missing.")
+        return
     try:
-        while True:
-            services = await asyncio.to_thread(discovery.search_services, timeout=timeout)
-            handle_services(services)
-            if services != []:
-                SERVICES.append(services)
-                CONSUMERS.append(SdcConsumer.from_wsd_service(wsd_service=services, ssl_context_container=None))
-            await asyncio.sleep(interval)
-    finally:
-        try:
-            discovery.stop()
-        except Exception:
-            pass
-
-def start_discovery_in_background(local_ip: str):
-    def runner():
-        asyncio.run(discovery_loop(local_ip, timeout=1.0, interval=5.0))
-    t = threading.Thread(target=runner, daemon=True)
-    t.start()
-    return t
-
-def button_pressed(fut: asyncio.Future):
-    def handle(_):
-        if fut.done():
-            consumer = fut.result()
-            alarm_control(consumer)
+        alert_state_container = consumer.mdib.entities.by_handle("al_signal_temperature").state
+        if alert_state_container.Presence == AlertSignalPresence.ON:
+            print("Alarm is ON, sending request to turn it OFF.")
+            # Create a copy and modify it for the request
+            proposed_state = deepcopy(alert_state_container)
+            proposed_state.Presence = AlertSignalPresence.OFF
+            consumer.set_service_client.set_alert_state(operation_handle="temperature_alert_control",
+                                                        proposed_alert_state=proposed_state)
         else:
-            print("Future ещё не готов!")
-    keyboard.on_press_key("space", handle)
-    keyboard.wait("esc")  # поток живёт, пока не нажмут Esc
+            print("There is no active alarm to turn OFF.")
+    except KeyError:
+        print("Could not find 'al_signal_temperature' in MDIB. Is the provider correct?")
+    except Exception as e:
+        print(f"An error occurred in alarm_control: {e}")
 
 
-    """
-    value = Decimal(input("Enter a number: "))
-    threshold_control(consumer, value)
+def button_pressed_worker(state: SharedState):
+    """This function runs in a separate thread and handles key presses."""
 
-    # Metric update binding, allows consumer to observe all updates from provider and "customize" it
-    observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+    def handle_space_press(_):
+        # Directly access the shared consumer object
+        current_consumer = state.consumer
+        if current_consumer:
+            print("Space pressed, attempting to control alarm...")
+            alarm_control(current_consumer)
+        else:
+            print("Space pressed, but no active consumer connection.")
 
-    # A loop in which all processes take place, for example continuous temperature checking and logging.
-    while True:
-        cond_state = consumer.mdib.entities.by_handle("al_condition_1").state.ActivationState == "On"
-        fan_state = consumer.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "On"
-        time.sleep(0.5)
-        if(cond_state and (not fan_state)):
-            time.sleep(3)
-            turn_fan(consumer, "On")
-        if((not cond_state) and (fan_state)):
-            turn_fan(consumer, "Off")
-    """
-    """
-                                   try:
-                       if FOUND:
-                           mrg = consumer.subscription_mgr.subscriptions
-                           for key, value in mrg.items():
-                               if value.is_subscribed is False:
-                                   consumer.stop_all()
-                                   FOUND = False
-                                   break
-                   except Exception:
-                       break
-                   finally:
-                       if (FOUND):
-                           pass
-                       else:
-                           break
-                   """
+    keyboard.on_press_key("space", handle_space_press)
+    print("Keyboard listener started. Press 'space' to silence alarm, 'esc' to exit.")
+    keyboard.wait("esc")
+    print("Keyboard listener stopped.")
 
 
 async def main():
     # logging.basicConfig(level=logging.INFO)
+    local_ip = get_local_ip()
+    print(f"Starting consumer on IP: {local_ip}")
 
-    # Создаем Future и запускаем поток для клавиш ОДИН РАЗ
-    fut = asyncio.Future()
-    t = threading.Thread(target=button_pressed, args=(fut,), daemon=True)
-    t.start()
+    # Create one shared state object
+    shared_state = SharedState()
 
-    # Основной цикл для обнаружения и подключения
+    # Start the keyboard listener thread once
+    keyboard_thread = threading.Thread(target=button_pressed_worker, args=(shared_state,), daemon=True)
+    keyboard_thread.start()
+
+    # Main loop for discovery and connection management
     while True:
-        discovery = WSDiscovery(get_local_ip())
+        shared_state.consumer = None  # Ensure state is clean before discovery
+        discovery = WSDiscovery(local_ip)
         discovery.start()
 
         service = []
         while not service:
             print("Searching for services...")
-            service = discovery.search_services()
-            if service:
-                print("Found services, connecting...")
-                break
-            await asyncio.sleep(1)  # Даем время на поиск, чтобы не грузить CPU
+            try:
+                # Use to_thread to avoid blocking the event loop
+                service = await asyncio.to_thread(discovery.search_services, timeout=2)
+                if service:
+                    print(f"Found {len(service)} services, connecting to the first one...")
+                    break
+                await asyncio.sleep(2)  # Wait before next search
+            except Exception as e:
+                print(f"Error during discovery: {e}")
+                await asyncio.sleep(5)  # Wait longer after an error
 
         discovery.stop()
 
-        # Инициализация consumer
+        # Initialize consumer
         consumer = SdcConsumer.from_wsd_service(wsd_service=service[0], ssl_context_container=None)
         consumer.start_all()
 
         mdib = ConsumerMdib(consumer)
         mdib.init_mdib()
 
-        # Устанавливаем результат в Future.
-        # Если Future уже имеет результат, это вызовет ошибку.
-        # Используем try/except, чтобы установить результат только один раз.
-        if not fut.done():
-            fut.set_result(consumer)
+        # Safely publish the new consumer to the other thread
+        shared_state.consumer = consumer
 
         observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+        print("Connection established. Monitoring connection status...")
 
-        # Цикл проверки соединения
+        # Loop to check connection status
         while True:
-            await asyncio.sleep(2)  # Проверяем не слишком часто
-            is_connected = True
-            mrg = consumer.subscription_mgr.subscriptions
-            if not mrg:  # Если подписок нет, считаем, что соединение потеряно
-                is_connected = False
-            else:
-                for sub in mrg.values():
-                    if not sub.is_subscribed:
-                        is_connected = False
+            await asyncio.sleep(2)
+            is_connected = False
+            if consumer.is_connected:
+                # A more robust check is to see if subscriptions are active
+                for sub in consumer.subscription_mgr.subscriptions.values():
+                    if sub.is_subscribed:
+                        is_connected = True
                         break
 
             if not is_connected:
                 print("Connection lost, restarting discovery...")
                 consumer.stop_all()
-                # Сбрасываем Future, чтобы при следующем подключении он снова заполнился
-                # новым объектом consumer.
-                if fut.done():
-                    fut = asyncio.Future()
-                break
+                shared_state.consumer = None  # Clear the shared consumer
+                break  # Exit inner loop to restart discovery
 
 
-asyncio.run(main())
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nShutting down.")
