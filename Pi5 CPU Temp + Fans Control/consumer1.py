@@ -50,9 +50,9 @@ def get_local_ip():
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     """This Part is for Provider self Fan controll"""
-    print(f"Temperature: {round(float(consumer.mdib.entities.by_handle('temperature').state.MetricValue.Value), 2)} °C "
-          f"Humidity: {round(float(consumer.mdib.entities.by_handle('humidity').state.MetricValue.Value), 2)} %")
-
+    #print(f"Temperature: {round(float(consumer.mdib.entities.by_handle('temperature').state.MetricValue.Value), 2)} °C "
+     #     f"Humidity: {round(float(consumer.mdib.entities.by_handle('humidity').state.MetricValue.Value), 2)} %")
+    print("make later")
     """
     if(consumer.mdib.entities.by_handle("al_condition_1").state.Presence):
         print("Temp is too high! Fan should be ON")
@@ -111,22 +111,23 @@ def start_discovery_in_background(local_ip: str):
     t.start()
     return t
 
-def test():
-    print("ABOBA")
+def button_pressed(fut: asyncio.Future):
+    def handle(_):
+        if fut.done():
+            consumer = fut.result()
+            alarm_control(consumer)
+        else:
+            print("Future ещё не готов!")
+    keyboard.on_press_key("space", handle)
+    keyboard.wait("esc")  # поток живёт, пока не нажмут Esc
 
-def button_pressed(future: asyncio.Future):
-    try:
-        keyboard.on_press_key("space", lambda _: alarm_control(consumer))
-    except Exception:
-        print("Ты на прЫколе?")
-    finally:
-        pass
-
-if __name__ == '__main__':
+async def main():
     #logging.basicConfig(level=logging.INFO)
     #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
     # Asynchronous discovery only; everything else remains synchronous
-    t = threading.Thread(target=button_pressed, daemon=True)
+    fut = asyncio.Future()
+
+    t = threading.Thread(target=button_pressed, args=(fut, ) ,daemon=True)
     t.start()
 
     while True:
@@ -135,6 +136,7 @@ if __name__ == '__main__':
 
         service = discovery.search_services()
 
+        global FOUND
         while not FOUND:
             service = discovery.search_services()
             print("Searching for services...")
@@ -154,6 +156,8 @@ if __name__ == '__main__':
         mdib = ConsumerMdib(consumer)
         # And initialize it
         mdib.init_mdib()
+
+        fut.set_result(consumer)
 
         observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
@@ -198,3 +202,5 @@ if __name__ == '__main__':
         if((not cond_state) and (fan_state)):
             turn_fan(consumer, "Off")
     """
+
+asyncio.run(main())

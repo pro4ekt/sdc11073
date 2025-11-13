@@ -32,6 +32,7 @@ from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
+from myProvider.myproviderimpl import MySdcProvider
 
 #from sense_hat import SenseHat
 
@@ -69,7 +70,7 @@ if __name__ == '__main__':
     discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi or WLAN if on windows or wlan0 if Linux
 
     # Assambling everything which was created above to implement SDC Provider object
-    provider = SdcProvider(ws_discovery=discovery,
+    provider = MySdcProvider(ws_discovery=discovery,
                            epr=my_uuid,
                            this_model=model,
                            this_device=device,
