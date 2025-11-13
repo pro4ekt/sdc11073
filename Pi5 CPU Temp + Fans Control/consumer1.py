@@ -36,6 +36,7 @@ DEVICE_ID = 0
 SERVICES = []
 CONSUMERS = []
 FOUND = False
+FIRST = True
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -81,7 +82,11 @@ def alarm_control(consumer):
     a = consumer.mdib.entities.by_handle("al_signal_temperature").state
     b = deepcopy(a)
     b.Presence = AlertSignalPresence.OFF
-    consumer.set_service_client.set_alert_state(operation_handle="temperature_alert_control", proposed_alert_state=b)
+    if a.Presence == AlertSignalPresence.ON:
+        consumer.set_service_client.set_alert_state(operation_handle="temperature_alert_control",
+                                                    proposed_alert_state=b)
+    else:
+        print("There is No Alarm to turn OFF")
 
 def handle_services(services):
     # process or store results (thread-safe access if you mutate shared state)
@@ -125,65 +130,57 @@ async def main():
     #logging.basicConfig(level=logging.INFO)
     #Create and start WS-Discovery therefore we can find services(provider(s)) in the network
     # Asynchronous discovery only; everything else remains synchronous
-    fut = asyncio.Future()
-
-    t = threading.Thread(target=button_pressed, args=(fut, ) ,daemon=True)
-    t.start()
-
     while True:
-        discovery = WSDiscovery(get_local_ip())
-        discovery.start()
-
-        service = discovery.search_services()
-
-        global FOUND
-        while not FOUND:
-            service = discovery.search_services()
-            print("Searching for services...")
-            if (service != []):
-                print("Found services, connecting to the first one...")
-                FOUND = True
-                break
-
-        # Initialization consumer from the service we found
-        consumer = SdcConsumer.from_wsd_service(wsd_service=service[0], ssl_context_container=None)
-
-        time.sleep(1)
-        # Start background threads, read metadata from device, instantiate detected port type clients and subscribe
-        consumer.start_all()
-
-        # Copy mdib from provider to consumer
-        mdib = ConsumerMdib(consumer)
-        # And initialize it
-        mdib.init_mdib()
-
-        fut.set_result(consumer)
-
-        observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+        fut = asyncio.Future()
+        global FIRST
+        if (FIRST):
+            t = threading.Thread(target=button_pressed, args=(fut,), daemon=True)
+            t.start()
+            FIRST = False
 
         while True:
-            try:
-                if FOUND:
-                    a = consumer.mdib.entities.by_handle("al_signal_temperature").state
-                    b = deepcopy(a)
-                    b.Presence = AlertSignalPresence.OFF
+            discovery = WSDiscovery(get_local_ip())
+            discovery.start()
 
-                    if (a.Presence == AlertSignalPresence.ON):
-                        alarm_control(consumer, b, "temperature_alert_control")
+            service = discovery.search_services()
 
-                mrg = consumer.subscription_mgr.subscriptions
-                for key, value in mrg.items():
-                    if value.is_subscribed is False:
-                        consumer.stop_all()
-                        FOUND = False
-                        break
-            except Exception:
-                break
-            finally:
-                if(FOUND):
-                    pass
-                else:
+            global FOUND
+            while not FOUND:
+                service = discovery.search_services()
+                print("Searching for services...")
+                if (service != []):
+                    print("Found services, connecting to the first one...")
+                    FOUND = True
                     break
+
+            # Initialization consumer from the service we found
+            consumer = SdcConsumer.from_wsd_service(wsd_service=service[0], ssl_context_container=None)
+
+            time.sleep(1)
+            # Start background threads, read metadata from device, instantiate detected port type clients and subscribe
+            consumer.start_all()
+
+            # Copy mdib from provider to consumer
+            mdib = ConsumerMdib(consumer)
+            # And initialize it
+            mdib.init_mdib()
+
+            fut.set_result(consumer)
+
+            observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+
+            while True:
+                if FOUND:
+                    marker = True
+                    mrg = consumer.subscription_mgr.subscriptions
+                    for key, value in mrg.items():
+                        if value.is_subscribed is False:
+                            consumer.stop_all()
+                            FOUND = False
+                            marker = False
+                            break
+                    if(not marker):
+                        break
     """
     value = Decimal(input("Enter a number: "))
     threshold_control(consumer, value)
@@ -202,5 +199,22 @@ async def main():
         if((not cond_state) and (fan_state)):
             turn_fan(consumer, "Off")
     """
+    """
+                                   try:
+                       if FOUND:
+                           mrg = consumer.subscription_mgr.subscriptions
+                           for key, value in mrg.items():
+                               if value.is_subscribed is False:
+                                   consumer.stop_all()
+                                   FOUND = False
+                                   break
+                   except Exception:
+                       break
+                   finally:
+                       if (FOUND):
+                           pass
+                       else:
+                           break
+                   """
 
 asyncio.run(main())
