@@ -2,6 +2,8 @@ from sense_hat import SenseHat
 import subprocess
 import threading
 import time
+import sounddevice as sd
+
 sense = SenseHat()
 flag = False
 

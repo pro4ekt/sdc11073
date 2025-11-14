@@ -3,9 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 
-import mysql.connector
-import sqlite3
 import os
+import mysql
 import platform
 import logging
 import time
@@ -46,6 +45,7 @@ OFFSET_TOP = 3
 REQUEST = {"temperature":False, "humidity":False}
 TIME_T = 0
 TIME_H = 0
+AMPLITUDE = 1
 
 NUMS =[1,1,1,1,0,1,1,0,1,1,0,1,1,1,1,  # 0
        0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,  # 1
@@ -146,11 +146,11 @@ def temp_alarm_eveluation(provider, value, timeout):
                     sig_state.Presence = AlertSignalPresence.ON
             if(value < lowTempThreshold):
                 background(51, 153, 255)
-                sound(1,420,0.5)
+                sound(1,420,AMPLITUDE)
             else:
                 background(130,0,0)      
                 if(provider.mdib.entities.by_handle("al_signal_temperature").state.Presence == AlertSignalPresence.ON):
-                    sound(1,420,0.5)        
+                    sound(1,420,AMPLITUDE)        
     else:
        background(51, 204, 51)
     """
@@ -189,11 +189,11 @@ def hum_alarm_eveluation(provider, value, timeout):
                     sig_state.Presence = AlertSignalPresence.ON
             if(value < lowHumThreshold):
                 background(204,153,102)
-                sound(1,640,0.5)  
+                sound(1,640,AMPLITUDE)  
             else:
                 background(51,102,204)
                 if(provider.mdib.entities.by_handle("al_signal_humidity").state.Presence == AlertSignalPresence.ON):
-                    sound(1,640,0.5)               
+                    sound(1,640,AMPLITUDE)               
     else:
        background(51,204,51)
 
@@ -206,9 +206,17 @@ def joystick():
     while True:
         events = sense.stick.get_events()
         for e in events:
-         if e.action == "pressed":
+         global AMPLITUDE
+         if e.action == "pressed" and e.direction == "middle":
              show_temp = not show_temp
-             start = time.time()
+         if e.action == "pressed" and e.direction == "left":
+             AMPLITUDE = AMPLITUDE - 0.3
+             if(AMPLITUDE < 0):
+                 AMPLITUDE = 0
+                 print("Min volume reached")
+         if e.action == "pressed" and e.direction == "right":
+             AMPLITUDE = AMPLITUDE + 0.3
+
          """
          if e.action == "held":
              duration = time.time() - start
