@@ -1,4 +1,5 @@
 from sense_hat import SenseHat
+import mysql
 import subprocess
 import threading
 import time
@@ -21,6 +22,7 @@ def joystick():
                 try:
                     duration = float(time.time()) - float(pressed_time)
                     if(duration > 1):
+
                         return
                     pressed_time = None
                 except Exception:

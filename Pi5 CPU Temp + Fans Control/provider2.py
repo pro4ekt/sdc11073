@@ -109,6 +109,43 @@ def h_show(r, g, b):
     sense.set_pixel(2,1,r,g,b)
     sense.set_pixel(2,0,r,g,b)
 
+def show_celsius_display(c_color, symbol_color=(255, 165, 40)):
+    """
+    Displays a smaller 'C' and a larger degree symbol with a hole at the same time.
+    """
+    O = (0, 0, 0)
+    C = c_color
+    S = symbol_color
+
+    pixels = [
+        O, O, O, O, S, S, S, O,
+        O, O, O, O, S, O, S, O,
+        C, C, C, O, S, S, S, O,
+        C, O, O, O, O, O, O, O,
+        C, O, O, O, O, O, O, O,
+        C, O, O, O, O, O, O, O,
+        C, C, C, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+    ]
+    sense.set_pixels(pixels)
+
+def show_humidity_display(h_color, symbol_color=(255, 100, 40)):
+    O = (0, 0, 0) 
+    H = h_color
+    S = symbol_color
+
+    pixels = [
+        O, O, O, O, O, O, O, O,
+        O, O, O, S, S, O, O, S,
+        H, O, H, S, S, O, S, O,
+        H, O, H, O, O, S, O, O,
+        H, H, H, O, S, O, S, S,
+        H, O, H, S, O, O, S, S,
+        H, O, H, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+    ]
+    sense.set_pixels(pixels)
+
 def update_humidity(provider, value: Decimal):
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state("humidity")
@@ -306,7 +343,6 @@ if __name__ == '__main__':
                            device_mdib_container=mdib,
                            specific_components=components)
 
-
     # Discovery start
     discovery.start()
 
@@ -323,6 +359,8 @@ if __name__ == '__main__':
         id.MetricValue.Value = Decimal(DEVICE_ID) 
 
     #first_start(provider)
+    share_state_temp = deepcopy(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0])
+    share_state_hum = deepcopy(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0])
 
     while True:
         t = time.time()
@@ -333,14 +371,41 @@ if __name__ == '__main__':
         print("Hum High = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper))
         
         if(provider.requests != []):
+            print(provider.requests[0].raw_data)
             temp = provider.find_string_in_request(provider.requests[0], "temperature_alert_control")
             hum = provider.find_string_in_request(provider.requests[0], "humidity_alert_control")
+            temp_threshold = provider.find_string_in_request(provider.requests[0], "temperature_threshold_control")
+            hum_threshold = provider.find_string_in_request(provider.requests[0], "humidity_threshold_control")
+            low_temp = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower == share_state_temp.Lower
+            high_temp = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper == share_state_temp.Upper
+            low_hum = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower == share_state_hum.Lower
+            high_hum = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper == share_state_hum.Upper
             if(hum):
                 REQUEST["humidity"] = True
                 TIME_H = t
-            if(temp):
+            elif(temp):
                 REQUEST["temperature"] = True
                 TIME_T = t
+            elif(temp_threshold):
+                show_celsius_display((255, 165, 40))
+                if(not low_temp):
+                    share_state_temp.Lower = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
+                    background(51, 153, 255)
+                elif(not high_temp):
+                    share_state_temp.Upper = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+                    background(130,0,0)
+                time.sleep(2)
+            elif(hum_threshold):
+                show_humidity_display((255, 100, 40))
+                if(not low_hum):
+                    share_state_hum.Lower = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
+                    background(204,153,102)
+                elif(not high_hum):
+                    share_state_hum.Upper = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
+                    background(51,102,204)
+                time.sleep(1)
+                sense.clear()
+                time.sleep(0.5)
             provider.requests.pop(0)
 
         humidity = sense.humidity
@@ -361,7 +426,7 @@ if __name__ == '__main__':
            if(REQUEST["temperature"] == True):
                if(t - TIME_T < 3):
                 temp_alarm_eveluation(provider, temperature, True)
-                time.sleep(1)
+                time.sleep(5)
                 continue
                else:
                 temp_alarm_eveluation(provider, temperature, False)

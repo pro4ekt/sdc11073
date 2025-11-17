@@ -31,6 +31,8 @@
                         </pm:Operation>
                         <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="temperature_threshold_control" OperationTarget="temperature" Retriggerable="true">
                         </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="humidity_threshold_control" OperationTarget="humidity" Retriggerable="true">
+                        </pm:Operation>
                     </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel_1">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temperature" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
@@ -82,6 +84,7 @@
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="temperature_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="temperature_threshold_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="humidity_threshold_control" OperatingMode="En" />
             
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
                 <pm:MetricValue Value="0">
@@ -98,7 +101,7 @@
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
-                <pm:PhysiologicalRange Lower="30" Upper="35"></pm:PhysiologicalRange>
+                <pm:PhysiologicalRange Lower="30" Upper="40"></pm:PhysiologicalRange>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="pressure" >
                 <pm:MetricValue Value="0">
