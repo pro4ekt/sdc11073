@@ -56,6 +56,33 @@ NUMS = [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1,  # 0
         1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1]  # 9
 
 
+# --- Constants for Alarms ---
+ALARM_CONFIG = {
+    'temperature': {
+        'metric_handle': 'temperature',
+        'condition_handle': 'al_condition_temperature',
+        'signal_handle': 'al_signal_temperature',
+        'colors': {
+            'low': (51, 153, 255),
+            'high': (130, 0, 0),
+            'normal': (51, 204, 51),
+        },
+        'sound_freq': 420,
+    },
+    'humidity': {
+        'metric_handle': 'humidity',
+        'condition_handle': 'al_condition_humidity',
+        'signal_handle': 'al_signal_humidity',
+        'colors': {
+            'low': (204, 153, 102),
+            'high': (51, 102, 204),
+            'normal': (51, 204, 51),
+        },
+        'sound_freq': 640,
+    }
+}
+
+
 def sound(duration, frequncy, amplitude=1):
     sample_rate = 44100
     t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
@@ -176,71 +203,45 @@ def update_pressure(provider, value: Decimal):
     # observation_register(HUMIDITY_ID, value)
 
 
-def temp_alarm_eveluation(provider, value, timeout):
-    lowTempThreshold = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
-    highTempThreshold = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool):
+    """Generic alarm evaluation function."""
+    config = ALARM_CONFIG[metric_name]
+    metric_handle = config['metric_handle']
+    condition_handle = config['condition_handle']
+    signal_handle = config['signal_handle']
+    colors = config['colors']
+    sound_freq = config['sound_freq']
 
-    if ((value > highTempThreshold) or (value < lowTempThreshold)):
+    low_threshold = provider.mdib.entities.by_handle(metric_handle).state.PhysiologicalRange[0].Lower
+    high_threshold = provider.mdib.entities.by_handle(metric_handle).state.PhysiologicalRange[0].Upper
+
+    is_out_of_range = (value > high_threshold) or (value < low_threshold)
+
+    if is_out_of_range:
         with provider.mdib.alert_state_transaction() as tr:
-            cond_state = tr.get_state("al_condition_temperature")
+            cond_state = tr.get_state(condition_handle)
             cond_state.Presence = True
-            sig_state = tr.get_state("al_signal_temperature")
-            if (timeout):
-                sig_state.Presence = AlertSignalPresence.OFF
-            else:
-                sig_state.Presence = AlertSignalPresence.ON
-        if (value < lowTempThreshold):
-            background(51, 153, 255)
-            sound(1, 420, AMPLITUDE)
+            sig_state = tr.get_state(signal_handle)
+            sig_state.Presence = AlertSignalPresence.OFF if timeout else AlertSignalPresence.ON
+
+        if value < low_threshold:
+            background(*colors['low'])
         else:
-            background(130, 0, 0)
-            if (provider.mdib.entities.by_handle("al_signal_temperature").state.Presence == AlertSignalPresence.ON):
-                sound(1, 420, AMPLITUDE)
+            background(*colors['high'])
+
+        # Play sound only if the signal is ON
+        if provider.mdib.entities.by_handle(signal_handle).state.Presence == AlertSignalPresence.ON:
+            sound(1, sound_freq, AMPLITUDE)
     else:
-        background(51, 204, 51)
-    """
-    esli potom budy delt timeout
-    a = provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF
-    b = provider.mdib.entities.by_handle("al_condition").state.Presence == True
-
-    if a and (not b):
-        background(0,100,0)
-    if a and b:
-        background(0,0,150)
-    if (not a) and b:
-        background(150,0,0)
-
-    if(int(value) < lowTempThreshold):
-            with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
+        background(*colors['normal'])
+        # Optionally reset alert condition when back in normal range
+        with provider.mdib.alert_state_transaction() as tr:
+            cond_state = tr.get_state(condition_handle)
+            if cond_state.Presence:
                 cond_state.Presence = False
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.OF
-    """
-
-
-def hum_alarm_eveluation(provider, value, timeout):
-    lowHumThreshold = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
-    highHumThreshold = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
-
-    if ((value > highHumThreshold) or (value < lowHumThreshold)):
-        with provider.mdib.alert_state_transaction() as tr:
-            cond_state = tr.get_state("al_condition_humidity")
-            cond_state.Presence = True
-            sig_state = tr.get_state("al_signal_humidity")
-            if (timeout):
+            sig_state = tr.get_state(signal_handle)
+            if sig_state.Presence != AlertSignalPresence.OFF:
                 sig_state.Presence = AlertSignalPresence.OFF
-            else:
-                sig_state.Presence = AlertSignalPresence.ON
-        if (value < lowHumThreshold):
-            background(204, 153, 102)
-            sound(1, 640, AMPLITUDE)
-        else:
-            background(51, 102, 204)
-            if (provider.mdib.entities.by_handle("al_signal_humidity").state.Presence == AlertSignalPresence.ON):
-                sound(1, 640, AMPLITUDE)
-    else:
-        background(51, 204, 51)
 
 
 def metrics_info(provider):
@@ -398,32 +399,32 @@ async def main(provider):
             show_number(int(temperature + 0.5), 255, 165, 40)
             if (REQUEST["temperature"] == True):
                 if (t - TIME_T < 3):
-                    temp_alarm_eveluation(provider, temperature, True)
+                    evaluate_alarm(provider, 'temperature', temperature, True)
                     await asyncio.sleep(5)
                     continue
                 else:
-                    temp_alarm_eveluation(provider, temperature, False)
+                    evaluate_alarm(provider, 'temperature', temperature, False)
                     REQUEST["temperature"] = False
                     TIME_T = 0
                     await asyncio.sleep(1)
                     continue
 
-            temp_alarm_eveluation(provider, temperature, False)
+            evaluate_alarm(provider, 'temperature', temperature, False)
         else:
             h_show(255, 255, 0)
             show_number(int(humidity + 0.5), 255, 100, 40)
             if (REQUEST["humidity"] == True):
                 if (t - TIME_H < 6):
-                    hum_alarm_eveluation(provider, humidity, True)
+                    evaluate_alarm(provider, 'humidity', humidity, True)
                     await asyncio.sleep(1)
                     continue
                 else:
-                    hum_alarm_eveluation(provider, humidity, False)
+                    evaluate_alarm(provider, 'humidity', humidity, False)
                     REQUEST["humidity"] = False
                     TIME_H = 0
                     await asyncio.sleep(1)
                     continue
-            hum_alarm_eveluation(provider, humidity, False)
+            evaluate_alarm(provider, 'humidity', humidity, False)
 
         await asyncio.sleep(1)
 
