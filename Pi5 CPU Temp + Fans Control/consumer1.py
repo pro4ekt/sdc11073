@@ -81,7 +81,7 @@ def threshold_control(consumer, metric_handle: str, operation_handle: str, value
             proposed_metric_state.PhysiologicalRange[0].Upper = value
 
         consumer.set_service_client.set_metric_state(
-            operation_handle="temperature_threshold_control",
+            operation_handle=operation_handle,
             proposed_metric_states=[proposed_metric_state]
         )
     except KeyError:
