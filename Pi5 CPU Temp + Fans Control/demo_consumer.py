@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import socket
-import logging
-import time
-from decimal import Decimal
-from copy import deepcopy
 import asyncio
+import socket
 import threading
-import keyboard
+import tkinter as tk
+from collections import deque
+from copy import deepcopy
+from decimal import Decimal
+from queue import Queue, Empty
+from tkinter import ttk, scrolledtext
 
 from sdc11073 import observableproperties
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.wsdiscovery import WSDiscovery
-from sdc11073.xml_types.pm_types import AlertSignalPresence
-from sdc11073.xml_types.pm_types import MeasurementValidity
+from sdc11073.xml_types.pm_types import AlertSignalPresence, MeasurementValidity
 
 
 # A simple thread-safe class to share the consumer object
@@ -24,229 +24,240 @@ class SharedState:
 
 
 def get_local_ip():
-    # ... (your function is unchanged)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("10.146.164.72", 80))
-        return s.getsockname()[0]
+        # Doesn't have to be reachable
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
     except Exception:
-        return "127.0.0.1"  # Fallback for offline testing
+        ip = "127.0.0.1"
     finally:
         s.close()
+    return ip
 
-def on_metric_update(metrics_by_handle: dict):
-    """
-        for key,value in metrics_by_handle.items():
-        print(str(key) + " : " + str(round(value.MetricValue.Value,2)) + str(value.descriptor_container.Unit.Code))
-    """
 
-def alarm_control(consumer, alert_handle: str, operation_handle: str):
-    if not consumer or not consumer.mdib:
-        print("Cannot control alarm: consumer not ready.")
-        return
-    try:
-        alert_state_container = consumer.mdib.entities.by_handle(alert_handle).state
-        metric_state_container = consumer.mdib.entities.by_handle("temperature").state
+class SdcConsumerApp:
+    def __init__(self, root_tk: tk.Tk):
+        self.root = root_tk
+        self.root.title("SDC Consumer")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        if alert_state_container.Presence == AlertSignalPresence.ON:
-            print(f"Alarm '{alert_handle}' is ON, turning OFF...")
-            proposed_state = deepcopy(alert_state_container)
-            proposed_state.Presence = AlertSignalPresence.OFF
-            consumer.set_service_client.set_alert_state(
-                operation_handle=operation_handle,
-                proposed_alert_state=proposed_state
-            )
+        self.gui_queue = Queue()
+        self.shared_state = SharedState()
+        self.running = True
 
-        else:
-            print(f"No active alarm for '{alert_handle}'.")
-    except KeyError:
-        print(f"Alert handle '{alert_handle}' not found in MDIB.")
-    except Exception as e:
-        print(f"alarm_control error for '{alert_handle}': {e}")
+        # Keep a buffer of recent metric messages
+        self.metric_log = deque(maxlen=100)
 
-def threshold_control(consumer, metric_handle: str, operation_handle: str, value : Decimal = Decimal("999"), is_lower : bool = True, is_valid: bool = False):
-    if not consumer or not consumer.mdib:
-        print("Cannot control threshold: consumer not ready.")
-        return
-    try:
-        metric_state_container = consumer.mdib.entities.by_handle(metric_handle).state
+        self._init_ui()
 
-        proposed_metric_state = deepcopy(metric_state_container)
+        # Start the SDC logic in a separate thread
+        self.sdc_thread = threading.Thread(target=self._run_sdc_logic, daemon=True)
+        self.sdc_thread.start()
 
-        if value == Decimal("999"):
-            if is_valid:
-                # The error "got class str" means the library expects the enum object itself,
-                # not the string from .value. So we remove .value.
-                proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALIDATED_DATA
+        # Start the periodic GUI updater
+        self.process_queue()
 
-                consumer.set_service_client.set_metric_state(
-                    operation_handle=operation_handle,
-                    proposed_metric_states=[proposed_metric_state]
-                )
-                return
-            else:
-                proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.QUESTIONABLE
+    def _init_ui(self):
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
 
-                consumer.set_service_client.set_metric_state(
-                    operation_handle=operation_handle,
-                    proposed_metric_states=[proposed_metric_state]
-                )
-                return
+        # --- Metrics Display Frame ---
+        metrics_frame = ttk.LabelFrame(main_frame, text="Metric Updates", padding="10")
+        metrics_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_rowconfigure(0, weight=1)
 
-        if is_lower:
-            proposed_metric_state.PhysiologicalRange[0].Lower = value
-        else:
-            proposed_metric_state.PhysiologicalRange[0].Upper = value
+        self.metrics_text = scrolledtext.ScrolledText(metrics_frame, wrap=tk.WORD, state=tk.DISABLED, height=20, width=50)
+        self.metrics_text.grid(row=0, column=0, sticky="nsew")
+        metrics_frame.grid_rowconfigure(0, weight=1)
+        metrics_frame.grid_columnconfigure(0, weight=1)
 
-        consumer.set_service_client.set_metric_state(
-            operation_handle=operation_handle,
-            proposed_metric_states=[proposed_metric_state]
-        )
-    except KeyError:
-        print(f"Matric handle '{metric_handle}' not found in MDIB.")
-    except Exception as e:
-        print(f"threshold_control error for '{metric_handle}': {e}")
+        # --- Controls Frame ---
+        controls_frame = ttk.LabelFrame(main_frame, text="Controls", padding="10")
+        controls_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        main_frame.grid_columnconfigure(1, weight=1)
 
-def button_pressed_worker(state: SharedState):
-    def with_consumer(action_name, fn):
-        c = state.consumer
-        if not c:
-            print(f"{action_name}: no active consumer connection.")
-            return
-        fn(c)
+        self._create_control_widgets(controls_frame)
 
-    def get_value_from_input(prompt: str) -> Decimal | None:
-        """Prompts user for a value and converts it to Decimal."""
+    def _create_control_widgets(self, parent):
+        # Helper to create a button and bind its action
+        def add_button(text, action, row, col, colspan=1):
+            button = ttk.Button(parent, text=text, command=action)
+            button.grid(row=row, column=col, columnspan=colspan, sticky="ew", pady=2, padx=2)
+
+        # --- Alarm Controls ---
+        ttk.Label(parent, text="Alarm Silence:").grid(row=0, column=0, columnspan=2, sticky="w")
+        add_button("Temperature", lambda: self.alarm_control("al_signal_temperature", "temperature_alert_control"), 1, 0)
+        add_button("Humidity", lambda: self.alarm_control("al_signal_humidity", "humidity_alert_control"), 1, 1)
+
+        # --- Threshold Controls ---
+        ttk.Separator(parent, orient='horizontal').grid(row=2, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Label(parent, text="Set Thresholds:").grid(row=3, column=0, columnspan=2, sticky="w")
+
+        self.temp_thresh_var = tk.StringVar()
+        self.hum_thresh_var = tk.StringVar()
+        temp_entry = ttk.Entry(parent, textvariable=self.temp_thresh_var)
+        hum_entry = ttk.Entry(parent, textvariable=self.hum_thresh_var)
+
+        temp_entry.grid(row=4, column=0, columnspan=2, sticky="ew", pady=2)
+        hum_entry.grid(row=6, column=0, columnspan=2, sticky="ew", pady=2)
+
+        add_button("Set Temp Lower", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=True), 5, 0)
+        add_button("Set Temp Upper", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=False), 5, 1)
+        add_button("Set Hum Lower", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=True), 7, 0)
+        add_button("Set Hum Upper", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=False), 7, 1)
+
+        # --- Validation Controls ---
+        ttk.Separator(parent, orient='horizontal').grid(row=8, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Label(parent, text="Validate Change:").grid(row=9, column=0, columnspan=2, sticky="w")
+        add_button("Validate Temp", lambda: self.threshold_control("temperature", "temperature_threshold_control", is_valid=True), 10, 0)
+        add_button("Validate Hum", lambda: self.threshold_control("humidity", "humidity_threshold_control", is_valid=True), 10, 1)
+
+    def _run_sdc_logic(self):
+        asyncio.run(self.sdc_main_loop())
+
+    def log_to_gui(self, message: str):
+        """Thread-safe method to queue a message for the GUI."""
+        self.gui_queue.put(message)
+
+    def process_queue(self):
+        """Periodically called to update the GUI from the queue."""
         try:
-            value_str = input(prompt)
-            return Decimal(value_str)
-        except (ValueError, TypeError):
-            print("Invalid input. Please enter a number.")
-            return None
+            while True:
+                message = self.gui_queue.get_nowait()
+                self.metric_log.append(message)
+
+                # Update text widget
+                self.metrics_text.configure(state=tk.NORMAL)
+                self.metrics_text.delete('1.0', tk.END)
+                self.metrics_text.insert(tk.END, "\n".join(self.metric_log))
+                self.metrics_text.see(tk.END) # Auto-scroll
+                self.metrics_text.configure(state=tk.DISABLED)
+
+        except Empty:
+            pass  # No new messages
+        finally:
+            if self.running:
+                self.root.after(100, self.process_queue)
+
+    def on_metric_update(self, metrics_by_handle: dict):
+        for handle, state in metrics_by_handle.items():
+            value = state.MetricValue
+            if value and value.Value is not None:
+                unit = state.descriptor_container.Unit.Code
+                log_msg = f"{handle}: {value.Value:.2f} {unit}"
+                self.log_to_gui(log_msg)
+
+    def alarm_control(self, alert_handle: str, operation_handle: str):
+        consumer = self.shared_state.consumer
+        if not consumer or not consumer.mdib:
+            self.log_to_gui("Cannot control alarm: consumer not ready.")
+            return
+        try:
+            alert_state = consumer.mdib.entities.by_handle(alert_handle).state
+            if alert_state.Presence == AlertSignalPresence.ON:
+                self.log_to_gui(f"Alarm '{alert_handle}' is ON, silencing...")
+                proposed_state = deepcopy(alert_state)
+                proposed_state.Presence = AlertSignalPresence.OFF
+                consumer.set_service_client.set_alert_state(
+                    operation_handle=operation_handle,
+                    proposed_alert_state=proposed_state
+                )
+            else:
+                self.log_to_gui(f"No active alarm for '{alert_handle}'.")
         except Exception as e:
-            print(f"An error occurred during input: {e}")
-            return None
+            self.log_to_gui(f"ERROR: alarm_control for '{alert_handle}': {e}")
 
-    # Map keys to actions
-    def temp_action(c):
-        alarm_control(c, "al_signal_temperature", "temperature_alert_control")
+    def threshold_control_from_ui(self, metric_handle: str, op_handle: str, tk_var: tk.StringVar, is_lower: bool):
+        try:
+            value = Decimal(tk_var.get())
+            self.threshold_control(metric_handle, op_handle, value=value, is_lower=is_lower)
+        except Exception:
+            self.log_to_gui(f"Invalid input for {metric_handle} threshold.")
 
-    def humidity_action(c):
-        alarm_control(c, "al_signal_humidity", "humidity_alert_control")
+    def threshold_control(self, metric_handle: str, operation_handle: str, value: Decimal | None = None, is_lower: bool = True, is_valid: bool = False):
+        consumer = self.shared_state.consumer
+        if not consumer or not consumer.mdib:
+            self.log_to_gui("Cannot control threshold: consumer not ready.")
+            return
+        try:
+            metric_state = consumer.mdib.entities.by_handle(metric_handle).state
+            proposed_metric_state = deepcopy(metric_state)
 
-    def temp_upper_threshold_action(c):
-        value = get_value_from_input("Enter new upper temperature threshold: ")
-        if value is not None:
-            threshold_control(c, "temperature", "temperature_threshold_control", value, is_lower=False)
+            if is_valid:
+                proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALIDATED_DATA
+                self.log_to_gui(f"Validating metric '{metric_handle}'...")
+            elif value is not None:
+                if is_lower:
+                    proposed_metric_state.PhysiologicalRange[0].Lower = value
+                    self.log_to_gui(f"Setting {metric_handle} lower threshold to {value}...")
+                else:
+                    proposed_metric_state.PhysiologicalRange[0].Upper = value
+                    self.log_to_gui(f"Setting {metric_handle} upper threshold to {value}...")
+            else:
+                return # Nothing to do
 
-    def temp_lower_threshold_action(c):
-        value = get_value_from_input("Enter new lower temperature threshold: ")
-        if value is not None:
-            threshold_control(c, "temperature", "temperature_threshold_control", value, is_lower=True)
+            consumer.set_service_client.set_metric_state(
+                operation_handle=operation_handle,
+                proposed_metric_states=[proposed_metric_state]
+            )
+        except Exception as e:
+            self.log_to_gui(f"ERROR: threshold_control for '{metric_handle}': {e}")
 
-    def hum_upper_threshold_action(c):
-        value = get_value_from_input("Enter new upper humidity threshold: ")
-        if value is not None:
-            threshold_control(c, "humidity", "humidity_threshold_control", value, is_lower=False)
+    async def sdc_main_loop(self):
+        local_ip = get_local_ip()
+        self.log_to_gui(f"Starting consumer on IP: {local_ip}")
 
-    def hum_lower_threshold_action(c):
-        value = get_value_from_input("Enter new lower humidity threshold: ")
-        if value is not None:
-            threshold_control(c, "humidity", "humidity_threshold_control", value, is_lower=True)
+        while self.running:
+            self.shared_state.consumer = None
+            discovery = WSDiscovery(local_ip)
+            discovery.start()
 
-    def validate_action(c):
-        threshold_control(c, "temperature", "temperature_threshold_control", is_valid=True)
-
-    def no_validate_action(c):
-        threshold_control(c, "temperature", "temperature_threshold_control", is_valid=False)
-
-    # Register hotkeys
-    keyboard.add_hotkey("t", lambda: with_consumer("Temp_Alarm", temp_action))
-    keyboard.add_hotkey("h", lambda: with_consumer("Humidity_Alarm", humidity_action))
-    keyboard.add_hotkey("up", lambda: with_consumer("Temp_Upper", temp_upper_threshold_action))
-    keyboard.add_hotkey("down", lambda: with_consumer("Temp_Lower",temp_lower_threshold_action))
-    keyboard.add_hotkey("right", lambda: with_consumer("Humidity_Upper", hum_upper_threshold_action))
-    keyboard.add_hotkey("left", lambda: with_consumer("Humidity_Lower", hum_lower_threshold_action))
-    keyboard.add_hotkey("y", lambda: with_consumer("Validate", validate_action))
-    keyboard.add_hotkey("n", lambda: with_consumer("Not to Validate", no_validate_action))
-
-    print("Keyboard:\n[t]=Temperature Alarm Off, [h]=Humidity Alarm Off, "
-          "\n[up]=Upper Temperature Threshold, [down]=Lower Temperature Threshold,"
-          "\n[right]=Upper Humidity Threshold, [left]=Lower Humidity Threshold,"
-          "\n[y]=Validate New Temp Threshold, [n]=Reject New Temp Threshold"
-          "\n[q]=exit")
-    keyboard.wait("q")
-    print("Keyboard listener stopped.")
-
-
-async def main():
-    # logging.basicConfig(level=logging.INFO)
-    local_ip = get_local_ip()
-    print(f"Starting consumer on IP: {local_ip}")
-
-    # Create one shared state object
-    shared_state = SharedState()
-
-    # Start the keyboard listener thread once
-    keyboard_thread = threading.Thread(target=button_pressed_worker, args=(shared_state,), daemon=True)
-    keyboard_thread.start()
-
-    # Main loop for discovery and connection management
-    while True:
-        shared_state.consumer = None  # Ensure state is clean before discovery
-        discovery = WSDiscovery(local_ip)
-        discovery.start()
-
-        service = []
-        while not service:
-            print("Searching for services...")
-            try:
-                # Use to_thread to avoid blocking the event loop
-                service = await asyncio.to_thread(discovery.search_services, timeout=2)
-                if service:
-                    print(f"Found {len(service)} services, connecting to the first one...")
-                    break
-                await asyncio.sleep(2)  # Wait before next search
-            except Exception as e:
-                print(f"Error during discovery: {e}")
-                await asyncio.sleep(5)  # Wait longer after an error
-
-        discovery.stop()
-
-        # Initialize consumer
-        consumer = SdcConsumer.from_wsd_service(wsd_service=service[0], ssl_context_container=None)
-        consumer.start_all()
-
-        mdib = ConsumerMdib(consumer)
-        mdib.init_mdib()
-
-        # Safely publish the new consumer to the other thread
-        shared_state.consumer = consumer
-
-        observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
-
-        print("Connection established. Monitoring connection status...")
-
-        # Loop to check connection status
-        while True:
-            await asyncio.sleep(2)
-            is_connected = False
-            if consumer.is_connected:
-                # A more robust check is to see if subscriptions are active
-                for sub in consumer.subscription_mgr.subscriptions.values():
-                    if sub.is_subscribed:
-                        is_connected = True
+            services = []
+            while not services and self.running:
+                self.log_to_gui("Searching for services...")
+                try:
+                    services = await asyncio.to_thread(discovery.search_services, timeout=2)
+                    if services:
+                        self.log_to_gui(f"Found {len(services)} services, connecting...")
                         break
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    self.log_to_gui(f"Error during discovery: {e}")
+                    await asyncio.sleep(5)
 
-            if not is_connected:
-                print("Connection lost, restarting discovery...")
-                consumer.stop_all()
-                shared_state.consumer = None  # Clear the shared consumer
-                break  # Exit inner loop to restart discovery
+            discovery.stop()
+            if not self.running: break
+
+            if not services: continue
+
+            consumer = SdcConsumer.from_wsd_service(wsd_service=services[0], ssl_context_container=None)
+            consumer.start_all()
+
+            mdib = ConsumerMdib(consumer)
+            mdib.init_mdib()
+
+            self.shared_state.consumer = consumer
+            observableproperties.bind(mdib, metrics_by_handle=self.on_metric_update)
+            self.log_to_gui("Connection established. Monitoring...")
+
+            while self.running:
+                await asyncio.sleep(2)
+                if not consumer.is_connected:
+                    self.log_to_gui("Connection lost, restarting discovery...")
+                    consumer.stop_all()
+                    self.shared_state.consumer = None
+                    break
+
+    def on_closing(self):
+        self.running = False
+        self.root.destroy()
 
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nShutting down.")
+    root = tk.Tk()
+    app = SdcConsumerApp(root)
+    root.mainloop()
