@@ -64,7 +64,7 @@ def alarm_control(consumer, alert_handle: str, operation_handle: str):
     except Exception as e:
         print(f"alarm_control error for '{alert_handle}': {e}")
 
-def threshold_control(consumer, metric_handle: str, operation_handle: str, value : Decimal = Decimal("0"), is_lower : bool = True, is_valid: bool = False):
+def threshold_control(consumer, metric_handle: str, operation_handle: str, value : Decimal = Decimal("999"), is_lower : bool = True, is_valid: bool = False):
     if not consumer or not consumer.mdib:
         print("Cannot control threshold: consumer not ready.")
         return
@@ -73,16 +73,25 @@ def threshold_control(consumer, metric_handle: str, operation_handle: str, value
 
         proposed_metric_state = deepcopy(metric_state_container)
 
-        if is_valid:
-            # The error "got class str" means the library expects the enum object itself,
-            # not the string from .value. So we remove .value.
-            proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALIDATED_DATA
+        if value == Decimal("999"):
+            if is_valid:
+                # The error "got class str" means the library expects the enum object itself,
+                # not the string from .value. So we remove .value.
+                proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALIDATED_DATA
 
-            consumer.set_service_client.set_metric_state(
-                operation_handle=operation_handle,
-                proposed_metric_states=[proposed_metric_state]
-            )
-            return
+                consumer.set_service_client.set_metric_state(
+                    operation_handle=operation_handle,
+                    proposed_metric_states=[proposed_metric_state]
+                )
+                return
+            else:
+                proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.QUESTIONABLE
+
+                consumer.set_service_client.set_metric_state(
+                    operation_handle=operation_handle,
+                    proposed_metric_states=[proposed_metric_state]
+                )
+                return
 
         if is_lower:
             proposed_metric_state.PhysiologicalRange[0].Lower = value
@@ -148,6 +157,9 @@ def button_pressed_worker(state: SharedState):
     def validate_action(c):
         threshold_control(c, "temperature", "temperature_threshold_control", is_valid=True)
 
+    def no_validate_action(c):
+        threshold_control(c, "temperature", "temperature_threshold_control", is_valid=False)
+
     # Register hotkeys
     keyboard.add_hotkey("t", lambda: with_consumer("Temp_Alarm", temp_action))
     keyboard.add_hotkey("h", lambda: with_consumer("Humidity_Alarm", humidity_action))
@@ -155,12 +167,13 @@ def button_pressed_worker(state: SharedState):
     keyboard.add_hotkey("down", lambda: with_consumer("Temp_Lower",temp_lower_threshold_action))
     keyboard.add_hotkey("right", lambda: with_consumer("Humidity_Upper", hum_upper_threshold_action))
     keyboard.add_hotkey("left", lambda: with_consumer("Humidity_Lower", hum_lower_threshold_action))
-    keyboard.add_hotkey("v", lambda: with_consumer("Validate", validate_action))
+    keyboard.add_hotkey("y", lambda: with_consumer("Validate", validate_action))
+    keyboard.add_hotkey("n", lambda: with_consumer("Not to Validate", no_validate_action))
 
     print("Keyboard:\n[t]=Temperature Alarm Off, [h]=Humidity Alarm Off, "
           "\n[up]=Upper Temperature Threshold, [down]=Lower Temperature Threshold,"
           "\n[right]=Upper Humidity Threshold, [left]=Lower Humidity Threshold,"
-          "\n[v]=Validate Threshold,"
+          "\n[y]=Validate New Threshold, [n]=Reject New Temp Threshold"
           "\n[q]=exit")
     keyboard.wait("q")
     print("Keyboard listener stopped.")
