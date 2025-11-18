@@ -456,7 +456,7 @@ async def main(provider):
 
         try:
             if new_threshold is not None:
-                metric_handle = "temperature" if show_temp else "humidity"
+                metric_handle = "temperature"
                 with provider.mdib.metric_state_transaction() as tr:
                     state = tr.get_state(metric_handle)
                     state.MetricValue.MetricQuality.Validity = MeasurementValidity.CALIBRATION_ONGOING
@@ -488,7 +488,7 @@ async def main(provider):
         except NameError:
             pass
         finally:
-            metric_handle = "temperature" if show_temp else "humidity"
+            metric_handle = "temperature"
             with provider.mdib.metric_state_transaction() as tr:
                     state = tr.get_state(metric_handle)
                     state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALID
