@@ -14,6 +14,7 @@ from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types.pm_types import AlertSignalPresence
+from sdc11073.xml_types.pm_types import MeasurementValidity
 
 
 # A simple thread-safe class to share the consumer object
@@ -34,8 +35,10 @@ def get_local_ip():
         s.close()
 
 def on_metric_update(metrics_by_handle: dict):
-    for key,value in metrics_by_handle.items():
+    """
+        for key,value in metrics_by_handle.items():
         print(str(key) + " : " + str(round(value.MetricValue.Value,2)) + str(value.descriptor_container.Unit.Code))
+    """
 
 def alarm_control(consumer, alert_handle: str, operation_handle: str):
     if not consumer or not consumer.mdib:
@@ -61,7 +64,7 @@ def alarm_control(consumer, alert_handle: str, operation_handle: str):
     except Exception as e:
         print(f"alarm_control error for '{alert_handle}': {e}")
 
-def threshold_control(consumer, metric_handle: str, operation_handle: str, value: Decimal, is_lower : bool):
+def threshold_control(consumer, metric_handle: str, operation_handle: str, value : Decimal = Decimal("0"), is_lower : bool = True, is_valid: bool = False):
     if not consumer or not consumer.mdib:
         print("Cannot control threshold: consumer not ready.")
         return
@@ -69,6 +72,18 @@ def threshold_control(consumer, metric_handle: str, operation_handle: str, value
         metric_state_container = consumer.mdib.entities.by_handle(metric_handle).state
 
         proposed_metric_state = deepcopy(metric_state_container)
+
+        if is_valid:
+            # The error "got class str" means the library expects the enum object itself,
+            # not the string from .value. So we remove .value.
+            proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALIDATED_DATA
+
+            consumer.set_service_client.set_metric_state(
+                operation_handle=operation_handle,
+                proposed_metric_states=[proposed_metric_state]
+            )
+            return
+
         if is_lower:
             proposed_metric_state.PhysiologicalRange[0].Lower = value
         else:
@@ -81,7 +96,7 @@ def threshold_control(consumer, metric_handle: str, operation_handle: str, value
     except KeyError:
         print(f"Matric handle '{metric_handle}' not found in MDIB.")
     except Exception as e:
-        print(f"alarm_control error for '{metric_handle}': {e}")
+        print(f"threshold_control error for '{metric_handle}': {e}")
 
 def button_pressed_worker(state: SharedState):
     def with_consumer(action_name, fn):
@@ -130,6 +145,9 @@ def button_pressed_worker(state: SharedState):
         if value is not None:
             threshold_control(c, "humidity", "humidity_threshold_control", value, is_lower=True)
 
+    def validate_action(c):
+        threshold_control(c, "temperature", "temperature_threshold_control", is_valid=True)
+
     # Register hotkeys
     keyboard.add_hotkey("t", lambda: with_consumer("Temp_Alarm", temp_action))
     keyboard.add_hotkey("h", lambda: with_consumer("Humidity_Alarm", humidity_action))
@@ -137,10 +155,12 @@ def button_pressed_worker(state: SharedState):
     keyboard.add_hotkey("down", lambda: with_consumer("Temp_Lower",temp_lower_threshold_action))
     keyboard.add_hotkey("right", lambda: with_consumer("Humidity_Upper", hum_upper_threshold_action))
     keyboard.add_hotkey("left", lambda: with_consumer("Humidity_Lower", hum_lower_threshold_action))
+    keyboard.add_hotkey("v", lambda: with_consumer("Validate", validate_action))
 
     print("Keyboard:\n[t]=Temperature Alarm Off, [h]=Humidity Alarm Off, "
           "\n[up]=Upper Temperature Threshold, [down]=Lower Temperature Threshold,"
           "\n[right]=Upper Humidity Threshold, [left]=Lower Humidity Threshold,"
+          "\n[v]=Validate Threshold,"
           "\n[q]=exit")
     keyboard.wait("q")
     print("Keyboard listener stopped.")
@@ -190,7 +210,7 @@ async def main():
         # Safely publish the new consumer to the other thread
         shared_state.consumer = consumer
 
-        #observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
+        observableproperties.bind(mdib, metrics_by_handle=on_metric_update)
 
         print("Connection established. Monitoring connection status...")
 
