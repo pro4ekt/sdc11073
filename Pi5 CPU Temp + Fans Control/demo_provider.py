@@ -510,7 +510,7 @@ async def main(provider):
 
 # Add configuration constants and lock for thread-safe amplitude access
 NETWORK_ADAPTER = "wlan0"
-MDIB_FILE = "Pi5 CPU Temp + Fans Control/mdib2.xml"
+MDIB_FILE = "Pi5 CPU Temp + Fans Control/demo_mdib.xml"
 AMPLITUDE_LOCK = threading.Lock()
 
 if __name__ == '__main__':
