@@ -434,7 +434,7 @@ async def main(provider):
     while True:
         t = time.time()
         sense.clear()
-        a = MeasurementValidity.VALIDATED_DATA
+        
         print("Temp Low = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower))
         print("Temp High = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper))
         print("Hum Low = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower))
@@ -459,31 +459,42 @@ async def main(provider):
                 metric_handle = "temperature" if show_temp else "humidity"
                 with provider.mdib.metric_state_transaction() as tr:
                     state = tr.get_state(metric_handle)
-                    pr = state.PhysiologicalRange[0]
-                    if lower_threshold:
-                        pr.Lower = Decimal(new_threshold)
-                    else:
-                        pr.Upper = Decimal(new_threshold)
-                    # Correctly set the validity on the state object
                     state.MetricValue.MetricQuality.Validity = MeasurementValidity.CALIBRATION_ONGOING
                 VALUE = 0
                 metric_to_validate = metric_handle  # Mark this metric for validation
         except NameError:
-            # This can happen on the first run if settings was never active.
             pass
         finally:
-            # Always reset new_threshold after processing
-            new_threshold = None
-
-        if metric_to_validate:
-            print(f"Waiting for validation of {metric_to_validate}...")
-            while True:
+            pass
+        try:
+            if metric_to_validate is not None:
+             while True:
+                print(f"Waiting for validation of {metric_to_validate}...")
                 state = provider.mdib.entities.by_handle(metric_to_validate).state
                 if state.MetricValue.MetricQuality.Validity == MeasurementValidity.VALIDATED_DATA:
                     print(f"{metric_to_validate} is validated.")
-                    metric_to_validate = None  # Reset for next time
+                    with provider.mdib.metric_state_transaction() as tr:
+                        state = tr.get_state(metric_handle)
+                        pr = state.PhysiologicalRange[0]
+                        if lower_threshold:
+                            pr.Lower = Decimal(new_threshold)
+                        else:
+                            pr.Upper = Decimal(new_threshold)
+                    break
+                if state.MetricValue.MetricQuality.Validity == MeasurementValidity.QUESTIONABLE:
+                    print(f"{metric_to_validate} is not validated.")
                     break
                 await asyncio.sleep(0.5)  # Wait and check again
+        except NameError:
+            pass
+        finally:
+            metric_handle = "temperature" if show_temp else "humidity"
+            with provider.mdib.metric_state_transaction() as tr:
+                    state = tr.get_state(metric_handle)
+                    state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALID
+            metric_to_validate = None
+            new_threshold = None
+            pass
 
         if show_temp:
             should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 3)
