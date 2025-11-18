@@ -14,6 +14,7 @@ import numpy as np
 import sounddevice as sd
 from sense_hat import SenseHat
 
+from mydbworker import DBWorker
 from myproviderimpl import MySdcProvider
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
@@ -553,13 +554,15 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    # first_start(provider)
-    # register()
+    db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
+    db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
+    DEVICE_ID = db.device_id
 
     with provider.mdib.metric_state_transaction() as tr:
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID)
 
+    first_start(provider)
     try:
         asyncio.run(main(provider))
     except KeyboardInterrupt:
