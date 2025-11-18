@@ -426,7 +426,7 @@ if __name__ == '__main__':
            if(REQUEST["temperature"] == True):
                if(t - TIME_T < 3):
                 temp_alarm_eveluation(provider, temperature, True)
-                time.sleep(5)
+                time.sleep(1)
                 continue
                else:
                 temp_alarm_eveluation(provider, temperature, False)

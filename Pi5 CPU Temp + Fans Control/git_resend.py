@@ -56,6 +56,33 @@ NUMS = [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1,  # 0
         1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1]  # 9
 
 
+# --- Constants for Alarms ---
+ALARM_CONFIG = {
+    'temperature': {
+        'metric_handle': 'temperature',
+        'condition_handle': 'al_condition_temperature',
+        'signal_handle': 'al_signal_temperature',
+        'colors': {
+            'low': (51, 153, 255),
+            'high': (130, 0, 0),
+            'normal': (51, 204, 51),
+        },
+        'sound_freq': 420,
+    },
+    'humidity': {
+        'metric_handle': 'humidity',
+        'condition_handle': 'al_condition_humidity',
+        'signal_handle': 'al_signal_humidity',
+        'colors': {
+            'low': (204, 153, 102),
+            'high': (51, 102, 204),
+            'normal': (51, 204, 51),
+        },
+        'sound_freq': 640,
+    }
+}
+
+
 def sound(duration, frequncy, amplitude=1):
     sample_rate = 44100
     t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
@@ -176,104 +203,87 @@ def update_pressure(provider, value: Decimal):
     # observation_register(HUMIDITY_ID, value)
 
 
-def temp_alarm_eveluation(provider, value, timeout):
-    lowTempThreshold = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
-    highTempThreshold = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool):
+    """Generic alarm evaluation function."""
+    config = ALARM_CONFIG[metric_name]
+    metric_handle = config['metric_handle']
+    condition_handle = config['condition_handle']
+    signal_handle = config['signal_handle']
+    colors = config['colors']
+    sound_freq = config['sound_freq']
 
-    if ((value > highTempThreshold) or (value < lowTempThreshold)):
+    low_threshold = provider.mdib.entities.by_handle(metric_handle).state.PhysiologicalRange[0].Lower
+    high_threshold = provider.mdib.entities.by_handle(metric_handle).state.PhysiologicalRange[0].Upper
+
+    is_out_of_range = (value > high_threshold) or (value < low_threshold)
+
+    if is_out_of_range:
         with provider.mdib.alert_state_transaction() as tr:
-            cond_state = tr.get_state("al_condition_temperature")
+            cond_state = tr.get_state(condition_handle)
             cond_state.Presence = True
-            sig_state = tr.get_state("al_signal_temperature")
-            if (timeout):
-                sig_state.Presence = AlertSignalPresence.OFF
-            else:
-                sig_state.Presence = AlertSignalPresence.ON
-        if (value < lowTempThreshold):
-            background(51, 153, 255)
-            sound(1, 420, AMPLITUDE)
+            sig_state = tr.get_state(signal_handle)
+            # The signal is ON if not in timeout, otherwise OFF.
+            sig_state.Presence = AlertSignalPresence.OFF if timeout else AlertSignalPresence.ON
+
+        # Set background color regardless of timeout
+        if value < low_threshold:
+            background(*colors['low'])
         else:
-            background(130, 0, 0)
-            if (provider.mdib.entities.by_handle("al_signal_temperature").state.Presence == AlertSignalPresence.ON):
-                sound(1, 420, AMPLITUDE)
+            background(*colors['high'])
+
+        # Play sound only if the signal is ON (i.e., not in timeout)
+        if not timeout:
+            with AMPLITUDE_LOCK:
+                amp = AMPLITUDE
+            sound(1, sound_freq, amp)
     else:
-        background(51, 204, 51)
-    """
-    esli potom budy delt timeout
-    a = provider.mdib.entities.by_handle("al_signal").state.Presence == AlertSignalPresence.OFF
-    b = provider.mdib.entities.by_handle("al_condition").state.Presence == True
-
-    if a and (not b):
-        background(0,100,0)
-    if a and b:
-        background(0,0,150)
-    if (not a) and b:
-        background(150,0,0)
-
-    if(int(value) < lowTempThreshold):
-            with provider.mdib.alert_state_transaction() as tr:
-                cond_state = tr.get_state("al_condition")
+        background(*colors['normal'])
+        # Optionally reset alert condition when back in normal range
+        with provider.mdib.alert_state_transaction() as tr:
+            cond_state = tr.get_state(condition_handle)
+            if cond_state.Presence:
                 cond_state.Presence = False
-                sig_state = tr.get_state("al_signal")
-                sig_state.Presence = AlertSignalPresence.OF
-    """
-
-
-def hum_alarm_eveluation(provider, value, timeout):
-    lowHumThreshold = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
-    highHumThreshold = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
-
-    if ((value > highHumThreshold) or (value < lowHumThreshold)):
-        with provider.mdib.alert_state_transaction() as tr:
-            cond_state = tr.get_state("al_condition_humidity")
-            cond_state.Presence = True
-            sig_state = tr.get_state("al_signal_humidity")
-            if (timeout):
+            sig_state = tr.get_state(signal_handle)
+            if sig_state.Presence != AlertSignalPresence.OFF:
                 sig_state.Presence = AlertSignalPresence.OFF
-            else:
-                sig_state.Presence = AlertSignalPresence.ON
-        if (value < lowHumThreshold):
-            background(204, 153, 102)
-            sound(1, 640, AMPLITUDE)
-        else:
-            background(51, 102, 204)
-            if (provider.mdib.entities.by_handle("al_signal_humidity").state.Presence == AlertSignalPresence.ON):
-                sound(1, 640, AMPLITUDE)
-    else:
-        background(51, 204, 51)
 
 
 def metrics_info(provider):
-    print("Humidity = ", provider.mdib.entities.by_handle("humidity").state.MetricValue.Value)
-    print("Temperature = ", provider.mdib.entities.by_handle("temperature").state.MetricValue.Value)
+    # use print instead of logger
+    print(f"Humidity = {provider.mdib.entities.by_handle('humidity').state.MetricValue.Value}")
+    print(f"Temperature = {provider.mdib.entities.by_handle('temperature').state.MetricValue.Value}")
 
 
 def joystick():
-    global show_temp
+    global show_temp, AMPLITUDE
     while True:
         events = sense.stick.get_events()
         for e in events:
-            global AMPLITUDE
             if e.action == "pressed" and e.direction == "middle":
                 show_temp = not show_temp
             if e.action == "pressed" and e.direction == "left":
-                AMPLITUDE = AMPLITUDE - 0.3
-                if (AMPLITUDE < 0):
-                    AMPLITUDE = 0
-                    print("Min volume reached")
+                # modify AMPLITUDE safely
+                with AMPLITUDE_LOCK:
+                    AMPLITUDE = AMPLITUDE - 0.3
+                    if AMPLITUDE < 0:
+                        AMPLITUDE = 0
+                        print("Min volume reached")
             if e.action == "pressed" and e.direction == "right":
-                AMPLITUDE = AMPLITUDE + 0.3
-
-            """
-            if e.action == "held":
-                duration = time.time() - start
-                if(duration > 3):
-                 os.execvp("python3", ["python3", "Pi5 CPU Temp + Fans Control/sensestart.py"])
-            """
+                with AMPLITUDE_LOCK:
+                    AMPLITUDE = AMPLITUDE + 0.3
         time.sleep(0.05)
 
 
-async def first_start(provider):
+def show_startup_screen(symbol_func, number, number_color, bg_color):
+    """Helper to display a screen during startup."""
+    sense.clear()
+    symbol_func(255, 255, 255)
+    show_number(number, *number_color)
+    background(*bg_color)
+    time.sleep(2)
+
+
+def first_start(provider):
     # sense.show_message("Started SDC-mode")
 
     lowTempThreshold = int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
@@ -284,47 +294,99 @@ async def first_start(provider):
     highHumThreshold = int(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper)
     midHum = int((highHumThreshold + lowHumThreshold) / 2)
 
-    sense.clear()
-    t_show(255, 255, 255)
-    show_number(lowTempThreshold, 255, 165, 40)
-    background(51, 153, 255)
-    await asyncio.sleep(2)
+    temp_color = (255, 165, 40)
+    hum_color = (255, 100, 40)
 
-    sense.clear()
-    t_show(255, 255, 255)
-    show_number(midTemp, 255, 165, 40)
-    background(51, 204, 51)
-    await asyncio.sleep(2)
+    show_startup_screen(t_show, lowTempThreshold, temp_color, (51, 153, 255))
+    show_startup_screen(t_show, midTemp, temp_color, (51, 204, 51))
+    show_startup_screen(t_show, highTempThreshold, temp_color, (255, 51, 51))
 
-    sense.clear()
-    t_show(255, 255, 255)
-    show_number(highTempThreshold, 255, 165, 40)
-    background(255, 51, 51)
-    await asyncio.sleep(2)
+    show_startup_screen(h_show, lowHumThreshold, hum_color, (204, 153, 102))
+    show_startup_screen(h_show, midHum, hum_color, (51, 204, 51))
+    show_startup_screen(h_show, highHumThreshold, hum_color, (51, 102, 204))
 
-    sense.clear()
-    h_show(255, 255, 255)
-    show_number(lowHumThreshold, 255, 100, 40)
-    background(204, 153, 102)
-    await asyncio.sleep(2)
 
-    sense.clear()
-    h_show(255, 255, 255)
-    show_number(midHum, 255, 100, 40)
-    background(51, 204, 51)
-    await asyncio.sleep(2)
+async def handle_requests(provider, share_state_temp, share_state_hum):
+    """Handles incoming provider requests."""
+    global TIME_T, TIME_H
+    if not provider.requests:
+        return
 
-    sense.clear()
-    h_show(255, 255, 255)
-    show_number(highHumThreshold, 255, 100, 40)
-    background(51, 102, 204)
+    request = provider.requests[0]  # Get request without removing it yet
+    try:
+        print(request.raw_data)
+        t = time.time()
 
-    await asyncio.sleep(2)
+        temp_alert_control = provider.find_string_in_request(request, "temperature_alert_control")
+        hum_alert_control = provider.find_string_in_request(request, "humidity_alert_control")
+        temp_threshold_control = provider.find_string_in_request(request, "temperature_threshold_control")
+        hum_threshold_control = provider.find_string_in_request(request, "humidity_threshold_control")
+
+        # Check for threshold changes
+        low_temp_changed = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower != share_state_temp.Lower
+        high_temp_changed = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper != share_state_temp.Upper
+        low_hum_changed = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower != share_state_hum.Lower
+        high_hum_changed = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper != share_state_hum.Upper
+
+        if hum_alert_control:
+            REQUEST["humidity"] = True
+            TIME_H = t
+        elif temp_alert_control:
+            REQUEST["temperature"] = True
+            TIME_T = t
+        elif temp_threshold_control:
+            show_celsius_display((255, 165, 40))
+            if low_temp_changed:
+                share_state_temp.Lower = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
+                background(51, 153, 255)
+            elif high_temp_changed:
+                share_state_temp.Upper = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+                background(130, 0, 0)
+            await asyncio.sleep(2)
+        elif hum_threshold_control:
+            show_humidity_display((255, 100, 40))
+            if low_hum_changed:
+                share_state_hum.Lower = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
+                background(204, 153, 102)
+            elif high_hum_changed:
+                share_state_hum.Upper = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
+                background(51, 102, 204)
+            await asyncio.sleep(2)
+        time.sleep(0.2)
+        sense.clear()
+        await asyncio.sleep(0.5)
+    finally:
+        provider.requests.pop(0)  # Now remove the request
+
+
+async def process_metric(provider, metric_name, value, symbol_func, number_color, timeout_duration):
+    """Handles display and alarm logic for a given metric."""
+    global REQUEST, TIME_T, TIME_H
+    t = time.time()
+    time_key = 'TIME_T' if metric_name == 'temperature' else 'TIME_H'
+    current_time = globals()[time_key]
+
+    symbol_func(255, 255, 0)
+    show_number(int(value + 0.5), *number_color)
+
+    if REQUEST[metric_name]:
+        if t - current_time < timeout_duration:
+            evaluate_alarm(provider, metric_name, value, True)
+            await asyncio.sleep(1)
+            return True  # Indicate that we should 'continue' the loop
+        else:
+            evaluate_alarm(provider, metric_name, value, False)
+            REQUEST[metric_name] = False
+            globals()[time_key] = 0
+            await asyncio.sleep(1)
+            return True  # Indicate that we should 'continue' the loop
+
+    evaluate_alarm(provider, metric_name, value, False)
+    return False
 
 
 async def main(provider):
     global TIME_T, TIME_H
-    # first_start(provider)
     share_state_temp = deepcopy(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0])
     share_state_hum = deepcopy(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0])
 
@@ -336,51 +398,7 @@ async def main(provider):
         print("Hum Low = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower))
         print("Hum High = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper))
 
-        if (provider.requests != []):
-            print(provider.requests[0].raw_data)
-            temp = provider.find_string_in_request(provider.requests[0], "temperature_alert_control")
-            hum = provider.find_string_in_request(provider.requests[0], "humidity_alert_control")
-            temp_threshold = provider.find_string_in_request(provider.requests[0], "temperature_threshold_control")
-            hum_threshold = provider.find_string_in_request(provider.requests[0], "humidity_threshold_control")
-            low_temp = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
-                           0].Lower == share_state_temp.Lower
-            high_temp = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
-                            0].Upper == share_state_temp.Upper
-            low_hum = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[
-                          0].Lower == share_state_hum.Lower
-            high_hum = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[
-                           0].Upper == share_state_hum.Upper
-            if (hum):
-                REQUEST["humidity"] = True
-                TIME_H = t
-            elif (temp):
-                REQUEST["temperature"] = True
-                TIME_T = t
-            elif (temp_threshold):
-                show_celsius_display((255, 165, 40))
-                if (not low_temp):
-                    share_state_temp.Lower = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
-                        0].Lower
-                    background(51, 153, 255)
-                elif (not high_temp):
-                    share_state_temp.Upper = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
-                        0].Upper
-                    background(130, 0, 0)
-                await asyncio.sleep(2)
-            elif (hum_threshold):
-                show_humidity_display((255, 100, 40))
-                if (not low_hum):
-                    share_state_hum.Lower = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[
-                        0].Lower
-                    background(204, 153, 102)
-                elif (not high_hum):
-                    share_state_hum.Upper = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[
-                        0].Upper
-                    background(51, 102, 204)
-                await asyncio.sleep(1)
-                sense.clear()
-                await asyncio.sleep(0.5)
-            provider.requests.pop(0)
+        await handle_requests(provider, share_state_temp, share_state_hum)
 
         humidity = sense.humidity
         temperature = sense.temperature
@@ -390,43 +408,22 @@ async def main(provider):
         update_temperature(provider, Decimal(temperature))
         metrics_info(provider)
 
-        lowTempThreshold = int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
-        highTempThreshold = int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
-
-        if (show_temp):
-            t_show(255, 255, 0)
-            show_number(int(temperature + 0.5), 255, 165, 40)
-            if (REQUEST["temperature"] == True):
-                if (t - TIME_T < 3):
-                    temp_alarm_eveluation(provider, temperature, True)
-                    await asyncio.sleep(5)
-                    continue
-                else:
-                    temp_alarm_eveluation(provider, temperature, False)
-                    REQUEST["temperature"] = False
-                    TIME_T = 0
-                    await asyncio.sleep(1)
-                    continue
-
-            temp_alarm_eveluation(provider, temperature, False)
+        if show_temp:
+            should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 3)
+            if should_continue:
+                continue
         else:
-            h_show(255, 255, 0)
-            show_number(int(humidity + 0.5), 255, 100, 40)
-            if (REQUEST["humidity"] == True):
-                if (t - TIME_H < 6):
-                    hum_alarm_eveluation(provider, humidity, True)
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    hum_alarm_eveluation(provider, humidity, False)
-                    REQUEST["humidity"] = False
-                    TIME_H = 0
-                    await asyncio.sleep(1)
-                    continue
-            hum_alarm_eveluation(provider, humidity, False)
+            should_continue = await process_metric(provider, 'humidity', humidity, h_show, (255, 100, 40), 6)
+            if should_continue:
+                continue
 
         await asyncio.sleep(1)
 
+
+# Add configuration constants and lock for thread-safe amplitude access
+NETWORK_ADAPTER = "wlan0"
+MDIB_FILE = "Pi5 CPU Temp + Fans Control/mdib2.xml"
+AMPLITUDE_LOCK = threading.Lock()
 
 if __name__ == '__main__':
     # logging.basicConfig(level=logging.INFO)
@@ -437,7 +434,7 @@ if __name__ == '__main__':
     my_uuid = uuid.uuid5(base_uuid, "test_provider_2")
 
     # getting mdib from xml file and converting it to mdib.py object
-    mdib = ProviderMdib.from_mdib_file("Pi5 CPU Temp + Fans Control/mdib2.xml")
+    mdib = ProviderMdib.from_mdib_file(MDIB_FILE)
 
     # All necessary components for the provider
 
@@ -449,7 +446,7 @@ if __name__ == '__main__':
     # ThisDeviceType object with friendly name and serial number
     device = ThisDeviceType(friendly_name='TestDevice2', serial_number='123456')
     # UDP based discovery on single network adapter
-    discovery = WSDiscoverySingleAdapter("wlan0")  # Wi-Fi or WLAN if on windows or wlan0 if Linux
+    discovery = WSDiscoverySingleAdapter(NETWORK_ADAPTER)  # configurable adapter
 
     # Assambling everything which was created above to implement SDC Provider object
     provider = MySdcProvider(ws_discovery=discovery,
@@ -468,6 +465,7 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
+    #first_start(provider)
     # register()
 
     with provider.mdib.metric_state_transaction() as tr:
