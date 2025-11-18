@@ -54,12 +54,6 @@ def alarm_control(consumer, alert_handle: str, operation_handle: str):
                 proposed_alert_state=proposed_state
             )
 
-            proposed_metric_state = deepcopy(metric_state_container)
-            proposed_metric_state.PhysiologicalRange[0].Lower = Decimal(2)
-            consumer.set_service_client.set_metric_state(
-            operation_handle="temperature_threshold_control",
-            proposed_metric_states = [proposed_metric_state]
-            )
         else:
             print(f"No active alarm for '{alert_handle}'.")
     except KeyError:
