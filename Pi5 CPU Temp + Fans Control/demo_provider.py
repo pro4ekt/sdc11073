@@ -198,14 +198,6 @@ def update_temperature(provider, value: Decimal):
     # observation_register(HUMIDITY_ID, value)
 
 
-def update_pressure(provider, value: Decimal):
-    with provider.mdib.metric_state_transaction() as tr:
-        temp_state = tr.get_state("pressure")
-        mv = temp_state.MetricValue
-        mv.Value = value
-    # observation_register(HUMIDITY_ID, value)
-
-
 def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool):
     """Generic alarm evaluation function."""
     config = ALARM_CONFIG[metric_name]
@@ -426,7 +418,7 @@ async def process_metric(provider, metric_name, value, symbol_func, number_color
 
 
 async def main(provider):
-    global TIME_T, TIME_H, VALUE
+    global TIME_T, TIME_H, VALUE, lower_threshold
     share_state_temp = deepcopy(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0])
     share_state_hum = deepcopy(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0])
     new_threshold = None  # Initialize new_threshold to prevent UnboundLocalError
@@ -457,12 +449,13 @@ async def main(provider):
 
         try:
             if new_threshold is not None:
-                metric_handle = "temperature"
-                with provider.mdib.metric_state_transaction() as tr:
+                metric_handle = "temperature" if show_temp else "humidity"
+                if metric_handle == "temperature":
+                 with provider.mdib.metric_state_transaction() as tr:
                     state = tr.get_state(metric_handle)
                     state.MetricValue.MetricQuality.Validity = MeasurementValidity.CALIBRATION_ONGOING
+                 metric_to_validate = metric_handle  # Mark this metric for validation
                 VALUE = 0
-                metric_to_validate = metric_handle  # Mark this metric for validation
         except NameError:
             pass
         finally:
@@ -470,31 +463,41 @@ async def main(provider):
         try:
             if metric_to_validate is not None:
              while True:
-                print(f"Waiting for validation of {metric_to_validate}...")
-                state = provider.mdib.entities.by_handle(metric_to_validate).state
-                if state.MetricValue.MetricQuality.Validity == MeasurementValidity.VALIDATED_DATA:
-                    print(f"{metric_to_validate} is validated.")
-                    with provider.mdib.metric_state_transaction() as tr:
-                        state = tr.get_state(metric_handle)
-                        pr = state.PhysiologicalRange[0]
-                        if lower_threshold:
-                            pr.Lower = Decimal(new_threshold)
-                        else:
-                            pr.Upper = Decimal(new_threshold)
-                    break
-                if state.MetricValue.MetricQuality.Validity == MeasurementValidity.QUESTIONABLE:
-                    print(f"{metric_to_validate} is not validated.")
-                    break
+                if(metric_handle == "temperature"):
+                    print(f"Waiting for validation of {metric_to_validate}...")
+                    state = provider.mdib.entities.by_handle(metric_to_validate).state
+                    if state.MetricValue.MetricQuality.Validity == MeasurementValidity.VALIDATED_DATA:
+                        print(f"{metric_to_validate} is validated.")
+                        with provider.mdib.metric_state_transaction() as tr:
+                            state = tr.get_state(metric_handle)
+                            pr = state.PhysiologicalRange[0]
+                            if lower_threshold:
+                                pr.Lower = Decimal(new_threshold)
+                            else:
+                                pr.Upper = Decimal(new_threshold)
+                        break
+                    if state.MetricValue.MetricQuality.Validity == MeasurementValidity.QUESTIONABLE:
+                        print(f"{metric_to_validate} is not validated.")
+                        break
                 await asyncio.sleep(0.5)  # Wait and check again
+            elif metric_to_validate is None and new_threshold is not None:
+                with provider.mdib.metric_state_transaction() as tr:
+                    state = tr.get_state(metric_handle)
+                    pr = state.PhysiologicalRange[0]
+                    if lower_threshold:
+                        pr.Lower = Decimal(new_threshold)
+                    else:
+                        pr.Upper = Decimal(new_threshold)
         except NameError:
             pass
         finally:
-            metric_handle = "temperature"
-            with provider.mdib.metric_state_transaction() as tr:
+            if metric_to_validate is not None and metric_handle == "temperature":
+                with provider.mdib.metric_state_transaction() as tr:
                     state = tr.get_state(metric_handle)
                     state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALID
             metric_to_validate = None
             new_threshold = None
+            lower_threshold = True
             pass
 
         if show_temp:
@@ -554,15 +557,15 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
-    db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
-    DEVICE_ID = db.device_id
+    #db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
+    #db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
+    ##DEVICE_ID = db.device_id
 
     with provider.mdib.metric_state_transaction() as tr:
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID)
 
-    first_start(provider)
+    #first_start(provider)
     try:
         asyncio.run(main(provider))
     except KeyboardInterrupt:
