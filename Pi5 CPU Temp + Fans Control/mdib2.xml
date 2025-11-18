@@ -31,7 +31,8 @@
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
-                <pm:PhysiologicalRange Lower="0" Upper="100" ></pm:PhysiologicalRange>
+                <pm:PhysiologicalRange Lower="0" Upper="100" >
+                </pm:PhysiologicalRange>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="sense-hat_metric" >
                 <pm:MetricValue Value="0">

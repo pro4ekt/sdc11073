@@ -14,7 +14,7 @@ import numpy as np
 import sounddevice as sd
 from sense_hat import SenseHat
 
-from myProvider.myproviderimpl import MySdcProvider
+from myproviderimpl import MySdcProvider
 from sdc11073.location import SdcLocation
 from sdc11073.loghelper import basic_logging_setup
 from sdc11073.mdib import ProviderMdib
@@ -36,6 +36,8 @@ from sdc11073.provider.operations import SetValueOperation
 
 sense = SenseHat()
 show_temp = True
+settings = False
+lower_threshold = True
 DEVICE_ID = 0
 OFFSET_LEFT = 1
 OFFSET_TOP = 3
@@ -54,7 +56,6 @@ NUMS = [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1,  # 0
         1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0,  # 7
         1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1,  # 8
         1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1]  # 9
-
 
 # --- Constants for Alarms ---
 ALARM_CONFIG = {
@@ -255,10 +256,18 @@ def metrics_info(provider):
 
 
 def joystick():
-    global show_temp, AMPLITUDE
+    global show_temp, AMPLITUDE, settings, VALUE, lower_threshold
     while True:
         events = sense.stick.get_events()
         for e in events:
+            if (settings):
+                if e.action == "pressed" and e.direction == "up":
+                    VALUE = VALUE + 1
+                if e.action == "pressed" and e.direction == "down":
+                    VALUE = VALUE - 1
+                if e.action == "pressed" and e.direction == "middle":
+                    settings = not settings
+                continue
             if e.action == "pressed" and e.direction == "middle":
                 show_temp = not show_temp
             if e.action == "pressed" and e.direction == "left":
@@ -271,7 +280,30 @@ def joystick():
             if e.action == "pressed" and e.direction == "right":
                 with AMPLITUDE_LOCK:
                     AMPLITUDE = AMPLITUDE + 0.3
+            if e.action == "pressed" and e.direction == "up":
+                settings = not settings
+                lower_threshold = not lower_threshold
+            if e.action == "pressed" and e.direction == "down":
+                settings = not settings
         time.sleep(0.05)
+
+
+def threshold_setting(provider):
+    global VALUE
+    if (show_temp):
+        if (lower_threshold):
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
+        else:
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+    else:
+        if (lower_threshold):
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
+        else:
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
+    sense.clear()
+    show_number(int(value), 255, 165, 40)
+    time.sleep(1)
+    return value
 
 
 def show_startup_screen(symbol_func, number, number_color, bg_color):
@@ -314,7 +346,7 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
 
     request = provider.requests[0]  # Get request without removing it yet
     try:
-        print(request.raw_data)
+        # print(request.raw_data)
         t = time.time()
 
         temp_alert_control = provider.find_string_in_request(request, "temperature_alert_control")
@@ -323,10 +355,14 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
         hum_threshold_control = provider.find_string_in_request(request, "humidity_threshold_control")
 
         # Check for threshold changes
-        low_temp_changed = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower != share_state_temp.Lower
-        high_temp_changed = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper != share_state_temp.Upper
-        low_hum_changed = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower != share_state_hum.Lower
-        high_hum_changed = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper != share_state_hum.Upper
+        low_temp_changed = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
+                               0].Lower != share_state_temp.Lower
+        high_temp_changed = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
+                                0].Upper != share_state_temp.Upper
+        low_hum_changed = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[
+                              0].Lower != share_state_hum.Lower
+        high_hum_changed = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[
+                               0].Upper != share_state_hum.Upper
 
         if hum_alert_control:
             REQUEST["humidity"] = True
@@ -337,10 +373,12 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
         elif temp_threshold_control:
             show_celsius_display((255, 165, 40))
             if low_temp_changed:
-                share_state_temp.Lower = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
+                share_state_temp.Lower = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
+                    0].Lower
                 background(51, 153, 255)
             elif high_temp_changed:
-                share_state_temp.Upper = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+                share_state_temp.Upper = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
+                    0].Upper
                 background(130, 0, 0)
             await asyncio.sleep(2)
         elif hum_threshold_control:
@@ -351,9 +389,10 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
             elif high_hum_changed:
                 share_state_hum.Upper = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
                 background(51, 102, 204)
-            await asyncio.sleep(1)
-            sense.clear()
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2)
+        time.sleep(0.2)
+        sense.clear()
+        await asyncio.sleep(0.5)
     finally:
         provider.requests.pop(0)  # Now remove the request
 
@@ -385,9 +424,11 @@ async def process_metric(provider, metric_name, value, symbol_func, number_color
 
 
 async def main(provider):
-    global TIME_T, TIME_H
+    global TIME_T, TIME_H, VALUE
     share_state_temp = deepcopy(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0])
     share_state_hum = deepcopy(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0])
+    new_threshold = None  # Initialize new_threshold to prevent UnboundLocalError
+    metric_to_validate = None
 
     while True:
         t = time.time()
@@ -406,6 +447,41 @@ async def main(provider):
 
         update_temperature(provider, Decimal(temperature))
         metrics_info(provider)
+
+        if settings:
+            new_threshold = threshold_setting(provider)
+            continue
+
+        try:
+            if new_threshold is not None:
+                metric_handle = "temperature" if show_temp else "humidity"
+                with provider.mdib.metric_state_transaction() as tr:
+                    state = tr.get_state(metric_handle)
+                    pr = state.PhysiologicalRange[0]
+                    if lower_threshold:
+                        pr.Lower = Decimal(new_threshold)
+                    else:
+                        pr.Upper = Decimal(new_threshold)
+                    # Correctly set the validity on the state object
+                    state.MetricValue.MetricQuality.Validity = MeasurementValidity.CALIBRATION_ONGOING
+                VALUE = 0
+                metric_to_validate = metric_handle  # Mark this metric for validation
+        except NameError:
+            # This can happen on the first run if settings was never active.
+            pass
+        finally:
+            # Always reset new_threshold after processing
+            new_threshold = None
+
+        if metric_to_validate:
+            print(f"Waiting for validation of {metric_to_validate}...")
+            while True:
+                state = provider.mdib.states.descriptor_handle.get(metric_to_validate)
+                if state.MetricValue.MetricQuality.Validity == MeasurementValidity.VALIDATED_DATA:
+                    print(f"{metric_to_validate} is validated.")
+                    metric_to_validate = None  # Reset for next time
+                    break
+                await asyncio.sleep(0.5)  # Wait and check again
 
         if show_temp:
             should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 3)
@@ -464,7 +540,7 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    first_start(provider)
+    # first_start(provider)
     # register()
 
     with provider.mdib.metric_state_transaction() as tr:
@@ -478,3 +554,4 @@ if __name__ == '__main__':
         provider.stop_all()
         discovery.stop()
         print("Provider stopped.")
+
