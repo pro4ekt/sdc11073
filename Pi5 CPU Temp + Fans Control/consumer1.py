@@ -173,7 +173,7 @@ def button_pressed_worker(state: SharedState):
     print("Keyboard:\n[t]=Temperature Alarm Off, [h]=Humidity Alarm Off, "
           "\n[up]=Upper Temperature Threshold, [down]=Lower Temperature Threshold,"
           "\n[right]=Upper Humidity Threshold, [left]=Lower Humidity Threshold,"
-          "\n[y]=Validate New Threshold, [n]=Reject New Temp Threshold"
+          "\n[y]=Validate New Temp Threshold, [n]=Reject New Temp Threshold"
           "\n[q]=exit")
     keyboard.wait("q")
     print("Keyboard listener stopped.")
