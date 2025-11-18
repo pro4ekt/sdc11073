@@ -5,11 +5,12 @@ import threading
 import time
 import sounddevice as sd
 
+VENV_PYTHON = "/home/eugen/sdc11073/sdc11073/venv/bin/python"
 sense = SenseHat()
 flag = False
 
 def run_script(path):
-    return subprocess.Popen(["python3", path])
+    return subprocess.Popen([VENV_PYTHON, path])
 
 def joystick():
      pressed_time = None
@@ -21,7 +22,7 @@ def joystick():
          if e.action == "released":
                 try:
                     duration = float(time.time()) - float(pressed_time)
-                    if(duration > 1):
+                    if(duration > 3):
 
                         return
                     pressed_time = None
@@ -52,6 +53,6 @@ if __name__ == '__main__':
        current.wait()
 
        if current.args[1] == "Pi5 CPU Temp + Fans Control/sensestart.py":
-           current = run_script("Pi5 CPU Temp + Fans Control/provider2.py")
+           current = run_script("Pi5 CPU Temp + Fans Control/demo_provider.py")
        else:
            current = run_script("Pi5 CPU Temp + Fans Control/sensestart.py")

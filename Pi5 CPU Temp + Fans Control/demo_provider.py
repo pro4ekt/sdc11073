@@ -497,11 +497,11 @@ async def main(provider):
             pass
 
         if show_temp:
-            should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 3)
+            should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 10)
             if should_continue:
                 continue
         else:
-            should_continue = await process_metric(provider, 'humidity', humidity, h_show, (255, 100, 40), 6)
+            should_continue = await process_metric(provider, 'humidity', humidity, h_show, (255, 100, 40), 10)
             if should_continue:
                 continue
 
