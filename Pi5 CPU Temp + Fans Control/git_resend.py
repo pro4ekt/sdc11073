@@ -36,6 +36,8 @@ from sdc11073.provider.operations import SetValueOperation
 
 sense = SenseHat()
 show_temp = True
+settings = False
+lower_threshold = True
 DEVICE_ID = 0
 OFFSET_LEFT = 1
 OFFSET_TOP = 3
@@ -255,10 +257,18 @@ def metrics_info(provider):
 
 
 def joystick():
-    global show_temp, AMPLITUDE
+    global show_temp, AMPLITUDE, settings, VALUE, lower_threshold
     while True:
         events = sense.stick.get_events()
         for e in events:
+            if(settings):
+             if e.action == "pressed" and e.direction == "up":
+                VALUE = VALUE + 1
+             if e.action == "pressed" and e.direction == "down":
+                VALUE = VALUE - 1
+             if e.action == "pressed" and e.direction == "middle":
+                settings = not settings
+             continue 
             if e.action == "pressed" and e.direction == "middle":
                 show_temp = not show_temp
             if e.action == "pressed" and e.direction == "left":
@@ -271,7 +281,30 @@ def joystick():
             if e.action == "pressed" and e.direction == "right":
                 with AMPLITUDE_LOCK:
                     AMPLITUDE = AMPLITUDE + 0.3
+            if e.action == "pressed" and e.direction == "up":
+             settings = not settings
+             lower_threshold = not lower_threshold
+            if e.action == "pressed" and e.direction == "down":
+             settings = not settings
         time.sleep(0.05)
+
+
+def threshold_setting(provider):
+    global VALUE
+    if(show_temp):
+        if(lower_threshold):
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
+        else:
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+    else:
+        if(lower_threshold):
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
+        else:
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
+    sense.clear()
+    show_number(int(value), 255, 165, 40)
+    time.sleep(1)
+    return value
 
 
 def show_startup_screen(symbol_func, number, number_color, bg_color):
@@ -407,7 +440,36 @@ async def main(provider):
 
         update_temperature(provider, Decimal(temperature))
         metrics_info(provider)
-
+        if(settings):
+            new_threshold = threshold_setting(provider)
+            continue
+        try:
+            if(new_threshold != None):
+                if(show_temp):
+                    with provider.mdib.metric_state_transaction() as tr:
+                        temp_state = tr.get_state("temperature")
+                        vl = temp_state.MetricValue.MetricQuality.Validity
+                        vl = MeasurementValidity.CALIBRATION_ONGOING
+                        pr = temp_state.PhysiologicalRange[0]
+                        if(lower_threshold):
+                            pr.Lower = Decimal(new_threshold)
+                        else:
+                            pr.Upper = Decimal(new_threshold)
+                else:
+                    with provider.mdib.metric_state_transaction() as tr:
+                        hum_state = tr.get_state("humidity")
+                        pr = hum_state.PhysiologicalRange[0]
+                        if(lower_threshold):
+                            pr.Lower = Decimal(new_threshold)
+                        else:
+                            pr.Upper = Decimal(new_threshold)
+                VALUE = 0
+        except:
+            pass
+        finally:
+            pass
+        new_threshold = None
+        
         if show_temp:
             should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 3)
             if should_continue:

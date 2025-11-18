@@ -30,6 +30,7 @@ from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import AlertSignalPresence
 from sdc11073.xml_types.pm_types import AlertActivation
+from sdc11073.xml_types.pm_types import MetricQuality
 from sdc11073.mdib.statecontainers import AlertSignalStateContainer
 from sdc11073.xml_types.pm_types import NumericMetricValue
 from sdc11073.xml_types.pm_types import MeasurementValidity
@@ -382,7 +383,7 @@ if __name__ == '__main__':
 
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
-
+    a = provider.mdib.entities.by_handle("temperature").state.MetricValue.MetricQuality.Validity
     #register()
 
     with provider.mdib.metric_state_transaction() as tr:
@@ -458,6 +459,8 @@ if __name__ == '__main__':
                 if(show_temp):
                     with provider.mdib.metric_state_transaction() as tr:
                         temp_state = tr.get_state("temperature")
+                        vl = temp_state.MetricValue.MetricQuality.Validity
+                        vl = MeasurementValidity.CALIBRATION_ONGOING
                         pr = temp_state.PhysiologicalRange[0]
                         if(lower_threshold):
                             pr.Lower = Decimal(new_threshold)
