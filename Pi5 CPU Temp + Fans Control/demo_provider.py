@@ -565,7 +565,7 @@ if __name__ == '__main__':
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID)
 
-    #first_start(provider)
+    first_start(provider)
     try:
         asyncio.run(main(provider))
     except KeyboardInterrupt:
