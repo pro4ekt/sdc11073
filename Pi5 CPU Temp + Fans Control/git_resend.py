@@ -314,7 +314,7 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
 
     request = provider.requests[0]  # Get request without removing it yet
     try:
-        print(request.raw_data)
+        #print(request.raw_data)
         t = time.time()
 
         temp_alert_control = provider.find_string_in_request(request, "temperature_alert_control")

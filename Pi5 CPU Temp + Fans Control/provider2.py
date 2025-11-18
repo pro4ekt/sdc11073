@@ -39,6 +39,9 @@ from sdc11073.provider.operations import SetValueOperation
 
 sense = SenseHat()
 show_temp = True
+settings = False
+lower_threshold = True
+VALUE = 0
 DEVICE_ID = 0
 OFFSET_LEFT = 1
 OFFSET_TOP = 3
@@ -239,11 +242,18 @@ def metrics_info(provider):
     print("Temperature = ", provider.mdib.entities.by_handle("temperature").state.MetricValue.Value)
 
 def joystick():
-    global show_temp
+    global show_temp, AMPLITUDE, settings, VALUE, lower_threshold
     while True:
         events = sense.stick.get_events()
         for e in events:
-         global AMPLITUDE
+         if(settings):
+             if e.action == "pressed" and e.direction == "up":
+                VALUE = VALUE + 1
+             if e.action == "pressed" and e.direction == "down":
+                VALUE = VALUE - 1
+             if e.action == "pressed" and e.direction == "middle":
+                settings = not settings
+             continue 
          if e.action == "pressed" and e.direction == "middle":
              show_temp = not show_temp
          if e.action == "pressed" and e.direction == "left":
@@ -253,7 +263,11 @@ def joystick():
                  print("Min volume reached")
          if e.action == "pressed" and e.direction == "right":
              AMPLITUDE = AMPLITUDE + 0.3
-
+         if e.action == "pressed" and e.direction == "up":
+             settings = not settings
+             lower_threshold = not lower_threshold
+         if e.action == "pressed" and e.direction == "down":
+             settings = not settings
          """
          if e.action == "held":
              duration = time.time() - start
@@ -311,6 +325,23 @@ def first_start(provider):
     background(51,102,204) 
     
     time.sleep(2)
+
+def threshold_setting(provider):
+    global VALUE
+    if(show_temp):
+        if(lower_threshold):
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower
+        else:
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper
+    else:
+        if(lower_threshold):
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
+        else:
+            value = Decimal(VALUE) + provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
+    sense.clear()
+    show_number(int(value), 255, 165, 40)
+    time.sleep(1)
+    return value
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -415,11 +446,37 @@ if __name__ == '__main__':
     
 
         update_temperature(provider, Decimal(temperature))
-        metrics_info(provider)
+        #metrics_info(provider)
 
         lowTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower)
         highTempThreshold=int(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper)
-
+        if(settings):
+            new_threshold = threshold_setting(provider)
+            continue
+        try:
+            if(new_threshold != None):
+                if(show_temp):
+                    with provider.mdib.metric_state_transaction() as tr:
+                        temp_state = tr.get_state("temperature")
+                        pr = temp_state.PhysiologicalRange[0]
+                        if(lower_threshold):
+                            pr.Lower = Decimal(new_threshold)
+                        else:
+                            pr.Upper = Decimal(new_threshold)
+                else:
+                    with provider.mdib.metric_state_transaction() as tr:
+                        hum_state = tr.get_state("humidity")
+                        pr = hum_state.PhysiologicalRange[0]
+                        if(lower_threshold):
+                            pr.Lower = Decimal(new_threshold)
+                        else:
+                            pr.Upper = Decimal(new_threshold)
+                VALUE = 0
+        except:
+            pass
+        finally:
+            pass
+        new_threshold = None
         if(show_temp):
            t_show(255, 255, 0)
            show_number(int(temperature+0.5), 255, 165, 40)
