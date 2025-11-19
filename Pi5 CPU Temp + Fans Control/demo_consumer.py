@@ -99,22 +99,24 @@ class SdcConsumerApp:
 
         self.temp_thresh_var = tk.StringVar()
         self.hum_thresh_var = tk.StringVar()
+
+        ttk.Label(parent, text="Temperature:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(5,0))
         temp_entry = ttk.Entry(parent, textvariable=self.temp_thresh_var)
+        temp_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=2)
+        add_button("Set Temp Lower", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=True), 6, 0)
+        add_button("Set Temp Upper", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=False), 6, 1)
+
+        ttk.Label(parent, text="Humidity:").grid(row=7, column=0, columnspan=2, sticky="w", pady=(5,0))
         hum_entry = ttk.Entry(parent, textvariable=self.hum_thresh_var)
-
-        temp_entry.grid(row=4, column=0, columnspan=2, sticky="ew", pady=2)
-        hum_entry.grid(row=6, column=0, columnspan=2, sticky="ew", pady=2)
-
-        add_button("Set Temp Lower", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=True), 5, 0)
-        add_button("Set Temp Upper", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=False), 5, 1)
-        add_button("Set Hum Lower", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=True), 7, 0)
-        add_button("Set Hum Upper", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=False), 7, 1)
+        hum_entry.grid(row=8, column=0, columnspan=2, sticky="ew", pady=2)
+        add_button("Set Hum Lower", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=True), 9, 0)
+        add_button("Set Hum Upper", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=False), 9, 1)
 
         # --- Validation Controls ---
-        ttk.Separator(parent, orient='horizontal').grid(row=8, column=0, columnspan=2, sticky="ew", pady=10)
-        ttk.Label(parent, text="Validate Change:").grid(row=9, column=0, columnspan=2, sticky="w")
-        add_button("Validate Temp", lambda: self.threshold_control("temperature", "temperature_threshold_control", is_valid=True), 10, 0)
-        add_button("Validate Hum", lambda: self.threshold_control("humidity", "humidity_threshold_control", is_valid=True), 10, 1)
+        ttk.Separator(parent, orient='horizontal').grid(row=10, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Label(parent, text="Validate Change:").grid(row=11, column=0, columnspan=2, sticky="w")
+        add_button("Validate Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATED_DATA), 12, 0)
+        add_button("Reject Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATION_FAILED), 12, 1)
 
     def _run_sdc_logic(self):
         asyncio.run(self.sdc_main_loop())
@@ -178,7 +180,7 @@ class SdcConsumerApp:
         except Exception:
             self.log_to_gui(f"Invalid input for {metric_handle} threshold.")
 
-    def threshold_control(self, metric_handle: str, operation_handle: str, value: Decimal | None = None, is_lower: bool = True, is_valid: bool = False):
+    def threshold_control(self, metric_handle: str, operation_handle: str, value: Decimal | None = None, is_lower: bool = True, validity: MeasurementValidity | None = None):
         consumer = self.shared_state.consumer
         if not consumer or not consumer.mdib:
             self.log_to_gui("Cannot control threshold: consumer not ready.")
@@ -187,9 +189,9 @@ class SdcConsumerApp:
             metric_state = consumer.mdib.entities.by_handle(metric_handle).state
             proposed_metric_state = deepcopy(metric_state)
 
-            if is_valid:
-                proposed_metric_state.MetricValue.MetricQuality.Validity = MeasurementValidity.VALIDATED_DATA
-                self.log_to_gui(f"Validating metric '{metric_handle}'...")
+            if validity is not None:
+                proposed_metric_state.MetricValue.MetricQuality.Validity = validity
+                self.log_to_gui(f"Setting validity for '{metric_handle}' to {validity.value}...")
             elif value is not None:
                 if is_lower:
                     proposed_metric_state.PhysiologicalRange[0].Lower = value
