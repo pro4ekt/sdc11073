@@ -4,6 +4,8 @@ import asyncio
 import socket
 import threading
 import tkinter as tk
+import time
+import winsound
 from collections import deque
 from copy import deepcopy
 from decimal import Decimal
@@ -46,14 +48,28 @@ class SdcConsumerApp:
         self.shared_state = SharedState()
         self.running = True
 
+        # Events to control alarm sound threads
+        self.temp_alarm_active = threading.Event()
+        self.hum_alarm_active = threading.Event()
+        self.local_silence_active = threading.Event()
+
+        # Lock for handling alert updates sequentially
+        self.alert_lock = threading.Lock()
+
         # Keep a buffer of recent metric messages
         self.metric_log = deque(maxlen=100)
+
+        self.silence_button = None  # To hold the silence button widget
 
         self._init_ui()
 
         # Start the SDC logic in a separate thread
         self.sdc_thread = threading.Thread(target=self._run_sdc_logic, daemon=True)
         self.sdc_thread.start()
+
+        # Start a single alarm sound thread
+        self.sound_thread = threading.Thread(target=self._alarm_sound_loop, daemon=True)
+        self.sound_thread.start()
 
         # Start the periodic GUI updater
         self.process_queue()
@@ -87,36 +103,62 @@ class SdcConsumerApp:
         def add_button(text, action, row, col, colspan=1):
             button = ttk.Button(parent, text=text, command=action)
             button.grid(row=row, column=col, columnspan=colspan, sticky="ew", pady=2, padx=2)
+            return button
 
         # --- Alarm Controls ---
         ttk.Label(parent, text="Alarm Silence:").grid(row=0, column=0, columnspan=2, sticky="w")
         add_button("Temperature", lambda: self.alarm_control("al_signal_temperature", "temperature_alert_control"), 1, 0)
         add_button("Humidity", lambda: self.alarm_control("al_signal_humidity", "humidity_alert_control"), 1, 1)
+        self.silence_button = add_button("Silence Local Alarm", self.silence_local_alarm, 2, 0, colspan=2)
 
         # --- Threshold Controls ---
-        ttk.Separator(parent, orient='horizontal').grid(row=2, column=0, columnspan=2, sticky="ew", pady=10)
-        ttk.Label(parent, text="Set Thresholds:").grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Separator(parent, orient='horizontal').grid(row=3, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Label(parent, text="Set Thresholds:").grid(row=4, column=0, columnspan=2, sticky="w")
 
         self.temp_thresh_var = tk.StringVar()
         self.hum_thresh_var = tk.StringVar()
 
-        ttk.Label(parent, text="Temperature:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(5,0))
+        ttk.Label(parent, text="Temperature:").grid(row=5, column=0, columnspan=2, sticky="w", pady=(5,0))
         temp_entry = ttk.Entry(parent, textvariable=self.temp_thresh_var)
-        temp_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=2)
-        add_button("Set Temp Lower", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=True), 6, 0)
-        add_button("Set Temp Upper", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=False), 6, 1)
+        temp_entry.grid(row=6, column=0, columnspan=2, sticky="ew", pady=2)
+        add_button("Set Temp Lower", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=True), 7, 0)
+        add_button("Set Temp Upper", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=False), 7, 1)
 
-        ttk.Label(parent, text="Humidity:").grid(row=7, column=0, columnspan=2, sticky="w", pady=(5,0))
+        ttk.Label(parent, text="Humidity:").grid(row=8, column=0, columnspan=2, sticky="w", pady=(5,0))
         hum_entry = ttk.Entry(parent, textvariable=self.hum_thresh_var)
-        hum_entry.grid(row=8, column=0, columnspan=2, sticky="ew", pady=2)
-        add_button("Set Hum Lower", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=True), 9, 0)
-        add_button("Set Hum Upper", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=False), 9, 1)
+        hum_entry.grid(row=9, column=0, columnspan=2, sticky="ew", pady=2)
+        add_button("Set Hum Lower", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=True), 10, 0)
+        add_button("Set Hum Upper", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=False), 10, 1)
 
         # --- Validation Controls ---
-        ttk.Separator(parent, orient='horizontal').grid(row=10, column=0, columnspan=2, sticky="ew", pady=10)
-        ttk.Label(parent, text="Validate Change:").grid(row=11, column=0, columnspan=2, sticky="w")
-        add_button("Validate Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATED_DATA), 12, 0)
-        add_button("Reject Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATION_FAILED), 12, 1)
+        ttk.Separator(parent, orient='horizontal').grid(row=11, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Label(parent, text="Validate Change:").grid(row=12, column=0, columnspan=2, sticky="w")
+        add_button("Validate Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATED_DATA), 13, 0)
+        add_button("Reject Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATION_FAILED), 13, 1)
+
+    def _alarm_sound_loop(self):
+        """Plays a beep sound in a loop if any alarm event is set."""
+        while self.running:
+            # This loop will only run when at least one alarm event is set
+            if self.temp_alarm_active.is_set() or self.hum_alarm_active.is_set():
+                # If local silence is active, don't play sound.
+                if self.local_silence_active.is_set():
+                    time.sleep(0.5)  # Check again in a bit
+                    continue
+
+                # Prioritize temperature alarm sound
+                frequency = 420 if self.temp_alarm_active.is_set() else 640
+
+                try:
+                    winsound.Beep(frequency, 200)  # Play a short beep
+                    time.sleep(0.8)  # Wait for 0.8 seconds before the next beep
+                except Exception as e:
+                    print(f"Could not play sound: {e}")
+                    # Avoid busy-looping on error
+                    time.sleep(1)
+            else:
+                # If no events are set, sleep a bit to avoid a busy-wait loop
+                time.sleep(0.1)
 
     def _run_sdc_logic(self):
         asyncio.run(self.sdc_main_loop())
@@ -153,6 +195,32 @@ class SdcConsumerApp:
                 log_msg = f"{handle}: {value.Value:.2f} {unit}"
                 self.log_to_gui(log_msg)
 
+    def on_alert_update(self, alerts_by_handle: dict):
+        """Handle incoming alert state changes and play sounds."""
+        with self.alert_lock:
+            for handle, state in alerts_by_handle.items():
+                if handle not in ("al_signal_temperature", "al_signal_humidity"):
+                    continue
+
+                is_on = state.Presence == AlertSignalPresence.ON
+                target_event = self.temp_alarm_active if 'temperature' in handle else self.hum_alarm_active
+
+                if is_on and not target_event.is_set():
+                    self.log_to_gui(f"ALARM ON: {handle}")
+                    target_event.set()  # Start the sound loop
+                elif not is_on and target_event.is_set():
+                    self.log_to_gui(f"ALARM OFF: {handle}")
+                    target_event.clear()  # Stop the sound loop
+
+            # If all alarms are off, reset local silence
+            if not self.temp_alarm_active.is_set() and not self.hum_alarm_active.is_set():
+                if self.local_silence_active.is_set():
+                    self.log_to_gui("All alarms off. Resetting local silence.")
+                    self.local_silence_active.clear()
+                    if self.silence_button:
+                        # This needs to be thread-safe
+                        self.gui_queue.put(("update_button", "Silence Local Alarm"))
+
     def alarm_control(self, alert_handle: str, operation_handle: str):
         consumer = self.shared_state.consumer
         if not consumer or not consumer.mdib:
@@ -172,6 +240,19 @@ class SdcConsumerApp:
                 self.log_to_gui(f"No active alarm for '{alert_handle}'.")
         except Exception as e:
             self.log_to_gui(f"ERROR: alarm_control for '{alert_handle}': {e}")
+
+    def silence_local_alarm(self):
+        """Toggles local silence for alarms."""
+        if self.local_silence_active.is_set():
+            self.local_silence_active.clear()
+            self.log_to_gui("Local alarm sound re-enabled.")
+            if self.silence_button:
+                self.silence_button.config(text="Silence Local Alarm")
+        else:
+            self.local_silence_active.set()
+            self.log_to_gui("Local alarm sound silenced.")
+            if self.silence_button:
+                self.silence_button.config(text="Un-silence Local Alarm")
 
     def threshold_control_from_ui(self, metric_handle: str, op_handle: str, tk_var: tk.StringVar, is_lower: bool):
         try:
@@ -244,6 +325,7 @@ class SdcConsumerApp:
 
             self.shared_state.consumer = consumer
             observableproperties.bind(mdib, metrics_by_handle=self.on_metric_update)
+            observableproperties.bind(mdib, alert_by_handle=self.on_alert_update)
             self.log_to_gui("Connection established. Monitoring...")
 
             while self.running:
@@ -256,6 +338,9 @@ class SdcConsumerApp:
 
     def on_closing(self):
         self.running = False
+        # Signal alarm thread to stop waiting
+        self.temp_alarm_active.set() # Set to allow the loop to exit if waiting
+        self.hum_alarm_active.set()
         self.root.destroy()
 
 
