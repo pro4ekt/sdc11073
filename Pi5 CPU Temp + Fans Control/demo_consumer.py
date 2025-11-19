@@ -150,7 +150,7 @@ class SdcConsumerApp:
                 frequency = 420 if self.temp_alarm_active.is_set() else 640
 
                 try:
-                    winsound.Beep(frequency, 200)  # Play a short beep
+                    winsound.Beep(frequency, 500)  # Play a short beep
                     time.sleep(0.8)  # Wait for 0.8 seconds before the next beep
                 except Exception as e:
                     print(f"Could not play sound: {e}")
@@ -169,23 +169,34 @@ class SdcConsumerApp:
 
     def process_queue(self):
         """Periodically called to update the GUI from the queue."""
+        log_updated = False
         try:
             while True:
                 message = self.gui_queue.get_nowait()
-                self.metric_log.append(message)
 
-                # Update text widget
-                self.metrics_text.configure(state=tk.NORMAL)
-                self.metrics_text.delete('1.0', tk.END)
-                self.metrics_text.insert(tk.END, "\n".join(self.metric_log))
-                self.metrics_text.see(tk.END) # Auto-scroll
-                self.metrics_text.configure(state=tk.DISABLED)
+                if isinstance(message, tuple) and message[0] == "update_button":
+                    # Handle button update command
+                    if self.silence_button:
+                        self.silence_button.config(text=message[1])
+                elif isinstance(message, str):
+                    # Handle log message
+                    self.metric_log.append(message)
+                    log_updated = True
+                # else: ignore unknown message types
 
         except Empty:
             pass  # No new messages
-        finally:
-            if self.running:
-                self.root.after(100, self.process_queue)
+
+        # Only update the text widget if the log has changed
+        if log_updated:
+            self.metrics_text.configure(state=tk.NORMAL)
+            self.metrics_text.delete('1.0', tk.END)
+            self.metrics_text.insert(tk.END, "\n".join(self.metric_log))
+            self.metrics_text.see(tk.END)  # Auto-scroll
+            self.metrics_text.configure(state=tk.DISABLED)
+
+        if self.running:
+            self.root.after(100, self.process_queue)
 
     def on_metric_update(self, metrics_by_handle: dict):
         for handle, state in metrics_by_handle.items():
