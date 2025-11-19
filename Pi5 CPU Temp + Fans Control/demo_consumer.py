@@ -17,6 +17,7 @@ from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types.pm_types import AlertSignalPresence, MeasurementValidity
+from myDbClass.dbworker import DBWorker
 
 
 # A simple thread-safe class to share the consumer object
@@ -66,6 +67,8 @@ class SdcConsumerApp:
         # Start the SDC logic in a separate thread
         self.sdc_thread = threading.Thread(target=self._run_sdc_logic, daemon=True)
         self.sdc_thread.start()
+        self.sdc_consumer_id = None
+        self.db_worker = None
 
         # Start a single alarm sound thread
         self.sound_thread = threading.Thread(target=self._alarm_sound_loop, daemon=True)
@@ -247,6 +250,10 @@ class SdcConsumerApp:
                     operation_handle=operation_handle,
                     proposed_alert_state=proposed_state
                 )
+                self.db_worker.operation_register(
+                    provider_id=int(consumer.mdib.entities.by_handle("device_id").state.MetricValue.Value),
+                    operation_handle=operation_handle,
+                    performed_by="SDC Consumer")
             else:
                 self.log_to_gui(f"No active alarm for '{alert_handle}'.")
         except Exception as e:
@@ -298,6 +305,9 @@ class SdcConsumerApp:
                 operation_handle=operation_handle,
                 proposed_metric_states=[proposed_metric_state]
             )
+            self.db_worker.operation_register(provider_id=int(consumer.mdib.entities.by_handle("device_id").state.MetricValue.Value),
+                                  operation_handle=operation_handle,
+                                  performed_by="SDC Consumer")
         except Exception as e:
             self.log_to_gui(f"ERROR: threshold_control for '{metric_handle}': {e}")
 
@@ -333,6 +343,10 @@ class SdcConsumerApp:
 
             mdib = ConsumerMdib(consumer)
             mdib.init_mdib()
+
+            self.db_worker = db = DBWorker(host='localhost', user='testuser2', password='1234', database='demo_db', mdib=mdib)
+            self.db_worker.register(device_name='Laptop Consumer', device_type='consumer', device_location='Laboratory')
+            self.sdc_consumer_id = db.device_id
 
             self.shared_state.consumer = consumer
             observableproperties.bind(mdib, metrics_by_handle=self.on_metric_update)
