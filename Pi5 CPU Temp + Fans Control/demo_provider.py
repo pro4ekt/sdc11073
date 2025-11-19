@@ -561,10 +561,15 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
-    #db.delete_db()
-    db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
-    DEVICE_ID = db.device_id
+    try:
+        db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
+        #db.delete_db()
+        db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
+        DEVICE_ID = db.device_id
+    except Exception as e:
+        pass
+    finally:
+        pass
 
     with provider.mdib.metric_state_transaction() as tr:
         id = tr.get_state("device_id")
