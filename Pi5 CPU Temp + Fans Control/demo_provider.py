@@ -466,9 +466,9 @@ async def main(provider,db):
             pass
         try:
             if metric_to_validate is not None:
+             print(f"Waiting for validation of {metric_to_validate}...")
              while True:
                 if(metric_handle == "temperature"):
-                    print(f"Waiting for validation of {metric_to_validate}...")
                     state = provider.mdib.entities.by_handle(metric_to_validate).state
                     if state.MetricValue.MetricQuality.Validity == MeasurementValidity.VALIDATED_DATA:
                         print(f"{metric_to_validate} is validated.")
@@ -561,15 +561,16 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    try:
-        db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
-        #db.delete_db()
-        db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
-        DEVICE_ID = db.device_id
-    except Exception as e:
-        pass
-    finally:
-        pass
+    while True:
+        try:
+            db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
+            db.delete_db()
+            db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
+            DEVICE_ID = db.device_id
+            break
+        except:
+            print("Database connection failed. Retrying in 5 seconds...")
+            continue
 
     with provider.mdib.metric_state_transaction() as tr:
         id = tr.get_state("device_id")
