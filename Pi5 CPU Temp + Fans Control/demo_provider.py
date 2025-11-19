@@ -143,43 +143,42 @@ def h_show(r, g, b):
     sense.set_pixel(2, 0, r, g, b)
 
 
-def show_celsius_display(c_color, symbol_color=(255, 165, 40)):
-    """
-    Displays a smaller 'C' and a larger degree symbol with a hole at the same time.
-    """
+def show_celsius_display(c_color, value = None):
     O = (0, 0, 0)
     C = c_color
-    S = symbol_color
 
     pixels = [
-        O, O, O, O, S, S, S, O,
-        O, O, O, O, S, O, S, O,
-        C, C, C, O, S, S, S, O,
-        C, O, O, O, O, O, O, O,
-        C, O, O, O, O, O, O, O,
-        C, O, O, O, O, O, O, O,
-        C, C, C, O, O, O, O, O,
+        C, C, C, O, O, C, C, C,
+        O, C, O, O, O, O, C, O,
+        O, C, O, O, O, O, C, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
         O, O, O, O, O, O, O, O,
     ]
     sense.set_pixels(pixels)
 
+    show_number(int(value) if value is not None else 0, *(c_color))
 
-def show_humidity_display(h_color, symbol_color=(255, 100, 40)):
+
+def show_humidity_display(h_color, value = None):
     O = (0, 0, 0)
-    H = h_color
-    S = symbol_color
+    C = h_color
 
     pixels = [
+        C, O, C, O, O, C, C, C,
+        C, C, C, O, O, O, C, O,
+        C, O, C, O, O, O, C, O,
         O, O, O, O, O, O, O, O,
-        O, O, O, S, S, O, O, S,
-        H, O, H, S, S, O, S, O,
-        H, O, H, O, O, S, O, O,
-        H, H, H, O, S, O, S, S,
-        H, O, H, S, O, O, S, S,
-        H, O, H, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
         O, O, O, O, O, O, O, O,
     ]
     sense.set_pixels(pixels)
+
+    show_number(int(value) if value is not None else 0, *(h_color))
 
 
 def update_humidity(provider, value: Decimal, db):
@@ -368,23 +367,25 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
             REQUEST["temperature"] = True
             TIME_T = t
         elif temp_threshold_control:
-            show_celsius_display((255, 165, 40))
             if low_temp_changed:
                 share_state_temp.Lower = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
                     0].Lower
+                show_celsius_display((255, 165, 40), share_state_temp.Lower)
                 background(51, 153, 255)
             elif high_temp_changed:
                 share_state_temp.Upper = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
                     0].Upper
+                show_celsius_display((255, 165, 40), share_state_temp.Upper)
                 background(130, 0, 0)
             await asyncio.sleep(2)
         elif hum_threshold_control:
-            show_humidity_display((255, 100, 40))
             if low_hum_changed:
                 share_state_hum.Lower = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
+                show_humidity_display((255, 100, 40), share_state_hum.Lower)
                 background(204, 153, 102)
             elif high_hum_changed:
                 share_state_hum.Upper = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
+                show_humidity_display((255, 100, 40), share_state_hum.Upper)
                 background(51, 102, 204)
             await asyncio.sleep(2)
         time.sleep(0.2)
