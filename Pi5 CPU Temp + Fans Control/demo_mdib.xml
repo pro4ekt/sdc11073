@@ -38,9 +38,6 @@
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temperature" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="°"></pm:Unit>
                         </pm:Metric>
-                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="pressure" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
-                            <pm:Unit Code="code"></pm:Unit>
-                        </pm:Metric>
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_id" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="id"></pm:Unit>
                         </pm:Metric>
@@ -101,12 +98,7 @@
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
-                <pm:PhysiologicalRange Lower="30" Upper="45"></pm:PhysiologicalRange>
-            </pm:State>
-            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="pressure" >
-                <pm:MetricValue Value="0">
-                    <pm:MetricQuality Validity="Vld" />
-                </pm:MetricValue>
+                <pm:PhysiologicalRange Lower="30" Upper="33"></pm:PhysiologicalRange>
             </pm:State>
         </pm:MdState>
     </msg:Mdib>

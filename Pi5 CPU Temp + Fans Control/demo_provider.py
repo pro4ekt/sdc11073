@@ -182,23 +182,23 @@ def show_humidity_display(h_color, symbol_color=(255, 100, 40)):
     sense.set_pixels(pixels)
 
 
-def update_humidity(provider, value: Decimal):
+def update_humidity(provider, value: Decimal, db):
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state("humidity")
         mv = temp_state.MetricValue
         mv.Value = value
-    # observation_register(HUMIDITY_ID, value)
+    db.observation_register("humidity", value)
 
 
-def update_temperature(provider, value: Decimal):
+def update_temperature(provider, value: Decimal, db):
     with provider.mdib.metric_state_transaction() as tr:
         temp_state = tr.get_state("temperature")
         mv = temp_state.MetricValue
         mv.Value = value
-    # observation_register(HUMIDITY_ID, value)
+    db.observation_register("temperature", value)
 
 
-def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool):
+def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool, db):
     """Generic alarm evaluation function."""
     config = ALARM_CONFIG[metric_name]
     metric_handle = config['metric_handle']
@@ -219,7 +219,8 @@ def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool):
             sig_state = tr.get_state(signal_handle)
             # The signal is ON if not in timeout, otherwise OFF.
             sig_state.Presence = AlertSignalPresence.OFF if timeout else AlertSignalPresence.ON
-
+        if not any(metric_handle in alarm for alarm in db.alarms):
+            db.alarm_register(metric_handle)
         # Set background color regardless of timeout
         if value < low_threshold:
             background(*colors['low'])
@@ -241,6 +242,8 @@ def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool):
             sig_state = tr.get_state(signal_handle)
             if sig_state.Presence != AlertSignalPresence.OFF:
                 sig_state.Presence = AlertSignalPresence.OFF
+        if any(metric_handle in alarm for alarm in db.alarms):
+            db.alarm_resolve(metric_handle)
 
 
 def metrics_info(provider):
@@ -391,7 +394,7 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
         provider.requests.pop(0)  # Now remove the request
 
 
-async def process_metric(provider, metric_name, value, symbol_func, number_color, timeout_duration):
+async def process_metric(provider, metric_name, value, symbol_func, number_color, timeout_duration, db):
     """Handles display and alarm logic for a given metric."""
     global REQUEST, TIME_T, TIME_H
     t = time.time()
@@ -403,21 +406,21 @@ async def process_metric(provider, metric_name, value, symbol_func, number_color
 
     if REQUEST[metric_name]:
         if t - current_time < timeout_duration:
-            evaluate_alarm(provider, metric_name, value, True)
+            evaluate_alarm(provider, metric_name, value, True, db)
             await asyncio.sleep(1)
             return True  # Indicate that we should 'continue' the loop
         else:
-            evaluate_alarm(provider, metric_name, value, False)
+            evaluate_alarm(provider, metric_name, value, False, db)
             REQUEST[metric_name] = False
             globals()[time_key] = 0
             await asyncio.sleep(1)
             return True  # Indicate that we should 'continue' the loop
 
-    evaluate_alarm(provider, metric_name, value, False)
+    evaluate_alarm(provider, metric_name, value, False, db)
     return False
 
 
-async def main(provider):
+async def main(provider,db):
     global TIME_T, TIME_H, VALUE, lower_threshold
     share_state_temp = deepcopy(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0])
     share_state_hum = deepcopy(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0])
@@ -438,9 +441,9 @@ async def main(provider):
         humidity = sense.humidity
         temperature = sense.temperature
 
-        update_humidity(provider, Decimal(humidity))
+        update_humidity(provider, Decimal(humidity),db)
 
-        update_temperature(provider, Decimal(temperature))
+        update_temperature(provider, Decimal(temperature),db)
         metrics_info(provider)
 
         if settings:
@@ -501,11 +504,11 @@ async def main(provider):
             pass
 
         if show_temp:
-            should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 10)
+            should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 10, db)
             if should_continue:
                 continue
         else:
-            should_continue = await process_metric(provider, 'humidity', humidity, h_show, (255, 100, 40), 10)
+            should_continue = await process_metric(provider, 'humidity', humidity, h_show, (255, 100, 40), 10, db)
             if should_continue:
                 continue
 
@@ -557,17 +560,18 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    #db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
-    #db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
-    ##DEVICE_ID = db.device_id
+    db = DBWorker(host="10.248.255.140", user="testuser1", password="1234", database="demo_db", mdib=provider.mdib)
+    #db.delete_db()
+    db.register(device_name="Sense Hat", device_type="provider", device_location="TTZ Bad Kissingen")
+    DEVICE_ID = db.device_id
 
     with provider.mdib.metric_state_transaction() as tr:
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID)
 
-    first_start(provider)
+    #first_start(provider)
     try:
-        asyncio.run(main(provider))
+        asyncio.run(main(provider,db))
     except KeyboardInterrupt:
         print("Stopping provider...")
         provider.stop_all()
