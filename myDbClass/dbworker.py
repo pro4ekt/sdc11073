@@ -1,12 +1,14 @@
 import mysql.connector
 from decimal import Decimal
 import time
+from typing import Union
+from typing import Literal
 
 from sdc11073.mdib import ProviderMdib
-
+from sdc11073.mdib import ConsumerMdib
 
 class DBWorker:
-    def __init__(self, host: str, user: str, password: str, database: str, mdib : ProviderMdib):
+    def __init__(self, host: str, user: str, password: str, database: str, mdib : Union[ProviderMdib,ConsumerMdib]):
         self.host = host
         self.user = user
         self.password = password
@@ -19,11 +21,16 @@ class DBWorker:
             database=self.database)
 
         self.device_id = 0
-        self.mdib = mdib
+        if isinstance(mdib, ProviderMdib):
+            self.provider_mdib = mdib
+            self.consumer_mdib = None
+        else:
+            self.consumer_mdib = mdib
+            self.provider_mdib = None
         self.metrics = []
         self.alarms = []
 
-    def register(self,device_name: str, device_type: str, device_location: str):
+    def register(self,device_name: str, device_type: Literal["provider","consumer"], device_location: str):
         try:
             cur = self.db.cursor()
 
@@ -34,19 +41,20 @@ class DBWorker:
             device_id = cur.lastrowid
             self.device_id = device_id
 
-            obj = self.mdib.descriptions.objects
-            metrics_descriptors = []
+            if device_type == "provider" and self.provider_mdib is not None:
+               obj = self.provider_mdib.descriptions.objects
+               metrics_descriptors = []
 
-            for containers in obj:
-                type_name = type(containers).__name__
-                if "NumericMetricDescriptor" in type_name:
-                    metrics_descriptors.append(containers)
+               for containers in obj:
+                   type_name = type(containers).__name__
+                   if "NumericMetricDescriptor" in type_name:
+                       metrics_descriptors.append(containers)
 
-            for metric in metrics_descriptors:
-                cur.execute(
-                    "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
-                    (self.device_id, metric.Handle, metric.Unit.Code, 0))
-                self.metrics.append([metric.Handle, cur.lastrowid])
+               for metric in metrics_descriptors:
+                   cur.execute(
+                       "INSERT INTO metrics (device_id, name, unit, threshold) VALUES (%s, %s, %s, %s)",
+                       (self.device_id, metric.Handle, metric.Unit.Code, 0))
+                   self.metrics.append([metric.Handle, cur.lastrowid])
 
             self.db.commit()
         finally:
@@ -71,12 +79,13 @@ class DBWorker:
             except:
                 pass
 
-    def operation_register(self, provider_id: int, operation_type: str, performed_by: str):
+    def operation_register(self, provider_id: int, operation_handle: str, performed_by: str):
         try:
             cur = self.db.cursor()
-            cur.execute(
-                "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
-                (self.device_id, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), operation_type, performed_by))
+            if self.consumer_mdib is not None:
+                cur.execute(
+                    "INSERT INTO operations (consumer_id, provider_id, time, type, performed_by) VALUES (%s, %s, %s, %s, %s)",
+                    (self.device_id, provider_id, time.strftime("%Y-%m-%d %H:%M:%S"), operation_handle, performed_by))
             self.db.commit()
         finally:
             try:
