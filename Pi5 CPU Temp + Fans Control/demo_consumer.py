@@ -137,7 +137,7 @@ class SdcConsumerApp:
         ttk.Separator(parent, orient='horizontal').grid(row=11, column=0, columnspan=2, sticky="ew", pady=10)
         ttk.Label(parent, text="Validate Change:").grid(row=12, column=0, columnspan=2, sticky="w")
         add_button("Validate Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATED_DATA), 13, 0)
-        add_button("Reject Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATION_FAILED), 13, 1)
+        add_button("Reject Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.QUESTIONABLE), 13, 1)
 
     def _alarm_sound_loop(self):
         """Plays a beep sound in a loop if any alarm event is set."""
@@ -203,6 +203,9 @@ class SdcConsumerApp:
 
     def on_metric_update(self, metrics_by_handle: dict):
         for handle, state in metrics_by_handle.items():
+            if (state.MetricValue.MetricQuality.Validity == MeasurementValidity.CALIBRATION_ONGOING):
+                log_msg = f"{handle}: Threshold calibration ongoing...validate or reject."
+                self.log_to_gui(log_msg)
             value = state.MetricValue
             if value and value.Value is not None:
                 unit = state.descriptor_container.Unit.Code
