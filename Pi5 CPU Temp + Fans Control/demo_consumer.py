@@ -121,23 +121,41 @@ class SdcConsumerApp:
         self.temp_thresh_var = tk.StringVar()
         self.hum_thresh_var = tk.StringVar()
 
+        # New StringVars for individual current threshold display
+        self.temp_lower_var = tk.StringVar(value="Current Lower: N/A")
+        self.temp_upper_var = tk.StringVar(value="Current Upper: N/A")
+        self.hum_lower_var = tk.StringVar(value="Current Hum Lower: N/A")
+        self.hum_upper_var = tk.StringVar(value="Current Hum Upper: N/A")
+
+        # Temperature controls
         ttk.Label(parent, text="Temperature:").grid(row=5, column=0, columnspan=2, sticky="w", pady=(5,0))
         temp_entry = ttk.Entry(parent, textvariable=self.temp_thresh_var)
         temp_entry.grid(row=6, column=0, columnspan=2, sticky="ew", pady=2)
-        add_button("Set Temp Lower", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=True), 7, 0)
-        add_button("Set Temp Upper", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=False), 7, 1)
 
-        ttk.Label(parent, text="Humidity:").grid(row=8, column=0, columnspan=2, sticky="w", pady=(5,0))
+        # Current threshold labels for temperature (in a row)
+        ttk.Label(parent, textvariable=self.temp_lower_var).grid(row=7, column=0, sticky="w", padx=(0, 5))
+        ttk.Label(parent, textvariable=self.temp_upper_var).grid(row=7, column=1, sticky="w", pady=(0, 4), padx=(5, 0))
+
+        add_button("Set Temp Lower", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=True), 8, 0)
+        add_button("Set Temp Upper", lambda: self.threshold_control_from_ui("temperature", "temperature_threshold_control", self.temp_thresh_var, is_lower=False), 8, 1)
+
+        # Humidity controls
+        ttk.Label(parent, text="Humidity:").grid(row=9, column=0, columnspan=2, sticky="w", pady=(5,0))
         hum_entry = ttk.Entry(parent, textvariable=self.hum_thresh_var)
-        hum_entry.grid(row=9, column=0, columnspan=2, sticky="ew", pady=2)
-        add_button("Set Hum Lower", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=True), 10, 0)
-        add_button("Set Hum Upper", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=False), 10, 1)
+        hum_entry.grid(row=10, column=0, columnspan=2, sticky="ew", pady=2)
+
+        # Current threshold labels for humidity (in a row)
+        ttk.Label(parent, textvariable=self.hum_lower_var).grid(row=11, column=0, sticky="w", padx=(0, 5))
+        ttk.Label(parent, textvariable=self.hum_upper_var).grid(row=11, column=1, sticky="w", pady=(0, 4), padx=(5, 0))
+
+        add_button("Set Hum Lower", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=True), 12, 0)
+        add_button("Set Hum Upper", lambda: self.threshold_control_from_ui("humidity", "humidity_threshold_control", self.hum_thresh_var, is_lower=False), 12, 1)
 
         # --- Validation Controls ---
-        ttk.Separator(parent, orient='horizontal').grid(row=11, column=0, columnspan=2, sticky="ew", pady=10)
-        ttk.Label(parent, text="Validate Change:").grid(row=12, column=0, columnspan=2, sticky="w")
-        add_button("Validate Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATED_DATA), 13, 0)
-        add_button("Reject Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.QUESTIONABLE), 13, 1)
+        ttk.Separator(parent, orient='horizontal').grid(row=13, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Label(parent, text="Validate Change:").grid(row=14, column=0, columnspan=2, sticky="w")
+        add_button("Validate Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.VALIDATED_DATA), 15, 0)
+        add_button("Reject Temperature", lambda: self.threshold_control("temperature", "temperature_threshold_control", validity=MeasurementValidity.QUESTIONABLE), 15, 1)
 
     def _alarm_sound_loop(self):
         """Plays a beep sound in a loop if any alarm event is set."""
@@ -162,6 +180,26 @@ class SdcConsumerApp:
             else:
                 # If no events are set, sleep a bit to avoid a busy-wait loop
                 time.sleep(0.1)
+
+    def _update_current_threshold_labels(self, metric_handle: str, state) -> None:
+        """Update the matching current-threshold StringVars from a metric state object."""
+        lower, upper = "N/A", "N/A"
+        try:
+            # PhysiologicalRange may be absent; handle gracefully
+            ranges = getattr(state, "PhysiologicalRange", None)
+            if ranges and len(ranges) > 0:
+                pr = ranges[0]
+                lower = pr.Lower if getattr(pr, "Lower", None) is not None else "N/A"
+                upper = pr.Upper if getattr(pr, "Upper", None) is not None else "N/A"
+        except Exception:
+            pass  # Keep default "N/A" on any error
+
+        if metric_handle == "temperature":
+            self.temp_lower_var.set(f"Current Lower: {lower}")
+            self.temp_upper_var.set(f"Current Upper: {upper}")
+        elif metric_handle == "humidity":
+            self.hum_lower_var.set(f"Current Hum Lower: {lower}")
+            self.hum_upper_var.set(f"Current Hum Upper: {upper}")
 
     def _run_sdc_logic(self):
         asyncio.run(self.sdc_main_loop())
@@ -211,6 +249,10 @@ class SdcConsumerApp:
                 unit = state.descriptor_container.Unit.Code
                 log_msg = f"{handle}: {value.Value:.2f} {unit}"
                 self.log_to_gui(log_msg)
+
+            # Update displayed current thresholds when metric state arrives
+            if handle in ("temperature", "humidity"):
+                self._update_current_threshold_labels(handle, state)
 
     def on_alert_update(self, alerts_by_handle: dict):
         """Handle incoming alert state changes and play sounds."""
@@ -295,6 +337,11 @@ class SdcConsumerApp:
                 proposed_metric_state.MetricValue.MetricQuality.Validity = validity
                 self.log_to_gui(f"Setting validity for '{metric_handle}' to {validity.value}...")
             elif value is not None:
+                # Ensure PhysiologicalRange exists, which is robust practice.
+                if not proposed_metric_state.PhysiologicalRange:
+                    # If it's missing, create it. The sdc11073 library will handle the type.
+                    proposed_metric_state.mk_proposed_value().PhysiologicalRange.append()
+
                 if is_lower:
                     proposed_metric_state.PhysiologicalRange[0].Lower = value
                     self.log_to_gui(f"Setting {metric_handle} lower threshold to {value}...")
