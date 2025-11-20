@@ -297,7 +297,22 @@ def threshold_setting(provider):
         else:
             value = Decimal(VALUE) + provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
     sense.clear()
-    show_number(int(value), 255, 165, 40)
+    O = (0, 0, 0)
+    C = (255, 100, 40)
+    pixels = [
+        O, O, O, O, O, C, C, C,
+        O, O, O, O, O, O, C, O,
+        O, O, O, O, O, O, C, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+        O, O, O, O, O, O, O, O,
+    ]
+    sense.set_pixels(pixels)
+    
+    show_number(int(value), 255, 100, 40)
+
     time.sleep(1)
     return value
 
@@ -370,23 +385,41 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
             if low_temp_changed:
                 share_state_temp.Lower = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
                     0].Lower
-                show_celsius_display((255, 165, 40), share_state_temp.Lower)
-                background(51, 153, 255)
-            elif high_temp_changed:
+            if high_temp_changed:
                 share_state_temp.Upper = provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[
                     0].Upper
+
+            # Always show something on a threshold request
+            if low_temp_changed or high_temp_changed:
+                if low_temp_changed:
+                    show_celsius_display((255, 165, 40), share_state_temp.Lower)
+                    background(51, 153, 255)
+                else: # high_temp_changed
+                    show_celsius_display((255, 165, 40), share_state_temp.Upper)
+                    background(130, 0, 0)
+            else: # No change, but still show something. Assume we show upper threshold.
                 show_celsius_display((255, 165, 40), share_state_temp.Upper)
                 background(130, 0, 0)
+
             await asyncio.sleep(2)
         elif hum_threshold_control:
             if low_hum_changed:
                 share_state_hum.Lower = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower
-                show_humidity_display((255, 100, 40), share_state_hum.Lower)
-                background(204, 153, 102)
-            elif high_hum_changed:
+            if high_hum_changed:
                 share_state_hum.Upper = provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper
+
+            # Always show something on a threshold request
+            if low_hum_changed or high_hum_changed:
+                if low_hum_changed:
+                    show_humidity_display((255, 100, 40), share_state_hum.Lower)
+                    background(204, 153, 102)
+                else: # high_hum_changed
+                    show_humidity_display((255, 100, 40), share_state_hum.Upper)
+                    background(51, 102, 204)
+            else: # No change, but still show something. Assume we show upper threshold.
                 show_humidity_display((255, 100, 40), share_state_hum.Upper)
                 background(51, 102, 204)
+
             await asyncio.sleep(2)
         time.sleep(0.2)
         sense.clear()
