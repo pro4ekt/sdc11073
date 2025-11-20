@@ -284,7 +284,7 @@ def joystick():
         time.sleep(0.05)
 
 
-def threshold_setting(provider):
+async def threshold_setting(provider):
     global VALUE
     if (show_temp):
         if (lower_threshold):
@@ -313,7 +313,7 @@ def threshold_setting(provider):
     
     show_number(int(value), 255, 100, 40)
 
-    time.sleep(1)
+    await asyncio.sleep(1)
     return value
 
 
@@ -421,7 +421,7 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
                 background(51, 102, 204)
 
             await asyncio.sleep(2)
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
         sense.clear()
         await asyncio.sleep(0.5)
     finally:
@@ -481,7 +481,7 @@ async def main(provider,db):
         metrics_info(provider)
 
         if settings:
-            new_threshold = threshold_setting(provider)
+            new_threshold = await threshold_setting(provider)
             continue
 
         try:
@@ -609,7 +609,7 @@ if __name__ == '__main__':
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID)
 
-    #first_start(provider)
+    first_start(provider)
     try:
         asyncio.run(main(provider,db))
     except KeyboardInterrupt:

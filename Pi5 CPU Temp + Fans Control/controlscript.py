@@ -40,7 +40,6 @@ def joystick():
                       run_script("Pi5 CPU Temp + Fans Control/provider2.py",2)
                     """ 
                  
-
 if __name__ == '__main__':
 
     current = run_script("Pi5 CPU Temp + Fans Control/sensestart.py")
