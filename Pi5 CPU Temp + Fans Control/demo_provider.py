@@ -12,6 +12,7 @@ import asyncio
 
 import numpy as np
 import sounddevice as sd
+from PIL import Image
 from sense_hat import SenseHat
 
 from mydbworker import DBWorker
@@ -59,6 +60,13 @@ NUMS = [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1,  # 0
         1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1,  # 8
         1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1]  # 9
 
+def save_img(name):
+    pixels = sense.get_pixels()
+    img = Image.new('RGB', (8, 8))
+    img.putdata([tuple(p) for p in pixels])
+    img = img.resize((240, 240), Image.NEAREST)
+    img.save(name)
+
 # --- Constants for Alarms ---
 ALARM_CONFIG = {
     'temperature': {
@@ -84,7 +92,6 @@ ALARM_CONFIG = {
         'sound_freq': 640,
     }
 }
-
 
 def sound(duration, frequncy, amplitude=1):
     sample_rate = 44100
@@ -223,8 +230,10 @@ def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool, db):
         # Set background color regardless of timeout
         if value < low_threshold:
             background(*colors['low'])
+            save_img(f"{metric_name}_low_alarm.png")
         else:
             background(*colors['high'])
+            save_img(f"{metric_name}_high_alarm.png")
 
         # Play sound only if the signal is ON (i.e., not in timeout)
         if not timeout:
@@ -233,6 +242,7 @@ def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool, db):
             sound(1, sound_freq, amp)
     else:
         background(*colors['normal'])
+        save_img(f"{metric_name}_normal.png")
         # Optionally reset alert condition when back in normal range
         with provider.mdib.alert_state_transaction() as tr:
             cond_state = tr.get_state(condition_handle)
@@ -317,12 +327,13 @@ async def threshold_setting(provider):
     return value
 
 
-def show_startup_screen(symbol_func, number, number_color, bg_color):
+def show_startup_screen(symbol_func, number, number_color, bg_color, name):
     """Helper to display a screen during startup."""
     sense.clear()
     symbol_func(255, 255, 255)
     show_number(number, *number_color)
     background(*bg_color)
+    save_img(name)
     time.sleep(2)
 
 
@@ -340,13 +351,13 @@ def first_start(provider):
     temp_color = (255, 165, 40)
     hum_color = (255, 100, 40)
 
-    show_startup_screen(t_show, lowTempThreshold, temp_color, (51, 153, 255))
-    show_startup_screen(t_show, midTemp, temp_color, (51, 204, 51))
-    show_startup_screen(t_show, highTempThreshold, temp_color, (255, 51, 51))
+    show_startup_screen(t_show, lowTempThreshold, temp_color, (51, 153, 255), "startup_temp_low.png")
+    show_startup_screen(t_show, midTemp, temp_color, (51, 204, 51), "startup_temp_mid.png")
+    show_startup_screen(t_show, highTempThreshold, temp_color, (255, 51, 51), "startup_temp_high.png")
 
-    show_startup_screen(h_show, lowHumThreshold, hum_color, (204, 153, 102))
-    show_startup_screen(h_show, midHum, hum_color, (51, 204, 51))
-    show_startup_screen(h_show, highHumThreshold, hum_color, (51, 102, 204))
+    show_startup_screen(h_show, lowHumThreshold, hum_color, (204, 153, 102), "startup_hum_low.png")
+    show_startup_screen(h_show, midHum, hum_color, (51, 204, 51), "startup_hum_mid.png")
+    show_startup_screen(h_show, highHumThreshold, hum_color, (51, 102, 204), "startup_hum_high.png")
 
 
 async def handle_requests(provider, share_state_temp, share_state_hum):
@@ -394,12 +405,15 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
                 if low_temp_changed:
                     show_celsius_display((255, 165, 40), share_state_temp.Lower)
                     background(51, 153, 255)
+                    save_img("temperature_low_threshold_request.png")
                 else: # high_temp_changed
                     show_celsius_display((255, 165, 40), share_state_temp.Upper)
                     background(130, 0, 0)
+                    save_img("temperature_high_threshold_request.png")
             else: # No change, but still show something. Assume we show upper threshold.
                 show_celsius_display((255, 165, 40), share_state_temp.Upper)
                 background(130, 0, 0)
+                save_img("temperature_high_threshold_request.png")
 
             await asyncio.sleep(2)
         elif hum_threshold_control:
@@ -413,12 +427,15 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
                 if low_hum_changed:
                     show_humidity_display((255, 100, 40), share_state_hum.Lower)
                     background(204, 153, 102)
+                    save_img("humidity_low_threshold_request.png")
                 else: # high_hum_changed
                     show_humidity_display((255, 100, 40), share_state_hum.Upper)
                     background(51, 102, 204)
+                    save_img("humidity_high_threshold_request.png")
             else: # No change, but still show something. Assume we show upper threshold.
                 show_humidity_display((255, 100, 40), share_state_hum.Upper)
                 background(51, 102, 204)
+                save_img("humidity_high_threshold_request.png")
 
             await asyncio.sleep(2)
         await asyncio.sleep(0.2)
@@ -482,6 +499,7 @@ async def main(provider,db):
 
         if settings:
             new_threshold = await threshold_setting(provider)
+            save_img("threshold_setting.png")
             continue
 
         try:
@@ -539,10 +557,12 @@ async def main(provider,db):
 
         if show_temp:
             should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 10, db)
+            save_img("temperature.png")
             if should_continue:
                 continue
         else:
             should_continue = await process_metric(provider, 'humidity', humidity, h_show, (255, 100, 40), 10, db)
+            save_img("humidity.png")
             if should_continue:
                 continue
 
