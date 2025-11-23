@@ -4,6 +4,7 @@ import threading
 import time
 import os
 import subprocess
+from PIL import Image
 
 OFFSET_LEFT = 1
 OFFSET_TOP = 3
@@ -56,15 +57,23 @@ def joystick():
          """
         time.sleep(0.05)
 
+def save_img(name):
+    pixels = sense.get_pixels()
+    img = Image.new('RGB', (8, 8))
+    img.putdata([tuple(p) for p in pixels])
+    img = img.resize((240, 240), Image.NEAREST)
+    img.save(name)
+
 def display():
     global show_temp
     while True:
-       #print(show_temp)
         if show_temp:
-         temp()        
+            temp()
+            save_img("stand_alone_temperature.png")
         else:
-         hum()
-        time.sleep(0.05)
+            hum()
+            save_img("stand_alone_humidity.png")
+        time.sleep(1)
 
 def temp():
     sense.clear()
