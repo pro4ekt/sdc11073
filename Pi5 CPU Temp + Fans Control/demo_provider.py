@@ -60,13 +60,6 @@ NUMS = [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1,  # 0
         1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1,  # 8
         1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1]  # 9
 
-def save_img(name):
-    pixels = sense.get_pixels()
-    img = Image.new('RGB', (8, 8))
-    img.putdata([tuple(p) for p in pixels])
-    img = img.resize((240, 240), Image.NEAREST)
-    img.save(name)
-
 # --- Constants for Alarms ---
 ALARM_CONFIG = {
     'temperature': {
@@ -230,10 +223,8 @@ def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool, db):
         # Set background color regardless of timeout
         if value < low_threshold:
             background(*colors['low'])
-            save_img(f"{metric_name}_low_alarm.png")
         else:
             background(*colors['high'])
-            save_img(f"{metric_name}_high_alarm.png")
 
         # Play sound only if the signal is ON (i.e., not in timeout)
         if not timeout:
@@ -242,7 +233,6 @@ def evaluate_alarm(provider, metric_name: str, value: float, timeout: bool, db):
             sound(1, sound_freq, amp)
     else:
         background(*colors['normal'])
-        save_img(f"{metric_name}_normal.png")
         # Optionally reset alert condition when back in normal range
         with provider.mdib.alert_state_transaction() as tr:
             cond_state = tr.get_state(condition_handle)
@@ -333,7 +323,6 @@ def show_startup_screen(symbol_func, number, number_color, bg_color, name):
     symbol_func(255, 255, 255)
     show_number(number, *number_color)
     background(*bg_color)
-    save_img(name)
     time.sleep(2)
 
 
@@ -405,15 +394,12 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
                 if low_temp_changed:
                     show_celsius_display((255, 165, 40), share_state_temp.Lower)
                     background(51, 153, 255)
-                    save_img("temperature_low_threshold_request.png")
                 else: # high_temp_changed
                     show_celsius_display((255, 165, 40), share_state_temp.Upper)
                     background(130, 0, 0)
-                    save_img("temperature_high_threshold_request.png")
             else: # No change, but still show something. Assume we show upper threshold.
                 show_celsius_display((255, 165, 40), share_state_temp.Upper)
                 background(130, 0, 0)
-                save_img("temperature_high_threshold_request.png")
 
             await asyncio.sleep(2)
         elif hum_threshold_control:
@@ -427,16 +413,12 @@ async def handle_requests(provider, share_state_temp, share_state_hum):
                 if low_hum_changed:
                     show_humidity_display((255, 100, 40), share_state_hum.Lower)
                     background(204, 153, 102)
-                    save_img("humidity_low_threshold_request.png")
                 else: # high_hum_changed
                     show_humidity_display((255, 100, 40), share_state_hum.Upper)
                     background(51, 102, 204)
-                    save_img("humidity_high_threshold_request.png")
             else: # No change, but still show something. Assume we show upper threshold.
                 show_humidity_display((255, 100, 40), share_state_hum.Upper)
                 background(51, 102, 204)
-                save_img("humidity_high_threshold_request.png")
-
             await asyncio.sleep(2)
         await asyncio.sleep(0.2)
         sense.clear()
@@ -499,7 +481,6 @@ async def main(provider,db):
 
         if settings:
             new_threshold = await threshold_setting(provider)
-            save_img("threshold_setting.png")
             continue
 
         try:
@@ -557,12 +538,10 @@ async def main(provider,db):
 
         if show_temp:
             should_continue = await process_metric(provider, 'temperature', temperature, t_show, (255, 165, 40), 10, db)
-            save_img("temperature.png")
             if should_continue:
                 continue
         else:
             should_continue = await process_metric(provider, 'humidity', humidity, h_show, (255, 100, 40), 10, db)
-            save_img("humidity.png")
             if should_continue:
                 continue
 

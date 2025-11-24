@@ -57,22 +57,13 @@ def joystick():
          """
         time.sleep(0.05)
 
-def save_img(name):
-    pixels = sense.get_pixels()
-    img = Image.new('RGB', (8, 8))
-    img.putdata([tuple(p) for p in pixels])
-    img = img.resize((240, 240), Image.NEAREST)
-    img.save(name)
-
 def display():
     global show_temp
     while True:
         if show_temp:
             temp()
-            save_img("stand_alone_temperature.png")
         else:
             hum()
-            save_img("stand_alone_humidity.png")
         time.sleep(1)
 
 def temp():
