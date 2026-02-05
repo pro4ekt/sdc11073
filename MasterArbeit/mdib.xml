@@ -61,8 +61,6 @@
 
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="fan_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetValueOperationState" DescriptorHandle="threshold_control" OperatingMode="En" />
-            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="alert_control" OperatingMode="En" />
-
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="cpu_temp">
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />

@@ -70,7 +70,7 @@ if __name__ == '__main__':
                           manufacturer_url='http://testurl.com')
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     device = ThisDeviceType(friendly_name='TestDevice', serial_number='12345')
-    discovery = WSDiscoverySingleAdapter("Wi-Fi")  # Wi-Fi если на windows или wlan0 если линукс
+    discovery = WSDiscoverySingleAdapter("WLAN")  # Wi-Fi если на windows или wlan0 если линукс
 
     # Создание экземпляра Provider
     provider = SdcProvider(ws_discovery=discovery,
