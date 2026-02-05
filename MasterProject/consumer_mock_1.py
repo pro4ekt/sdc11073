@@ -43,6 +43,7 @@ class DeviceHandler(threading.Thread):
         self.running = True
         self.consumer = None
         self.mdib = None
+        self.error_occurred = False  # Track if the session ended with an error
 
     def run(self):
         # 1. Isolation: Create a new asyncio event loop for this thread.
@@ -58,7 +59,9 @@ class DeviceHandler(threading.Thread):
             except Exception:
                 pass
             # 2. Self-cleanup: When the thread dies, remove self from Manager's registry.
-            self.manager.remove_device(self.epr)
+            # We pass 'error_occurred' so the manager knows if it should invalidate the cache.
+            self.manager.remove_device(self.epr, self.error_occurred)
+            print(f"[Worker {self.epr}] Thread Exiting (Dead).")
 
     async def _worker_logic(self):
         print(f"[Worker {self.epr}] Connecting...")
@@ -80,11 +83,13 @@ class DeviceHandler(threading.Thread):
             while self.running:
                 if not self.consumer.is_connected:
                     print(f"[Worker {self.epr}] Connection lost reported by SDC stack.")
+                    self.error_occurred = True
                     break
                 await asyncio.sleep(1)
 
         except Exception as e:
             print(f"[Worker {self.epr}] Critical Error: {e}")
+            self.error_occurred = True
         finally:
             if self.consumer:
                 print(f"[Worker {self.epr}] Stopping consumer resources...")
@@ -96,16 +101,22 @@ class DeviceHandler(threading.Thread):
     def stop(self):
         self.running = False
 
-
 class SdcMyConsumer:
     """
     Manager class (The "Manager").
     Scans the network and spawns a Worker thread for every unique device found.
+
+    ARCHITECTURE NOTE:
+    To prevent "Zombie Loops" where a disconnected device is immediately re-discovered
+    via the WSDiscovery cache (leading to infinite connect->fail->retry cycles),
+    we must explicitly clear the specific device from the WSDiscovery cache in 'remove_device'
+    if an error occurred. This forces a fresh network Probe.
     """
     def __init__(self):
         self.running = True
         self.devices = {}  # Registry: { UUID (epr): DeviceHandler_Object }
         self.lock = threading.Lock() # Ensures safe access to self.devices dictionary
+        self.discovery = None  # Reference to WSDiscovery instance
 
         # Start the Discovery Loop in a background thread
         self.discovery_thread = threading.Thread(target=self._run_discovery, daemon=True)
@@ -131,22 +142,21 @@ class SdcMyConsumer:
         local_ip = get_local_ip()
         print(f"[Manager] Network Scan on IP: {local_ip}")
 
-        discovery = WSDiscovery(local_ip)
-        discovery.start()
+        self.discovery = WSDiscovery(local_ip)
+        self.discovery.start()
 
         while self.running:
             try:
                 # 1. Search for services (2 second timeout)
-                services = await asyncio.to_thread(discovery.search_services, timeout=2)
+                services = await asyncio.to_thread(self.discovery.search_services, timeout=2)
 
                 # 2. Process results
                 for service in services:
-                    # Fix: Ensure strict string comparison for EPR (UUID)
-                    epr = str(service.epr)
+                    # Fix: Ensure strict string comparison for EPR (UUID) and trim whitespace
+                    epr = str(service.epr).strip()
 
                     with self.lock:
                         # Cleanup check: If we have a record, but the thread is dead, clean it up.
-                        # This covers cases where a thread crashed without calling remove_device.
                         if epr in self.devices and not self.devices[epr].is_alive():
                             print(f"[Manager] Found dead worker thread for {epr}. Cleaning up registry.")
                             del self.devices[epr]
@@ -167,24 +177,46 @@ class SdcMyConsumer:
                 print(f"[Manager] Discovery Loop Error: {e}")
                 await asyncio.sleep(5)
 
-        discovery.stop()
+        self.discovery.stop()
 
-    def remove_device(self, epr):
+    def remove_device(self, epr, error_occurred=False):
         """
         Callback used by Worker threads to remove themselves from the list
         when connections fail or threads stop.
         """
+        epr = str(epr).strip() # Ensure consistent formatting
         with self.lock:
             if epr in self.devices:
                 print(f"[Manager] Removing handler for {epr} from registry.")
                 del self.devices[epr]
 
+            # CRITICAL FIX: If the device crashed/disconnected, we MUST clear it from the WSDiscovery cache.
+            # Otherwise, WSDiscovery keeps returning the old (broken) IP address in search_services(),
+            # leading to a loop of spawning threads that fail to connect.
+            if error_occurred and self.discovery:
+                print(f"[Manager] Device {epr} had error. Clearing WSDiscovery cache to force fresh probe.")
+                try:
+                    # Access internal cache maps if they exist (common in python-sdc11073)
+                    cleared = False
+                    if hasattr(self.discovery, '_services') and epr in self.discovery._services:
+                        del self.discovery._services[epr]
+                        cleared = True
+                    if hasattr(self.discovery, '_remote_services') and epr in self.discovery._remote_services:
+                        del self.discovery._remote_services[epr]
+                        cleared = True
+
+                    if cleared:
+                        print(f"[Manager] Cache for {epr} cleared successfully.")
+                except Exception as e:
+                    print(f"[Manager] Error clearing cache for {epr}: {e}")
 
 if __name__ == '__main__':
-    app = SdcMyConsumer()
-    app.start()
+    manager = SdcMyConsumer()
+    manager.start()
+
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        app.stop()
+        print("Interrupted by user, stopping...")
+        manager.stop()
