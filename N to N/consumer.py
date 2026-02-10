@@ -5,16 +5,10 @@ import socket
 import threading
 import time
 import PySide6
-# import winsound
-from copy import deepcopy
-from decimal import Decimal
 
-from sdc11073 import observableproperties
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.wsdiscovery import WSDiscovery
-# from sdc11073.xml_types.pm_types import AlertSignalPresence, MeasurementValidity
-# from myDbClass.dbworker import DBWorker
 
 
 def get_local_ip():
@@ -28,7 +22,6 @@ def get_local_ip():
     finally:
         s.close()
     return ip
-
 
 class DeviceHandler(threading.Thread):
     """
