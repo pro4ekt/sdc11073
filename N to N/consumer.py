@@ -74,7 +74,6 @@ class DeviceHandler(threading.Thread):
             # observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
             # observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
 
-            a = self.consumer.mdib.metrics_by_handle
             print(f"[Worker {self.epr}] Connection established. Monitoring...")
 
             # 5. Lifecycle Loop: Keep running as long as connected
@@ -83,6 +82,9 @@ class DeviceHandler(threading.Thread):
                     print(f"[Worker {self.epr}] Connection lost reported by SDC stack.")
                     self.error_occurred = True
                     break
+                while self.consumer.mdib.metrics_by_handle is None:
+                    await asyncio.sleep(1)
+                print("Processing metrics...")
                 await asyncio.sleep(1)
 
         except Exception as e:
