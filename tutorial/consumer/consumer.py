@@ -105,7 +105,7 @@ if __name__ == '__main__':
                 found_device = True
 
                 # now we demonstrate how to call a remote operation on the consumer
-                set_ensemble_context(my_mdib, my_client)
+                # set_ensemble_context(my_mdib, my_client)
 
 
     # endless loop to keep the client running and get notified on metric changes through callback

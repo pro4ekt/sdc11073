@@ -4,6 +4,8 @@ import asyncio
 import socket
 import threading
 import time
+from copyreg import constructor
+
 import PySide6
 
 from sdc11073.consumer import SdcConsumer
@@ -71,6 +73,8 @@ class DeviceHandler(threading.Thread):
             # observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
             # observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
 
+            a = self.consumer.mdib.metrics_by_handle
+
             print(f"[Worker {self.epr}] Connection established. Monitoring...")
 
             # 5. Lifecycle Loop: Keep running as long as connected
@@ -94,6 +98,19 @@ class DeviceHandler(threading.Thread):
 
     def stop(self):
         self.running = False
+
+class QtDeviceHandler(DeviceHandler):
+    """
+    Specialized Worker class for Qt integration.
+    In a real implementation, this would include signals/slots to communicate with the Qt UI thread.
+    For this example, it behaves the same as DeviceHandler but is structured for future UI integration.
+    """
+    def __init__(self, device : DeviceHandler) :
+        self.patientName = {}
+        self.patienRoom = {}
+        self.alarm = {}
+        self.metrics = {}
+        self.operations = {}
 
 class SdcMyConsumer:
     """
