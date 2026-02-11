@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import sdc11073
 import asyncio
 import socket
 import threading
@@ -11,7 +13,6 @@ import PySide6
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.wsdiscovery import WSDiscovery
-
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -74,7 +75,6 @@ class DeviceHandler(threading.Thread):
             # observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
 
             a = self.consumer.mdib.metrics_by_handle
-
             print(f"[Worker {self.epr}] Connection established. Monitoring...")
 
             # 5. Lifecycle Loop: Keep running as long as connected

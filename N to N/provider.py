@@ -173,8 +173,9 @@ if __name__ == '__main__':
         id.MetricValue.Value = Decimal(DEVICE_ID)
 
     # A loop in which all processes take place, for example continuous temperature checking and logging.
+    temperature = 0
     while True:
-        temperature = get_cpu_temperature()
+        #temperature = get_cpu_temperature()
         update_cpu_temp(provider, Decimal(temperature))
         fan_control(provider)
         print_metrics(provider)
@@ -190,4 +191,5 @@ if __name__ == '__main__':
         if(provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value == "Off"):
             t = t + 1
         """
+        temperature = temperature + 1
         time.sleep(1)
