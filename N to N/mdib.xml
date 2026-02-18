@@ -77,7 +77,7 @@
                 </pm:CoreData>
             </pm:State>
             <pm:State xsi:type="pm:LocationContextState" DescriptorHandle= "loc_context_descriptor" Handle="loc_context_state">
-                <pm:LocationDetail Bed="101"/>
+                <pm:LocationDetail Room="101"/>
             </pm:State>
 
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_1" ActivationState="On" />

@@ -4,11 +4,33 @@ import QtQuick.Effects
 
 Item {
     id: mainPage
-    property var deviceModel
+    // Changed from 'var' to ListModel so we can append to it directly here
+    property ListModel deviceModel: ListModel {}
     property var devicePage
     property string loginName: ""
 
     anchors.fill: parent
+
+    // LINK TO PYTHON BACKEND
+    Connections {
+        target: sdcManager // This is the context property set in main.py
+
+        // Signal handler for deviceConnected(QtDeviceHandler device)
+        function onDeviceConnected(device) {
+            console.log("QML: New device connected: " + device.patientName)
+
+            // Append data from the Python object to our QML model
+            deviceModel.append({
+                "devicename": "SDC Monitor",
+                "patientname": device.patientName,
+                "room": device.patientRoom,
+                "value": device.deviceValue,
+                "alarm": device.alarmStatus,
+                "priority": device.priority,
+                "timeout": "0"
+            })
+        }
+    }
 
     //функция сортировки по приоритету
     function sortByPriority() {
@@ -30,37 +52,12 @@ Item {
         }
     }
 
-    function mockAddItem() {
-        let randomPriority = Math.floor(Math.random() * 5) + 1;
-        let randomValue = Math.floor(Math.random() * 100);
-
-        deviceModel.append({
-            devicename: "MockDevice " + deviceModel.count,
-            patientname: "Mock Patient",
-            room: "Mock Room",
-            value: randomValue.toString(),
-            alarm: randomValue > 80 ? "On" : "Off",
-            priority: randomPriority
-        });
-
-        sortByPriority();
-    }
-
-    function setNem(name) {
-        loginName = name
-    }
-
     // ---------------- TOP BAR ----------------
     Rectangle {
         width: parent.width
         height: parent.height * 0.15
         anchors.top: parent
         color: "#515c80"
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: mockAddItem()
-        }
 
         // текст в TOP BAR
         Text {
@@ -226,16 +223,18 @@ Item {
                 //Repeater где добавляются все элементы
                 Repeater {
                     model: deviceModel
-                    //Описание элемента таблицы delegate
                     delegate: Rectangle {
                         id: delegateButton
 
                         width: column.width
-                        height: column.width * 0.1
+                        height: 100 // Fixed height looks better
                         radius: 20
 
+                        // Fix: use model.alarm from the ListModel
+                        color: model.alarm === "On" ? "transparent" : "#5e6ea5"
+
                         // Выбираем градиент в зависимости от Alarm
-                        gradient: alarm === "On" ? gradOn : gradOff
+                        gradient: model.alarm === "On" ? gradOn : gradOff
 
                         //Градиент для Alarm On
                         Gradient {
@@ -253,7 +252,7 @@ Item {
 
                         // Мигаем только если Alarm On
                         SequentialAnimation on opacity {
-                            running: alarm === "On"
+                            running: model.alarm === "On"
                             loops: Animation.Infinite
 
                             NumberAnimation { to: 0.5; duration: 500; easing.type: Easing.InOutQuad }
@@ -263,40 +262,43 @@ Item {
                         Text {
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: parent.width * (0.03 + 0.026)
-                            font.pixelSize: 35
+                            anchors.leftMargin: 20
+                            font.pixelSize: 24
                             font.family: "Tahoma"
-                            text: "Room: " + room + "      " +
-                                  devicename + ":" + value + "      " +
-                                  patientname
+                            // Use 'model.' prefix to be explicit and safe
+                            text: "Room: " + model.room + " | " +
+                                  model.devicename + ": " + model.value + " | " +
+                                  model.patientname
                             color: "white"
                         }
 
                         Text {
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            anchors.rightMargin: parent.width * (0.03 + 0.026)
-                            font.pixelSize: 35
+                            anchors.rightMargin: 20
+                            font.pixelSize: 24
                             font.family: "Tahoma"
-                            text: "Priority: " + priority
+                            text: "Priority: " + model.priority
                             color: "white"
                         }
 
                         MouseArea {
                             anchors.fill: parent
                             onClicked: {
-                                devicePage.setDevice({
-                                    devicename: devicename,
-                                    patientname: patientname,
-                                    room: room,
-                                    value: value,
-                                    alarm: alarm,
-                                    priority: priority,
-                                    timeout: timeout
-                                })
+                                if (mainPage.devicePage) {
+                                    mainPage.devicePage.setDevice({
+                                        devicename: model.devicename,
+                                        patientname: model.patientname,
+                                        room: model.room,
+                                        value: model.value,
+                                        alarm: model.alarm,
+                                        priority: model.priority,
+                                        timeout: model.timeout
+                                    })
 
-                                mainPage.visible = false
-                                devicePage.visible = true
+                                    mainPage.visible = false
+                                    mainPage.devicePage.visible = true
+                                }
                             }
                         }
                     }
@@ -358,4 +360,3 @@ Item {
         onTriggered: scrollBar.opacity = 0
     }
 }
-

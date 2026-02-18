@@ -6,12 +6,16 @@ import asyncio
 import socket
 import threading
 import time
+import os
 from copyreg import constructor
 
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtCore import QObject, Signal, Slot
 
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
+from sdc11073.mdib.statecontainers import LocationContextStateContainer
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.pm_qnames import LocationContextState
@@ -49,11 +53,18 @@ class QtDeviceHandler(QObject):
 
     def __init__(self, device : DeviceHandler) :
         super().__init__()
-        self.context_states = device.mdib.context_states.objects
-        self.alerts_descriptors = [a for a in device.mdib.descriptions.objects if a.NODETYPE == pm.AlertSystemDescriptor]
-        self.alerts_states = [a for a in device.mdib.states.objects if a.NODETYPE == pm.AlertSystemState]
-        self.metrics_descriptors = [m for m in device.mdib.descriptions.objects if m.NODETYPE == pm.NumericMetricDescriptor]
-        self.metrics_states = [m for m in device.mdib.states.objects if m.NODETYPE == pm.NumericMetricState]
+        self._location = [l for l in device.mdib.context_states.objects if l.NODETYPE == pm.LocationContextState]
+        self._patient = [p for p in device.mdib.context_states.objects if p.NODETYPE == pm.PatientContextState]
+
+        self.patientRoom = self._location[0].LocationDetail.Room
+        self.patientName = self._patient[0].CoreData.Birthname
+        self.value_to_show = "10"
+        self.alert = "None"
+
+        self._alerts_descriptors = [a for a in device.mdib.descriptions.objects if a.NODETYPE == pm.AlertSystemDescriptor]
+        self._alerts_states = [a for a in device.mdib.states.objects if a.NODETYPE == pm.AlertSystemState]
+        self._metrics_descriptors = [m for m in device.mdib.descriptions.objects if m.NODETYPE == pm.NumericMetricDescriptor]
+        self._metrics_states = [m for m in device.mdib.states.objects if m.NODETYPE == pm.NumericMetricState]
         #self.operations = [o for o in device.mdib.descriptions.objects if o.NODETYPE == pm.OperationDescriptor]
         print("Ok")
 
@@ -132,7 +143,7 @@ class DeviceHandler(threading.Thread):
     def stop(self):
         self.running = False
 
-class SdcMyConsumer:
+class SdcMyConsumer(QObject):
     """
     Manager class (The "Manager").
     Scans the network and spawns a Worker thread for every unique device found.
@@ -144,6 +155,7 @@ class SdcMyConsumer:
     if an error occurred. This forces a fresh network Probe.
     """
     def __init__(self):
+        super().__init__()
         self.running = True
         self.devices = {}  # Registry: { UUID (epr): DeviceHandler_Object }
         self.lock = threading.Lock() # Ensures safe access to self.devices dictionary
@@ -245,9 +257,18 @@ if __name__ == '__main__':
     manager = SdcMyConsumer()
     manager.start()
 
+    app = QGuiApplication(sys.argv)
+    engine = QQmlApplicationEngine()
+
+    qml_file = os.path.join(os.path.dirname(__file__), "Main.qml")
+    engine.load(qml_file)
     try:
         while True:
+            if not engine.rootObjects():
+                sys.exit(-1)
+
             time.sleep(1)
     except KeyboardInterrupt:
         print("Interrupted by user, stopping...")
         manager.stop()
+        sys.exit(app.exec())
