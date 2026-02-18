@@ -17,10 +17,11 @@ Item {
 
         // Signal handler for deviceConnected(QtDeviceHandler device)
         function onDeviceConnected(device) {
-            console.log("QML: New device connected: " + device.patientName)
+            console.log("QML: New device connected: " + device.patientName + " [" + device.epr + "]")
 
             // Append data from the Python object to our QML model
             deviceModel.append({
+                "epr": device.epr, // Store UUID to identify this item later
                 "devicename": "SDC Monitor",
                 "patientname": device.patientName,
                 "room": device.patientRoom,
@@ -29,6 +30,17 @@ Item {
                 "priority": device.priority,
                 "timeout": "0"
             })
+        }
+
+        // Signal handler for deviceDisconnected(str epr)
+        function onDeviceDisconnected(epr) {
+            console.log("QML: Device disconnected: " + epr)
+            for (var i = 0; i < deviceModel.count; ++i) {
+                if (deviceModel.get(i).epr === epr) {
+                    deviceModel.remove(i)
+                    break // Stop after removing found item
+                }
+            }
         }
     }
 
@@ -227,7 +239,7 @@ Item {
                         id: delegateButton
 
                         width: column.width
-                        height: 100 // Fixed height looks better
+                        height: 80 // Reverted to a smaller/standard size or use: width * 0.15 if you had relative
                         radius: 20
 
                         // Fix: use model.alarm from the ListModel
@@ -266,9 +278,9 @@ Item {
                             font.pixelSize: 24
                             font.family: "Tahoma"
                             // Use 'model.' prefix to be explicit and safe
-                            text: "Room: " + model.room + " | " +
+                            text: "Room: " + (model.room ? model.room : "?") + " | " +
                                   model.devicename + ": " + model.value + " | " +
-                                  model.patientname
+                                  (model.patientname ? model.patientname : "Unknown")
                             color: "white"
                         }
 
@@ -285,6 +297,7 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             onClicked: {
+                                // Reverted to your original simple check, just ensuring mainPage exists
                                 if (mainPage.devicePage) {
                                     mainPage.devicePage.setDevice({
                                         devicename: model.devicename,

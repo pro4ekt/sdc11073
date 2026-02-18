@@ -20,7 +20,6 @@ from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.pm_qnames import LocationContextState
 
-
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -32,17 +31,6 @@ def get_local_ip():
     finally:
         s.close()
     return ip
-
-class QtAppHandler(QObject):
-    """
-    Main application handler for Qt integration.
-    In a real implementation, this would manage the overall state of the application and coordinate between the UI and device handlers.
-    For this example, it serves as a placeholder for future UI integration and can be expanded to include signals/slots for communication.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.deviceHandlers = {}  # Registry: { UUID (epr): QtDeviceHandler_Object }
 
 class QtDeviceHandler(QObject):
     """
@@ -58,6 +46,9 @@ class QtDeviceHandler(QObject):
     deviceValueChanged = Signal()
     alarmStatusChanged = Signal()
     priorityChanged = Signal()
+
+    # Add signal for EPR if needed, though usually constant
+    eprChanged = Signal()
 
     connectedChanged = Signal()
 
@@ -118,6 +109,11 @@ class QtDeviceHandler(QObject):
     @Property(str, notify=patientRoomChanged)
     def patientRoom(self):
         return self._patientRoom
+
+    @Property(str, notify=eprChanged)
+    def epr(self):
+        # Expose the unique ID (EPR) so QML knows which device this is
+        return self._device.epr if self._device else ""
 
     @Property(str, notify=deviceValueChanged)
     def deviceValue(self):
@@ -234,6 +230,8 @@ class SdcMyConsumer(QObject):
 
     # CHANGED: Signal now passes the Qt object directly
     deviceConnected = Signal(QtDeviceHandler, arguments=['device'])
+    # NEW: Signal when a device is removed (passes the UUID string)
+    deviceDisconnected = Signal(str, arguments=['epr'])
 
     def __init__(self):
         super().__init__()
@@ -314,6 +312,8 @@ class SdcMyConsumer(QObject):
             if epr in self.devices:
                 print(f"[Manager] Removing handler for {epr} from registry.")
                 del self.devices[epr]
+                # NOTIFY UI: Tell QML to remove this device from the view
+                self.deviceDisconnected.emit(epr)
 
             # CRITICAL FIX: If the device crashed/disconnected, we MUST clear it from the WSDiscovery cache.
             # Otherwise, WSDiscovery keeps returning the old (broken) IP address in search_services(),
