@@ -4,8 +4,8 @@
         <pm:MdDescription DescriptionVersion="1">
             <pm:Mds Handle="mds_1">
                 <pm:SystemContext Handle="sys_context_1">
-                    <pm:PatientContext Handle="pat_context_1" />
-                    <pm:LocationContext Handle="loc_context_1" />
+                    <pm:PatientContext xsi:type="pm:PatientContextDescriptor" Handle="pat_context_descriptor" />
+                    <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_context_descriptor" />
                     <pm:EnsembleContext Handle="ens_context_1" />
                 </pm:SystemContext>
                 <pm:Clock Handle="clock">
@@ -69,7 +69,17 @@
                 </pm:Vmd>
             </pm:Mds>
         </pm:MdDescription>
+
         <pm:MdState>
+            <pm:State xsi:type="pm:PatientContextState" DescriptorHandle= "pat_context_descriptor" Handle="pat_context_state">
+                <pm:CoreData>
+                    <pm:Birthname>Bebra</pm:Birthname>
+                </pm:CoreData>
+            </pm:State>
+            <pm:State xsi:type="pm:LocationContextState" DescriptorHandle= "loc_context_descriptor" Handle="loc_context_state">
+                <pm:LocationDetail Bed="101"/>
+            </pm:State>
+
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_1" ActivationState="On" />
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_1" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_1" ActivationState="Off" Presence="Off" />

@@ -8,11 +8,14 @@ import threading
 import time
 from copyreg import constructor
 
-import PySide6
+from PySide6.QtCore import QObject, Signal, Slot
 
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.wsdiscovery import WSDiscovery
+from sdc11073.xml_types import pm_qnames as pm
+from sdc11073.xml_types.pm_qnames import LocationContextState
+
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -25,6 +28,34 @@ def get_local_ip():
     finally:
         s.close()
     return ip
+
+class QtAppHandler(QObject):
+    """
+    Main application handler for Qt integration.
+    In a real implementation, this would manage the overall state of the application and coordinate between the UI and device handlers.
+    For this example, it serves as a placeholder for future UI integration and can be expanded to include signals/slots for communication.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.deviceHandlers = {}  # Registry: { UUID (epr): QtDeviceHandler_Object }
+
+class QtDeviceHandler(QObject):
+    """
+    Specialized Worker class for Qt integration.
+    In a real implementation, this would include signals/slots to communicate with the Qt UI thread.
+    For this example, it behaves the same as DeviceHandler but is structured for future UI integration.
+    """
+
+    def __init__(self, device : DeviceHandler) :
+        super().__init__()
+        self.context_states = device.mdib.context_states.objects
+        self.alerts_descriptors = [a for a in device.mdib.descriptions.objects if a.NODETYPE == pm.AlertSystemDescriptor]
+        self.alerts_states = [a for a in device.mdib.states.objects if a.NODETYPE == pm.AlertSystemState]
+        self.metrics_descriptors = [m for m in device.mdib.descriptions.objects if m.NODETYPE == pm.NumericMetricDescriptor]
+        self.metrics_states = [m for m in device.mdib.states.objects if m.NODETYPE == pm.NumericMetricState]
+        #self.operations = [o for o in device.mdib.descriptions.objects if o.NODETYPE == pm.OperationDescriptor]
+        print("Ok")
 
 class DeviceHandler(threading.Thread):
     """
@@ -40,6 +71,7 @@ class DeviceHandler(threading.Thread):
         self.running = True
         self.consumer = None
         self.mdib = None
+        self.qtDeviceHandler = None
         self.error_occurred = False  # Track if the session ended with an error
 
     def run(self):
@@ -82,9 +114,8 @@ class DeviceHandler(threading.Thread):
                     print(f"[Worker {self.epr}] Connection lost reported by SDC stack.")
                     self.error_occurred = True
                     break
-                while self.consumer.mdib.metrics_by_handle is None:
-                    await asyncio.sleep(1)
-                print("Processing metrics...")
+                if self.qtDeviceHandler is None:
+                    self.qtDeviceHandler = QtDeviceHandler(self)
                 await asyncio.sleep(1)
 
         except Exception as e:
@@ -100,19 +131,6 @@ class DeviceHandler(threading.Thread):
 
     def stop(self):
         self.running = False
-
-class QtDeviceHandler(DeviceHandler):
-    """
-    Specialized Worker class for Qt integration.
-    In a real implementation, this would include signals/slots to communicate with the Qt UI thread.
-    For this example, it behaves the same as DeviceHandler but is structured for future UI integration.
-    """
-    def __init__(self, device : DeviceHandler) :
-        self.patientName = {}
-        self.patienRoom = {}
-        self.alarm = {}
-        self.metrics = {}
-        self.operations = {}
 
 class SdcMyConsumer:
     """

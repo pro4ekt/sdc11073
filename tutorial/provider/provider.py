@@ -113,4 +113,4 @@ if __name__ == '__main__':
                 st = transaction_mgr.get_state(metricDescr.Handle)
                 st.MetricValue.Value = Decimal(metric_value)
         print(my_mdib.mdib_version)
-        time.sleep(5)
+        time.sleep(3)
