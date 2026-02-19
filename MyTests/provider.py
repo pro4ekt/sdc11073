@@ -30,7 +30,6 @@ from sdc11073.provider.components import SdcProviderComponents
 from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
-
 def get_cpu_temperature():
     """
     Универсальная функция получения температуры CPU.

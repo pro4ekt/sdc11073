@@ -73,6 +73,9 @@
                     <pm:Unit Code="Number" CodingSystem="UCUN"></pm:Unit>
                     <pm:TechnicalRange Lower="0" Upper="100"></pm:TechnicalRange>
                 </pm:Metric>
+                <pm:Metric xsi:type="pm:RealTimeSampleArrayMetricDescriptor" Handle="wave_form_test" Resolution="1" MetricAvailability="Cont" MetricCategory="Msrmt" SamplePeriod="PT0.1S">
+                    <pm:Unit Code="mV" CodingSystem="UCUM"></pm:Unit>
+                </pm:Metric>
               </pm:Channel>
             </pm:Vmd>
           </pm:Mds>
@@ -93,6 +96,12 @@
          <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="Off" Presence="false"></pm:State>
          <pm:State DescriptorHandle="als1" xsi:type="pm:AlertSignalState" StateVersion="1" ActivationState="On" Presence="Off"></pm:State>
          <pm:State DescriptorHandle="inject" xsi:type="pm:SetValueOperationState" OperatingMode="En"></pm:State>
+         <pm:State DescriptorHandle="wave_form_test" xsi:type="pm:RealTimeSampleArrayMetricState">
+             <pm:MetricValue Samples="0" DeterminationTime="0" StartTime="0" StopTime="0">
+                 <pm:MetricQuality Validity="Vld">
+                 </pm:MetricQuality>
+             </pm:MetricValue>
+         </pm:State>
         </pm:MdState>
       </msg:Mdib>
 </msg:GetMdibResponse>
