@@ -86,6 +86,7 @@ if __name__ == '__main__':
         with provider.mdib.rt_sample_state_transaction() as tr:
             # Обновление Waveform
             wf_state = tr.get_state(waveform_handle)
+            a = wf_state.MetricValue.Samples
             if wf_state:
                 # Наполняем сэмплы
                 wf_state.MetricValue.Samples = samples

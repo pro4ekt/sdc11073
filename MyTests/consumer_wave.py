@@ -4,6 +4,7 @@ import socket
 import logging
 import time
 import uuid
+import matplotlib.pyplot as plt # Добавлен импорт для графиков
 from decimal import Decimal
 from copy import deepcopy
 
@@ -38,14 +39,26 @@ def get_local_ip():
     finally:
         s.close()
 
+# Глобальный буфер для данных графика
+wave_data = []
+MAX_SAMPLES = 500  # Сколько точек хранить на экране
+
 # Функция для обработки обновлений волновых форм (RealTimeSampleArray)
 def on_waveform_update(waveform_by_handle: dict):
     # waveform_by_handle - словарь, где ключ = handle, значение = SampleArrayValue
+    a = waveform_by_handle
     for handle, sample_array in waveform_by_handle.items():
         if handle == "wave_form_test":
-            # Печатаем пришедшие сэмплы
+            # Добавляем новые сэмплы в общий буфер
+            new_samples = [float(x) for x in sample_array.MetricValue.Samples]
+            wave_data.extend(new_samples)
+
+            # Ограничиваем размер буфера, чтобы память не текла
+            if len(wave_data) > MAX_SAMPLES:
+                del wave_data[:len(wave_data) - MAX_SAMPLES]
+
             # sample_array.Samples - это список Decimal
-            print("Что то пришло в волновой форме:")
+            #print(f"Received waveform chunk for {handle}: {len(sample_array.MetricValue.Samples)}")
 #Функция которая потом будет вызываться в observableproperties.bind которая нужна для вывода обновлённых метрик
 def on_metric_update(metrics_by_handle: dict):
     if(consumer.mdib.entities.by_handle("liquid").state.MetricValue.Value == 0):
@@ -89,5 +102,23 @@ if __name__ == '__main__':
 
     print("Subscribed to waveforms. Waiting for data...")
 
+    # Настройка графика
+    plt.ion()  # Включаем интерактивный режим
+    fig, ax = plt.subplots()
+    line, = ax.plot([], [])
+    ax.set_ylim(-15, 15) # Установите пределы по Y в зависимости от амплитуды сигнала
+    ax.set_xlim(0, MAX_SAMPLES)
+    ax.grid(True)
+    plt.title("RealTime Waveform")
+
     while True:
-        time.sleep(1)
+        # Обновляем график в главном потоке
+        if wave_data:
+            line.set_ydata(wave_data)
+            line.set_xdata(range(len(wave_data)))
+            # Если данных меньше чем MAX_SAMPLES, можно динамически менять xlim, но проще фиксировать
+
+            plt.draw()
+            plt.pause(0.01) # Даем времени matplotlib отрисовать кадр
+        else:
+            time.sleep(0.1)
