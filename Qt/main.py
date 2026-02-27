@@ -46,6 +46,10 @@ class QtDeviceHandler(QObject):
     priorityChanged = Signal()
     metricsChanged = Signal() # ADDED: Signal for metrics list
 
+    # Internal signal to bridge threads
+    # This signal is emitted from the Worker thread context but connected to a slot in Main thread
+    updateTick = Signal()
+
     # Add signal for EPR if needed, though usually constant
     eprChanged = Signal()
 
@@ -65,8 +69,19 @@ class QtDeviceHandler(QObject):
         self._priority = "3"
         self._metrics = [] # ADDED: Initialize list
 
+        # Connect internal signal for thread-hopping
+        # When updateTick is emitted (from any thread), handleUpdateTick runs in the thread this object lives in (Main)
+        self.updateTick.connect(self.handleUpdateTick)
+
         # Initial Data Fetch (Snapshot)
         self.update_data()
+
+    def scheduleUpdate(self):
+        """
+        Thread-safe method to be called from the Worker Thread.
+        Emits a signal which Qt automatically marshals to the Main Thread event loop.
+        """
+        self.updateTick.emit()
 
     @Slot()
     def handleUpdateTick(self):
@@ -189,18 +204,16 @@ class QtDeviceHandler(QObject):
     def priority(self):
         return self._priority
 
-class DeviceHandler(QObject, threading.Thread):
+class DeviceHandler(threading.Thread):
     """
     Worker class (The "Worker").
     Responsible for maintaining a connection to a SINGLE specific device (Provider).
     Runs in its own system thread with its own independent asyncio event loop.
     """
-    # Define a signal to trigger updates on the Qt object safely across threads
-    updateTick = Signal()
+    # Removed QObject inheritance and Signal definition
 
     def __init__(self, wsd_service, manager):
-        # Initialize both QObject and Thread
-        QObject.__init__(self)
+        # Initialize only Thread
         threading.Thread.__init__(self, daemon=True)
 
         self.wsd_service = wsd_service
@@ -256,10 +269,7 @@ class DeviceHandler(QObject, threading.Thread):
             main_thread = QGuiApplication.instance().thread()
             if main_thread:
                 self.qtDeviceHandler.moveToThread(main_thread)
-
-                # Connect the worker's signal to the handler's slot
-                # This ensures update_data() runs in the Main Thread when triggered
-                self.updateTick.connect(self.qtDeviceHandler.handleUpdateTick)
+                # No connect needed here anymore, the QtDeviceHandler connects its own signal in __init__
             else:
                 print(f"[Worker {self.epr}] Warning: Could not find Main Thread!")
 
@@ -274,8 +284,9 @@ class DeviceHandler(QObject, threading.Thread):
                     self.error_occurred = True
                     break
 
-                # Trigger update on UI thread safely
-                self.updateTick.emit()
+                # Trigger update on UI thread safely via method call
+                if self.qtDeviceHandler:
+                    self.qtDeviceHandler.scheduleUpdate()
 
                 await asyncio.sleep(1)
 
