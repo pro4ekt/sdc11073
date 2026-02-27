@@ -28,6 +28,8 @@ Item {
                 "value": device.deviceValue,
                 "alarm": device.alarmStatus,
                 "priority": device.priority,
+                "metrics": device.metrics, // Initial metrics
+                "deviceObj": device, // Store the Python Object for live updates via Connections
                 "timeout": "0"
             })
         }
@@ -238,6 +240,15 @@ Item {
                     delegate: Rectangle {
                         id: delegateButton
 
+                        // LIVE UPDATES: Listen to the specific python object for this row
+                        Connections {
+                            target: model.deviceObj
+                            function onDeviceValueChanged() { model.value = target.deviceValue }
+                            function onPatientNameChanged() { model.patientname = target.patientName }
+                            function onPatientRoomChanged() { model.room = target.patientRoom }
+                            function onMetricsChanged() { model.metrics = target.metrics }
+                        }
+
                         width: column.width
                         height: 80 // Reverted to a smaller/standard size or use: width * 0.15 if you had relative
                         radius: 20
@@ -306,6 +317,7 @@ Item {
                                         value: model.value,
                                         alarm: model.alarm,
                                         priority: model.priority,
+                                        metrics: model.metrics, // Pass the metrics list
                                         timeout: model.timeout
                                     })
 

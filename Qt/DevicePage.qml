@@ -26,6 +26,20 @@ Item {
         alarm = data.alarm
         priority = data.priority
         timeout = data.timeout
+
+        // Populate Metric List
+        metricListModel.clear()
+        if (data.metrics) {
+            for (var i = 0; i < data.metrics.length; i++) {
+                var m = data.metrics[i]
+                metricListModel.append({
+                    "metricname": m.metricname,
+                    "value": m.value,
+                    "alarm": m.alarm,
+                    "timeout": 0
+                })
+            }
+        }
     }
 
     anchors.fill: parent
@@ -274,16 +288,7 @@ Item {
 
             ListModel {
                 id: metricListModel
-                ListElement { metricname: "Pulse"; value: "90 BPM"; alarm:"On"}
-                ListElement { metricname: "Pressure"; value: "140/100"; alarm:"On"}
-                ListElement { metricname: "Temperature"; value: "36.7°"; alarm:"Off"}
-                ListElement { metricname: "SO2"; value: "98%"; alarm:"Off"}
-                ListElement { metricname: "EKG"; value: "98"; alarm:"Off"}
-                ListElement { metricname: "..."; value: "..."; alarm:"Off"}
-                ListElement { metricname: "..."; value: "..."; alarm:"Off"}
-                ListElement { metricname: "..."; value: "..."; alarm:"Off"}
-                ListElement { metricname: "..."; value: "..."; alarm:"Off"}
-                ListElement { metricname: "..."; value: "..."; alarm:"Off"}
+                // Removed hardcoded elements, now populated via setDevice
             }
 
             Flickable {
@@ -767,4 +772,3 @@ Item {
         }
     }
 }
-

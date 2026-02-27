@@ -35,8 +35,6 @@ def get_local_ip():
 class QtDeviceHandler(QObject):
     """
     Specialized Worker class for Qt integration.
-    In a real implementation, this would include signals/slots to communicate with the Qt UI thread.
-    For this example, it behaves the same as DeviceHandler but is structured for future UI integration.
     """
 
     # Signals to notify UI of changes
@@ -46,6 +44,7 @@ class QtDeviceHandler(QObject):
     deviceValueChanged = Signal()
     alarmStatusChanged = Signal()
     priorityChanged = Signal()
+    metricsChanged = Signal() # ADDED: Signal for metrics list
 
     # Add signal for EPR if needed, though usually constant
     eprChanged = Signal()
@@ -64,16 +63,33 @@ class QtDeviceHandler(QObject):
         self._deviceValue = "---"
         self._alarmStatus = "Off"
         self._priority = "3"
+        self._metrics = [] # ADDED: Initialize list
 
         # Initial Data Fetch (Snapshot)
         self.update_data()
 
+    @Slot()
+    def handleUpdateTick(self):
+        """Slot called from Worker thread via Signal to ensure updates run on Main Thread."""
+        self.update_data()
+
     def update_data(self):
         """Reads data from the device MDIB and updates properties."""
-        if not self._device or not self._device.mdib:
+        if not self._device:
+            return
+
+        # Attempt to acquire lock non-blocking to avoid freezing UI if worker is busy
+        if hasattr(self._device, 'data_lock'):
+            if not self._device.data_lock.acquire(blocking=False):
+                return # Skip this update frame if locked
+        else:
+            # Fallback if lock doesn't exist yet (initialization race)
             return
 
         try:
+            if not self._device.mdib:
+                return
+
             locations = [l for l in self._device.mdib.context_states.objects if l.NODETYPE == pm.LocationContextState]
             patients = [p for p in self._device.mdib.context_states.objects if p.NODETYPE == pm.PatientContextState]
 
@@ -84,11 +100,53 @@ class QtDeviceHandler(QObject):
             if patients and patients[0].CoreData:
                  self._patientName = patients[0].CoreData.Birthname or "Unknown"
 
-            # Here you would also read the numeric metrics for _deviceValue
-            # and alert states for _alarmStatus
+            # 2. Metrics (Dynamic)
+            # Find all NumericMetricStates
+            metric_states = [m for m in self._device.mdib.states.objects if m.NODETYPE == pm.NumericMetricState]
+
+            new_metrics_list = []
+
+            for state in metric_states:
+                # Find corresponding descriptor to get the Name/Label
+                descriptor = self._device.mdib.descriptions.handle.get_one(state.DescriptorHandle)
+
+                # Determine Name
+                metric_name = "Unknown Metric"
+                if descriptor and descriptor.Type:
+                    # Try to get a readable name (Coding System or CodeId)
+                    metric_name = descriptor.Type.CodeId or descriptor.Handle
+
+                # Determine Value
+                metric_value = "---"
+                if state.MetricValue and state.MetricValue.Value is not None:
+                    metric_value = str(state.MetricValue.Value)
+
+                new_metrics_list.append({
+                    "metricname": metric_name,
+                    "value": metric_value,
+                    "alarm": "Off", # Placeholder
+                    "timeout": 0
+                })
+
+            # Simple diff check or just emit (optimization: equality check on list content)
+            self._metrics = new_metrics_list
+            self.metricsChanged.emit()
+
+            # 3. Main Page Value (Just take the first one found)
+            if self._metrics:
+                new_val = str(self._metrics[0]['value'])
+                if self._deviceValue != new_val:
+                    self._deviceValue = new_val
+                    self.deviceValueChanged.emit()
+            else:
+                self._deviceValue = "---"
+                self.deviceValueChanged.emit()
 
         except Exception as e:
-            print(f"Error reading initial data: {e}")
+            print(f"Error reading data: {e}")
+        finally:
+            if hasattr(self._device, 'data_lock'):
+                self._device.data_lock.release()
 
         """
         self.value_to_show = "10"
@@ -119,6 +177,10 @@ class QtDeviceHandler(QObject):
     def deviceValue(self):
         return self._deviceValue
 
+    @Property(list, notify=metricsChanged)
+    def metrics(self):
+        return self._metrics
+
     @Property(str, notify=alarmStatusChanged)
     def alarmStatus(self):
         return self._alarmStatus
@@ -127,14 +189,20 @@ class QtDeviceHandler(QObject):
     def priority(self):
         return self._priority
 
-class DeviceHandler(threading.Thread):
+class DeviceHandler(QObject, threading.Thread):
     """
     Worker class (The "Worker").
     Responsible for maintaining a connection to a SINGLE specific device (Provider).
     Runs in its own system thread with its own independent asyncio event loop.
     """
+    # Define a signal to trigger updates on the Qt object safely across threads
+    updateTick = Signal()
+
     def __init__(self, wsd_service, manager):
-        super().__init__(daemon=True)
+        # Initialize both QObject and Thread
+        QObject.__init__(self)
+        threading.Thread.__init__(self, daemon=True)
+
         self.wsd_service = wsd_service
         self.epr = str(wsd_service.epr)  # Explicitly convert to string to ensure consistent key usage
         self.manager = manager
@@ -143,6 +211,7 @@ class DeviceHandler(threading.Thread):
         self.mdib = None
         self.qtDeviceHandler = None
         self.error_occurred = False  # Track if the session ended with an error
+        self.data_lock = threading.Lock() # Lock for MDIB access
 
     def run(self):
         # 1. Isolation: Create a new asyncio event loop for this thread.
@@ -169,8 +238,9 @@ class DeviceHandler(threading.Thread):
             self.consumer = SdcConsumer.from_wsd_service(wsd_service=self.wsd_service, ssl_context_container=None)
             self.consumer.start_all()
 
-            self.mdib = ConsumerMdib(self.consumer)
-            self.mdib.init_mdib()
+            with self.data_lock:
+                self.mdib = ConsumerMdib(self.consumer)
+                self.mdib.init_mdib()
 
             # 4. Subscription (Placeholder for future functionality)
             # observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
@@ -186,6 +256,10 @@ class DeviceHandler(threading.Thread):
             main_thread = QGuiApplication.instance().thread()
             if main_thread:
                 self.qtDeviceHandler.moveToThread(main_thread)
+
+                # Connect the worker's signal to the handler's slot
+                # This ensures update_data() runs in the Main Thread when triggered
+                self.updateTick.connect(self.qtDeviceHandler.handleUpdateTick)
             else:
                 print(f"[Worker {self.epr}] Warning: Could not find Main Thread!")
 
@@ -199,7 +273,10 @@ class DeviceHandler(threading.Thread):
                     print(f"[Worker {self.epr}] Connection lost reported by SDC stack.")
                     self.error_occurred = True
                     break
-                # Qt handler is now created before the loop
+
+                # Trigger update on UI thread safely
+                self.updateTick.emit()
+
                 await asyncio.sleep(1)
 
         except Exception as e:
