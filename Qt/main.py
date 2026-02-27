@@ -127,9 +127,11 @@ class QtDeviceHandler(QObject):
 
                 # Determine Name
                 metric_name = "Unknown Metric"
-                if descriptor and descriptor.Type:
+                # if descriptor and descriptor.Type:
+                if descriptor:
                     # Try to get a readable name (Coding System or CodeId)
-                    metric_name = descriptor.Type.CodeId or descriptor.Handle
+                    metric_name = descriptor.Handle
+                    #metric_name = descriptor.Type.CodeId or descriptor.Handle
 
                 # Determine Value
                 metric_value = "---"

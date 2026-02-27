@@ -32,9 +32,6 @@ from sdc11073.roles.product import ExtendedProduct
 from sdc11073.provider.operations import SetValueOperation
 
 CPU_TEMP_HANDLE = 'cpu_temp'
-AL_COND_HANDLE = 'al_condition_1'
-AL_SIG_HANDLE = 'al_signal_1'
-FAN_HANDLE = 'fan_rotation'
 DEVICE_ID = 0
 TEMP_ID = 0
 TEMP_ALARM_ID = 0
@@ -68,51 +65,6 @@ def update_cpu_temp(provider, value: Decimal):
         temp_state = tr.get_state(CPU_TEMP_HANDLE)
         mv = temp_state.MetricValue
         mv.Value = value
-    evaluate_temp_alert(provider, value)
-
-def evaluate_temp_alert(provider, current: Decimal):
-    fan_state = provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value
-    # get threshold of CPU temperature
-    threshold = provider.mdib.entities.by_handle("temp_threshold").state.MetricValue.Value
-    # transaction for alert state changes
-    with provider.mdib.alert_state_transaction() as tr:
-        cond_state = tr.get_state(AL_COND_HANDLE)
-        sig_state = tr.get_state(AL_SIG_HANDLE)
-        # evaluate if condition should fire
-        cond_should_fire = current >= threshold
-        # get current states
-        is_cond_active = cond_state.Presence
-        is_fan_active = fan_state == "On"
-        # if condition should fire and is not active yet -> activate condition and signal
-        if cond_should_fire and (not is_cond_active):
-            cond_state.ActivationState = AlertActivation.ON
-            cond_state.Presence = True
-            sig_state.ActivationState = AlertActivation.ON
-            sig_state.Presence = AlertSignalPresence.ON
-        # if condition should not fire and is active -> deactivate condition and signal
-        elif (not cond_should_fire) and is_cond_active:
-            cond_state.ActivationState = AlertActivation.OFF
-            cond_state.Presence = False
-            sig_state.ActivationState = AlertActivation.OFF
-            sig_state.Presence = AlertSignalPresence.OFF
-
-def print_metrics(provider):
-    print("Curent CPU Temp : ", provider.mdib.entities.by_handle("cpu_temp").state.MetricValue.Value)
-    print("Alarm Condition : ", provider.mdib.entities.by_handle("al_condition_1").state.ActivationState)
-    print("Alarm Signal : ", provider.mdib.entities.by_handle("al_signal_1").state.Presence)
-    print("Fan Status : ", provider.mdib.entities.by_handle("fan_rotation").state.MetricValue.Value)
-    print("Temp Threshold : ", provider.mdib.entities.by_handle("temp_threshold").state.MetricValue.Value)
-    print("-----------------------------------------------------")
-
-def fan_control(provider):
-    #pinctrl FAN_PWM a0 это на пай вернуть чтобы система автоматически контролировала вентилятор
-    state = provider.mdib.entities.by_handle(FAN_HANDLE).state.MetricValue.Value
-    if platform.system() != 'Linux':
-        return
-    if state == "On":
-        os.system("pinctrl FAN_PWM op dl")
-    elif state == "Off":
-        os.system("pinctrl FAN_PWM op dh")
 
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
@@ -164,21 +116,22 @@ if __name__ == '__main__':
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()
 
-    with provider.mdib.alert_state_transaction() as tr:
+    """
+        with provider.mdib.alert_state_transaction() as tr:
         cond_state = tr.get_state(AL_COND_HANDLE)
         cond_state.ActivationState = AlertActivation.OFF
 
     with provider.mdib.metric_state_transaction() as tr:
         id = tr.get_state("device_id")
         id.MetricValue.Value = Decimal(DEVICE_ID)
+    """
 
     # A loop in which all processes take place, for example continuous temperature checking and logging.
     temperature = 0
     while True:
         #temperature = get_cpu_temperature()
         update_cpu_temp(provider, Decimal(temperature))
-        fan_control(provider)
-        print_metrics(provider)
+        print(temperature)
         """This Part is for Provider self Fan controll
         if(provider.mdib.entities.by_handle("al_signal_1").state.Presence == "On"):
             turn_fan(provider, "On")
@@ -192,4 +145,3 @@ if __name__ == '__main__':
             t = t + 1
         """
         temperature = temperature + 1
-        time.sleep(1)
