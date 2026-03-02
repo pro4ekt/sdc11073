@@ -289,8 +289,9 @@ Item {
                             font.pixelSize: 24
                             font.family: "Tahoma"
                             // Use 'model.' prefix to be explicit and safe
+                            // Removed single metric value display (crutch)
                             text: "Room: " + (model.room ? model.room : "?") + " | " +
-                                  model.devicename + ": " + model.value + " | " +
+                                  model.devicename + /*": " + model.value +*/ " | " +
                                   (model.patientname ? model.patientname : "Unknown")
                             color: "white"
                         }
@@ -310,16 +311,9 @@ Item {
                             onClicked: {
                                 // Reverted to your original simple check, just ensuring mainPage exists
                                 if (mainPage.devicePage) {
-                                    mainPage.devicePage.setDevice({
-                                        devicename: model.devicename,
-                                        patientname: model.patientname,
-                                        room: model.room,
-                                        value: model.value,
-                                        alarm: model.alarm,
-                                        priority: model.priority,
-                                        metrics: model.metrics, // Pass the metrics list
-                                        timeout: model.timeout
-                                    })
+                                    // PASS THE RAW PYTHON OBJECT DIRECTLY
+                                    // This ensures we get the live 'metrics' list directly from main.py
+                                    mainPage.devicePage.setDevice(model.deviceObj)
 
                                     mainPage.visible = false
                                     mainPage.devicePage.visible = true

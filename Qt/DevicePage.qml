@@ -5,6 +5,9 @@ import QtQuick.Effects
 
 Item {
     id: devicePage
+    // Store the current Python Device Object
+    property var currentDevice: null
+
     property var deviceModel
     property var mainPage
     property var metricPage
@@ -18,27 +21,60 @@ Item {
     property int priority: 0
     property int timeout: 0
 
-    function setDevice(data) {
-        devicename = data.devicename
-        patientname = data.patientname
-        room = data.room
-        value = data.value
-        alarm = data.alarm
-        priority = data.priority
-        timeout = data.timeout
+    // Setup function now expects the QtDeviceHandler object
+    function setDevice(deviceObj) {
+        currentDevice = deviceObj
 
-        // Populate Metric List
+        // Bind local properties to the Python object's properties
+        devicename = deviceObj.epr
+        patientname = deviceObj.patientName
+        room = deviceObj.patientRoom
+        value = deviceObj.deviceValue
+        alarm = deviceObj.alarmStatus
+        priority = parseInt(deviceObj.priority) || 0
+        timeout = 0
+
+        // Force refresh the list of metrics
+        refreshMetrics()
+    }
+
+    function refreshMetrics() {
         metricListModel.clear()
-        if (data.metrics) {
-            for (var i = 0; i < data.metrics.length; i++) {
-                var m = data.metrics[i]
+
+        if (currentDevice && currentDevice.metrics) {
+            // currentDevice.metrics comes from @Property(list) in main.py
+            var m_list = currentDevice.metrics
+            for (var i = 0; i < m_list.length; i++) {
+                var m = m_list[i]
                 metricListModel.append({
-                    "metricname": m.metricname,
+                    "metricname": m.metricname, // descriptor handle
                     "value": m.value,
                     "alarm": m.alarm,
                     "timeout": 0
                 })
             }
+        }
+    }
+
+    // Listen for live updates from the specific device object
+    Connections {
+        target: currentDevice
+        ignoreUnknownSignals: true
+
+        function onMetricsChanged() {
+            refreshMetrics()
+        }
+
+        function onDeviceValueChanged() {
+            devicePage.value = currentDevice.deviceValue
+        }
+
+        function onPatientNameChanged() {
+            devicePage.patientname = currentDevice.patientName
+        }
+
+        function onAlarmStatusChanged() {
+            devicePage.alarm = currentDevice.alarmStatus
         }
     }
 
@@ -354,7 +390,7 @@ Item {
                                 id: textItem
                                 anchors.centerIn: parent
 
-                                text: metricname + " | Current Value: " + value
+                                text: metricname
                                 color: "white"
 
                                 font.pixelSize: 20

@@ -116,8 +116,9 @@ class QtDeviceHandler(QObject):
                  self._patientName = patients[0].CoreData.Birthname or "Unknown"
 
             # 2. Metrics (Dynamic)
-            # Find all NumericMetricStates
-            metric_states = [m for m in self._device.mdib.states.objects if m.NODETYPE == pm.NumericMetricState]
+            # Find all NumericMetricStates, String, RealTime
+            metric_types = [pm.NumericMetricState, pm.StringMetricState, pm.RealTimeSampleArrayMetricState]
+            metric_states = [m for m in self._device.mdib.states.objects if m.NODETYPE in metric_types]
 
             new_metrics_list = []
 
@@ -125,24 +126,32 @@ class QtDeviceHandler(QObject):
                 # Find corresponding descriptor to get the Name/Label
                 descriptor = self._device.mdib.descriptions.handle.get_one(state.DescriptorHandle)
 
-                # Determine Name
-                metric_name = "Unknown Metric"
-                # if descriptor and descriptor.Type:
-                if descriptor:
-                    # Try to get a readable name (Coding System or CodeId)
-                    metric_name = descriptor.Handle
-                    #metric_name = descriptor.Type.CodeId or descriptor.Handle
+                # Prepare QML helper strings
+                metric_name = descriptor.Handle
 
-                # Determine Value
                 metric_value = "---"
-                if state.MetricValue and state.MetricValue.Value is not None:
-                    metric_value = str(state.MetricValue.Value)
 
+                # FIXED logic: Safely handle types that don't have a scalar 'Value' field (like RealTime Waveforms)
+                try:
+                    if state.NODETYPE == pm.RealTimeSampleArrayMetricState:
+                        metric_value = "Waveform"
+                    elif state.MetricValue:
+                        # Use getattr to safely try accessing 'Value'.
+                        # This prevents crash if the property doesn't exist on this metric type.
+                        val = getattr(state.MetricValue, 'Value', None)
+                        if val is not None:
+                            metric_value = str(val)
+                except Exception:
+                    # If conversion fails, keep default "---"
+                    pass
+
+                # Store raw descriptor and state as requested, plus QML strings
                 new_metrics_list.append({
+                    "descriptor": descriptor,
+                    "state": state,
                     "metricname": metric_name,
                     "value": metric_value,
-                    "alarm": "Off", # Placeholder
-                    "timeout": 0
+                    "alarm": "Off" # Placeholder
                 })
 
             # Simple diff check or just emit (optimization: equality check on list content)
@@ -150,14 +159,22 @@ class QtDeviceHandler(QObject):
             self.metricsChanged.emit()
 
             # 3. Main Page Value (Just take the first one found)
-            if self._metrics:
-                new_val = str(self._metrics[0]['value'])
-                if self._deviceValue != new_val:
-                    self._deviceValue = new_val
-                    self.deviceValueChanged.emit()
-            else:
-                self._deviceValue = "---"
-                self.deviceValueChanged.emit()
+            # --- TEMPORARILY DISABLED (CRUTCH REMOVAL) ---
+            # if self._metrics:
+            #     first_item = self._metrics[0]
+            #     # Check the state inside the dict
+            #     if first_item['state'].MetricValue and first_item['state'].MetricValue.Value is not None:
+            #         new_val = str(first_item['state'].MetricValue.Value)
+            #     else:
+            #         new_val = "---"
+            #
+            #     if self._deviceValue != new_val:
+            #         self._deviceValue = new_val
+            #         self.deviceValueChanged.emit()
+            # else:
+            #     self._deviceValue = "---"
+            #     self.deviceValueChanged.emit()
+            # ---------------------------------------------
 
         except Exception as e:
             print(f"Error reading data: {e}")
@@ -364,25 +381,24 @@ class SdcMyConsumer(QObject):
 
                 # 2. Process results
                 for service in services:
-                    # Fix: Ensure strict string comparison for EPR (UUID) and trim whitespace
-                    epr = str(service.epr).strip()
+                    try:
+                        # Fix: Ensure strict string comparison for EPR (UUID) and trim whitespace
+                        epr = str(service.epr).strip()
 
-                    with self.lock:
-                        # Cleanup check: If we have a record, but the thread is dead, clean it up.
-                        if epr in self.devices and not self.devices[epr].is_alive():
-                            print(f"[Manager] Found dead worker thread for {epr}. Cleaning up registry.")
-                            del self.devices[epr]
+                        with self.lock:
+                            # Cleanup check: If we have a record, but the thread is dead, clean it up.
+                            if epr in self.devices and not self.devices[epr].is_alive():
+                                print(f"[Manager] Found dead worker thread for {epr}. Cleaning up registry.")
+                                del self.devices[epr]
 
-                        # 3. Filtering: If we don't know this device, spawn a worker
-                        if epr not in self.devices:
-                            print(f"[Manager] Found NEW device: {epr}. Spawning Worker.")
-                            device = DeviceHandler(service, self)
-                            self.devices[epr] = device
-                            device.start()
-                            # We already emit the signal in the worker thread when the device is connected
-                        else:
-                            # We already have a worker for this device, ignore it.
-                            pass
+                            # 3. Filtering: If we don't know this device, spawn a worker
+                            if epr not in self.devices:
+                                print(f"[Manager] Found NEW device: {epr}. Spawning Worker.")
+                                device = DeviceHandler(service, self)
+                                self.devices[epr] = device
+                                device.start()
+                    except Exception as loop_err:
+                        print(f"[Manager] Error processing a discovered service: {loop_err}")
 
                 await asyncio.sleep(2) # Wait before next scan
 
