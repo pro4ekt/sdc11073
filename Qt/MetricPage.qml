@@ -11,6 +11,7 @@ Item {
     property string value: ""
     property string alarm: ""
     property int timeout: 0
+    property var graphPoints: [] // Массив для хранения истории значений графика
 
     // NEW: Listen for dynamic updates from the specific device object
     Connections {
@@ -27,10 +28,29 @@ Item {
         // Iterate through fresh metrics to find ours by its Handle (metricname)
         for (var i = 0; i < list.length; i++) {
             if (list[i].metricname === metricname) {
+
                 // Exclude updating value for Waveforms as requested
-                if (list[i].value !== "Waveform") {
+                if (list[i].value === "Waveform") {
+                    value = "Report Recieved"
+                    // Skip graph updates for Waveform (handled later)
+                } else {
                     value = list[i].value;
+
+                    // --- ЛОГИКА ГРАФИКА ---
+                    var fVal = parseFloat(value);
+                    if (!isNaN(fVal)) {
+                        // Манипуляция с массивом
+                        var temp = graphPoints
+                        temp.push(fVal)
+                        // Храним последние 50 точек
+                        if (temp.length > 50) temp.shift()
+                        graphPoints = temp
+                        // Перерисовать график
+                        graph.requestPaint()
+                    }
+                    // ---------------------
                 }
+
                 alarm = list[i].alarm;
 
                 // Add report to history (dynamic logging)
@@ -63,10 +83,21 @@ Item {
 
     function setMetric(data) {
         metricname = data.metricname || "Unknown"
-        value = data.value || "--"
+
+        // Handle initial value display exception for Waveform
+        if (data.value === "Waveform") {
+            value = "Report Recieved"
+        } else {
+            value = data.value || "--"
+        }
+
         alarm = data.alarm || "Off"
         // Ensure timeout is handled if present, else 0
         timeout = data.timeout ? data.timeout : 0
+
+        // Очищаем историю графика при входе в новую метрику
+        graphPoints = []
+        graph.requestPaint()
 
         // Clear reports when entering a new metric page
         if (opListModel) opListModel.clear();
@@ -572,7 +603,7 @@ Item {
         color: "#191d2c"
         clip: true
 
-        // ======== ГРАФИК СВЕРХУ ========
+        // ======== ГРАФИК ========
         Rectangle {
             id: graphContainer
             anchors.top: parent.top
@@ -586,84 +617,95 @@ Item {
 
                 onPaint: {
                     var ctx = getContext("2d")
-                    ctx.clearRect(0, 0, width, height)
+                    var w = width
+                    var h = height
+
+                    ctx.clearRect(0, 0, w, h)
 
                     // ФОН ГРАФИКА
                     ctx.fillStyle = "#191d2c"
-                    ctx.fillRect(0, 0, width, height)
+                    ctx.fillRect(0, 0, w, h)
 
                     // Отступы
                     var left = 50
-                    var right = 10
-                    var top = 10
+                    var right = 20
+                    var top = 20
                     var bottom = 30
 
-                    var w = width - left - right
-                    var h = height - top - bottom
+                    var graphW = w - left - right
+                    var graphH = h - top - bottom
 
-                    // --- СЕТКА ---
-                    ctx.strokeStyle = "#2a3045"
-                    ctx.lineWidth = 1
-
-                    var gridY = 4
-                    for (var gy = 0; gy <= gridY; gy++) {
-                        var y = top + gy * (h / gridY)
-                        ctx.beginPath()
-                        ctx.moveTo(left, y)
-                        ctx.lineTo(width - right, y)
-                        ctx.stroke()
-                    }
-
-                    var gridX = 5
-                    for (var gx = 0; gx <= gridX; gx++) {
-                        var x = left + gx * (w / gridX)
-                        ctx.beginPath()
-                        ctx.moveTo(x, top)
-                        ctx.lineTo(x, height - bottom)
-                        ctx.stroke()
-                    }
-
-                    // --- ОСИ ---
-                    ctx.strokeStyle = "#8fa3ff"
+                    // --- ОСИ И СЕТКА ---
+                    // Рамка осей
                     ctx.lineWidth = 2
-
+                    ctx.strokeStyle = "#8fa3ff"
                     ctx.beginPath()
                     ctx.moveTo(left, top)
-                    ctx.lineTo(left, height - bottom)
+                    ctx.lineTo(left, h - bottom)
+                    ctx.lineTo(w - right, h - bottom)
                     ctx.stroke()
 
-                    ctx.beginPath()
-                    ctx.moveTo(left, height - bottom)
-                    ctx.lineTo(width - right, height - bottom)
-                    ctx.stroke()
+                    // Если нет точек, на этом всё
+                    if (graphPoints.length < 1) return
 
-                    // --- ЛИНИЯ ГРАФИКА ---
-                    ctx.strokeStyle = "#ff4d4d"
-                    ctx.lineWidth = 3
+                    // Определяем min/max для масштабирования Y
+                    var minVal = graphPoints[0]
+                    var maxVal = graphPoints[0]
+                    for (var i = 1; i < graphPoints.length; i++) {
+                        if (graphPoints[i] < minVal) minVal = graphPoints[i]
+                        if (graphPoints[i] > maxVal) maxVal = graphPoints[i]
+                    }
 
-                    ctx.beginPath()
-                    ctx.moveTo(left, height - bottom - 40)
-                    ctx.lineTo(width - right, top + 20)
-                    ctx.stroke()
+                    // Добавляем отступы (padding) по вертикали, чтобы график не «прилипал»
+                    var range = maxVal - minVal
+                    if (range === 0) range = 10 // Защита от деления на 0
+                    var yMin = minVal - range * 0.1
+                    var yMax = maxVal + range * 0.1
+                    var yRange = yMax - yMin
 
-                    // --- ТЕКСТ ---
+                    // --- СЕТКА (Grid) ---
+                    ctx.strokeStyle = "#2a3045"
+                    ctx.lineWidth = 1
                     ctx.fillStyle = "#c7d0ff"
                     ctx.font = "12px sans-serif"
 
-                    var yLabels = [60, 70, 80, 90, 100]
-                    for (var j = 0; j < yLabels.length; j++) {
-                        var ly = top + (100 - yLabels[j]) * (h / 40)
-                        ctx.fillText(yLabels[j], 10, ly + 4)
+                    // Рисуем 5 горизонтальных линий
+                    for (var j = 0; j <= 4; j++) {
+                         var val = yMin + (j / 4.0) * yRange
+                         var yPos = h - bottom - (j / 4.0) * graphH
+
+                         ctx.beginPath()
+                         ctx.moveTo(left, yPos)
+                         ctx.lineTo(w - right, yPos)
+                         ctx.stroke()
+
+                         // Подпись значений оси Y
+                         ctx.fillText(val.toFixed(1), 5, yPos + 4)
                     }
 
-                    var times = ["13:00", "13:20", "13:40", "14:00", "14:15"]
-                    for (var t = 0; t < times.length; t++) {
-                        var tx = left + t * (w / (times.length - 1))
-                        ctx.fillText(times[t], tx - 15, height - 10)
+                    // --- ЛИНИЯ ГРАФИКА ---
+                    if (graphPoints.length > 1) {
+                        ctx.strokeStyle = "#ff4d4d"
+                        ctx.lineWidth = 3
+                        ctx.beginPath()
+
+                        // Растягиваем массив точек по ширине graphW
+                        var stepX = graphW / (graphPoints.length - 1)
+
+                        for (var k = 0; k < graphPoints.length; k++) {
+                            var x = left + k * stepX
+
+                            // Нормализуем значение Y от 0 до 1
+                            var normalizedY = (graphPoints[k] - yMin) / yRange
+                            // Переводим в координаты canvas (снизу вверх)
+                            var y = h - bottom - normalizedY * graphH
+
+                            if (k === 0) ctx.moveTo(x, y)
+                            else ctx.lineTo(x, y)
+                        }
+                        ctx.stroke()
                     }
                 }
-
-                Component.onCompleted: requestPaint()
             }
         }
 
