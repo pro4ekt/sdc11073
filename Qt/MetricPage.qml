@@ -32,8 +32,32 @@ Item {
                     value = list[i].value;
                 }
                 alarm = list[i].alarm;
+
+                // Add report to history (dynamic logging)
+                var reportVal = list[i].value;
+                if (reportVal === "Waveform") {
+                    reportVal = "Report Recieved";
+                }
+                addReportItem(reportVal, list[i].alarm);
                 break;
             }
+        }
+    }
+
+    function addReportItem(val, alm) {
+        var now = new Date();
+        // Format: dd.MM.yy HH:mm:ss
+        var timeStr = now.toLocaleString(Qt.locale(), "dd.MM.yy HH:mm:ss");
+
+        opListModel.append({
+            "value": val,
+            "time": timeStr,
+            "alarm": alm
+        });
+
+        // If more than 40 reports, clear and start over as requested
+        if (opListModel.count > 40) {
+            opListModel.clear();
         }
     }
 
@@ -43,6 +67,9 @@ Item {
         alarm = data.alarm || "Off"
         // Ensure timeout is handled if present, else 0
         timeout = data.timeout ? data.timeout : 0
+
+        // Clear reports when entering a new metric page
+        if (opListModel) opListModel.clear();
     }
 
     // ---------------- TOP BAR ----------------
@@ -425,13 +452,7 @@ Item {
 
             ListModel {
                 id: opListModel
-                ListElement {value : 60; time: "09.01.26 14:00"; alarm: "Off";}
-                ListElement {value: 65; time: "09.01.26 14:02"; alarm: "Off";}
-                ListElement {value: 70; time: "09.01.26 14:03"; alarm: "Off";}
-                ListElement {value: 75; time: "09.01.26 14:05"; alarm: "On";}
-                ListElement {value: 80; time: "09.01.26 14:07"; alarm: "On";}
-                ListElement {value: 85; time: "09.01.26 14:09"; alarm: "On";}
-                ListElement {value: 90; time: "09.01.26 14:12"; alarm: "On";}
+                // Mock data removed for dynamic operation
             }
 
             Flickable {
