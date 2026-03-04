@@ -130,11 +130,15 @@ class QtDeviceHandler(QObject):
                 metric_name = descriptor.Handle
 
                 metric_value = "---"
+                metric_samples = []
 
                 # FIXED logic: Safely handle types that don't have a scalar 'Value' field (like RealTime Waveforms)
                 try:
                     if state.NODETYPE == pm.RealTimeSampleArrayMetricState:
                         metric_value = "Waveform"
+                        # Extract samples specifically for graphing
+                        if state.MetricValue and state.MetricValue.Samples:
+                            metric_samples = [float(x) for x in state.MetricValue.Samples]
                     elif state.MetricValue:
                         # Use getattr to safely try accessing 'Value'.
                         # This prevents crash if the property doesn't exist on this metric type.
@@ -151,6 +155,7 @@ class QtDeviceHandler(QObject):
                     "state": state,
                     "metricname": metric_name,
                     "value": metric_value,
+                    "samples": metric_samples, # New field containing list of floats for graph
                     "alarm": "Off" # Placeholder
                 })
 
@@ -307,7 +312,8 @@ class DeviceHandler(threading.Thread):
                 if self.qtDeviceHandler:
                     self.qtDeviceHandler.scheduleUpdate()
 
-                await asyncio.sleep(1)
+                # CHANGED: Reverted to 1.0 second standard update rate (cancels smooth scrolling idea)
+                await asyncio.sleep(1.0)
 
         except Exception as e:
             print(f"[Worker {self.epr}] Critical Error: {e}")

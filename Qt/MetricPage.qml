@@ -29,22 +29,41 @@ Item {
         for (var i = 0; i < list.length; i++) {
             if (list[i].metricname === metricname) {
 
-                // Exclude updating value for Waveforms as requested
-                if (list[i].value === "Waveform") {
-                    value = "Report Recieved"
-                    // Skip graph updates for Waveform (handled later)
+                var incomingValue = list[i].value;
+                var incomingSamples = list[i].samples;
+
+                // Handle Waveform Logic
+                if (incomingValue === "Waveform") {
+                    value = "Report Recieved"; // Display Text
+
+                    // Graphing Logic for Waveforms (Arrays)
+                    if (incomingSamples && incomingSamples.length > 0) {
+                        var temp = graphPoints;
+                        for (var j = 0; j < incomingSamples.length; j++) {
+                            temp.push(incomingSamples[j]);
+                        }
+                        // Increase buffer size for waveforms (fast data)
+                        // CHANGED: Increased from 300 to 1000 for 5 seconds of history @ 200Hz
+                        while (temp.length > 1000) {
+                            temp.shift();
+                        }
+                        graphPoints = temp;
+                        graph.requestPaint();
+                    }
+
                 } else {
-                    value = list[i].value;
+                    // Standard Numeric Logic
+                    value = incomingValue;
 
                     // --- ЛОГИКА ГРАФИКА ---
                     var fVal = parseFloat(value);
                     if (!isNaN(fVal)) {
                         // Манипуляция с массивом
-                        var temp = graphPoints
-                        temp.push(fVal)
+                        var temp2 = graphPoints
+                        temp2.push(fVal)
                         // Храним последние 50 точек
-                        if (temp.length > 50) temp.shift()
-                        graphPoints = temp
+                        if (temp2.length > 50) temp2.shift()
+                        graphPoints = temp2
                         // Перерисовать график
                         graph.requestPaint()
                     }
