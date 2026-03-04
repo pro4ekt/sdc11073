@@ -12,6 +12,31 @@ Item {
     property string alarm: ""
     property int timeout: 0
 
+    // NEW: Listen for dynamic updates from the specific device object
+    Connections {
+        target: (devicePage && devicePage.currentDevice) ? devicePage.currentDevice : null
+        function onMetricsChanged() {
+            updateDynamicValues()
+        }
+    }
+
+    function updateDynamicValues() {
+        if (!devicePage || !devicePage.currentDevice) return;
+
+        var list = devicePage.currentDevice.metrics;
+        // Iterate through fresh metrics to find ours by its Handle (metricname)
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].metricname === metricname) {
+                // Exclude updating value for Waveforms as requested
+                if (list[i].value !== "Waveform") {
+                    value = list[i].value;
+                }
+                alarm = list[i].alarm;
+                break;
+            }
+        }
+    }
+
     function setMetric(data) {
         metricname = data.metricname || "Unknown"
         value = data.value || "--"
