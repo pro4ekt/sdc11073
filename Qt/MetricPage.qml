@@ -43,7 +43,7 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: parent.width * 0.02
             anchors.verticalCenter: parent.verticalCenter
-            source: "qrc:/img/login.jpg"
+            source: "img/login.jpg"
 
             MouseArea {
                 anchors.fill: parent
@@ -58,10 +58,10 @@ Item {
             height: parent.height
 
             source: alarm === "On" && timeout === 1
-                    ? "qrc:/img/noSound.png"
+                    ? "img/noSound.png"
                     : (alarm === "On" && timeout === 0
-                        ? "qrc:/img/bellOn.png"
-                        : "qrc:/img/bellOff.png")
+                        ? "img/bellOn.png"
+                        : "img/bellOff.png")
 
             fillMode: Image.PreserveAspectCrop
             layer.enabled: true
@@ -90,7 +90,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 150
             height: 150
-            source: "qrc:/img/homepage.png"
+            source: "img/homepage.png"
 
             MouseArea {
                 anchors.fill: parent
@@ -107,7 +107,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 80
             height: 140
-            source: "qrc:/img/arrow.png"
+            source: "img/arrow.png"
 
             MouseArea {
                 anchors.fill: parent

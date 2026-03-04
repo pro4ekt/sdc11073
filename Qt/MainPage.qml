@@ -193,7 +193,7 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: parent.width * 0.02
             anchors.verticalCenter: parent.verticalCenter
-            source: "qrc:/img/login.jpg"
+            source: "img/login.jpg"
         }
         */
     }
