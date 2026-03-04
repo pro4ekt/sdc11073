@@ -19,6 +19,8 @@ from sdc11073.mdib.statecontainers import LocationContextStateContainer
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types.pm_qnames import LocationContextState
+# ADDED: Essential enums for robust alarm checking
+from sdc11073.xml_types.pm_types import AlertSignalPresence, AlertActivation
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -65,7 +67,7 @@ class QtDeviceHandler(QObject):
 
         # Placeholder data for UI - these would come from MDIB in real app
         self._deviceValue = "---"
-        self._alarmStatus = "Off"
+        self._alarmStatus = ""
         self._priority = "3"
         self._metrics = [] # ADDED: Initialize list
 
@@ -115,6 +117,49 @@ class QtDeviceHandler(QObject):
             if patients and patients[0].CoreData:
                  self._patientName = patients[0].CoreData.Birthname or "Unknown"
 
+            # --- ALARM LOGIC START ---
+            active_alert_handles = set()
+            new_alarm_status = "Off"
+
+            # 1. Alert Signals (Global Alarm Status)
+            # Find signals that are ON and Active (not suppressed/paused) to set the Device's global alarm state.
+            alert_signals = [
+                s for s in self._device.mdib.states.objects
+                if s.NODETYPE == pm.AlertSignalState
+            ]
+
+            for s in alert_signals:
+                # Robust check for 'On' state (handles both Enum and String representation)
+                is_present = str(s.Presence) == 'On'
+                #is_active = str(s.ActivationState) == 'On'
+
+                if is_present:
+                    new_alarm_status = "On"
+                    break
+
+            # 2. Alert Conditions (Metric Associations)
+            # Find active physiological alarms (Conditions) to highlight specific metrics.
+            alert_condition_types = [pm.AlertConditionState, pm.LimitAlertConditionState]
+            active_conditions = [
+                s for s in self._device.mdib.states.objects
+                if s.NODETYPE in alert_condition_types and getattr(s, 'Presence', False)
+            ]
+
+            for alert in active_conditions:
+                # Find the descriptor to check for sources
+                alert_desc = self._device.mdib.descriptions.handle.get_one(alert.DescriptorHandle, allow_none=True)
+
+                # The 'Source' field contains a list of Handles (metrics) that this alert monitors
+                if alert_desc and hasattr(alert_desc, 'Source') and alert_desc.Source:
+                    for source_handle in alert_desc.Source:
+                        active_alert_handles.add(source_handle)
+
+            # Update Global Status property if changed
+            if self._alarmStatus != new_alarm_status:
+                self._alarmStatus = new_alarm_status
+                self.alarmStatusChanged.emit()
+            # --- ALARM LOGIC END ---
+
             # 2. Metrics (Dynamic)
             # Find all NumericMetricStates, String, RealTime
             metric_types = [pm.NumericMetricState, pm.StringMetricState, pm.RealTimeSampleArrayMetricState]
@@ -131,6 +176,9 @@ class QtDeviceHandler(QObject):
 
                 metric_value = "---"
                 metric_samples = []
+
+                # Check if this metric is causing an alarm
+                metric_alarm = "On" if descriptor.Handle in active_alert_handles else "Off"
 
                 # FIXED logic: Safely handle types that don't have a scalar 'Value' field (like RealTime Waveforms)
                 try:
@@ -156,7 +204,7 @@ class QtDeviceHandler(QObject):
                     "metricname": metric_name,
                     "value": metric_value,
                     "samples": metric_samples, # New field containing list of floats for graph
-                    "alarm": "Off" # Placeholder
+                    "alarm": metric_alarm
                 })
 
             # Simple diff check or just emit (optimization: equality check on list content)

@@ -247,6 +247,9 @@ Item {
                             function onPatientNameChanged() { model.patientname = target.patientName }
                             function onPatientRoomChanged() { model.room = target.patientRoom }
                             function onMetricsChanged() { model.metrics = target.metrics }
+                            // ADDED: Listen for live Alarm and Priority updates
+                            function onAlarmStatusChanged() { model.alarm = target.alarmStatus }
+                            function onPriorityChanged() { model.priority = target.priority }
                         }
 
                         width: column.width
@@ -280,6 +283,13 @@ Item {
 
                             NumberAnimation { to: 0.5; duration: 500; easing.type: Easing.InOutQuad }
                             NumberAnimation { to: 1.0; duration: 500; easing.type: Easing.InOutQuad }
+
+                            // FIXED: Reset opacity when alarm stops to prevent "stuck" semi-transparent colors
+                            onRunningChanged: {
+                                if (!running) {
+                                    delegateButton.opacity = 1.0
+                                }
+                            }
                         }
 
                         Text {
