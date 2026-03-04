@@ -7,16 +7,17 @@ Item {
     id: metricPage
     property var devicePage
     property var mainPage
-    property var metricname
-    property var value
-    property var alarm
-    property var timeout
+    property string metricname: ""
+    property string value: ""
+    property string alarm: ""
+    property int timeout: 0
 
     function setMetric(data) {
-        metricname = data.metricname
-        value = data.value
-        alarm = data.alarm
-        timeout = data.timeout
+        metricname = data.metricname || "Unknown"
+        value = data.value || "--"
+        alarm = data.alarm || "Off"
+        // Ensure timeout is handled if present, else 0
+        timeout = data.timeout ? data.timeout : 0
     }
 
     // ---------------- TOP BAR ----------------
@@ -293,21 +294,12 @@ Item {
                             color: "white"
 
                             text:
-                                "Metric Name: Heart Rate\n" +
-                                "Code: HR-001\n" +
-                                "Unit: bpm (beats per minute)\n" +
+                                "Metric Handle: " + metricname + "\n" +
                                 "\n" +
-                                "Lower Threshold: 50\n" +
-                                "Upper Threshold: 120\n" +
+                                "Current Value: " + value + "\n" +
+                                "Alarm Status: " + alarm + "\n" +
                                 "\n" +
-                                "Default Value: 75\n" +
-                                "Current Status: Normal\n" +
-                                "Update Interval: 1s\n" +
-                                "Last Update: 09.01.26 14:12\n" +
-                                "\n" +
-                                "Description:\n" +
-                                "Indicates the number of heart contractions per minute.\n" +
-                                "Used for continuous monitoring of patient cardiovascular activity."
+                                "Last Update: " + new Date().toLocaleTimeString()
 
                             font.pixelSize: 18
                             wrapMode: Text.Wrap

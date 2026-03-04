@@ -401,11 +401,10 @@ Item {
                             MouseArea {
                                 anchors.fill: parent
                                 onClicked: {
-                                    metricPage.setMetric({
-                                    metricname: metricname,
-                                    value: value,
-                                    alarm: alarm,
-                                    timeout: timeout})
+                                    // Fetch the full metric object from the source using the model index
+                                    var metricData = devicePage.currentDevice.metrics[index]
+
+                                    metricPage.setMetric(metricData)
 
                                     devicePage.visible = false
                                     metricPage.visible = true
