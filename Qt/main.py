@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, Signal, Slot, Property
 
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
+from sdc11073.xml_types.actions import periodic_actions
 from sdc11073.mdib.statecontainers import LocationContextStateContainer
 from sdc11073.wsdiscovery import WSDiscovery
 from sdc11073.xml_types import pm_qnames as pm
@@ -321,7 +322,7 @@ class DeviceHandler(threading.Thread):
         try:
             # 3. Connection: Create SDC Consumer for this specific service
             self.consumer = SdcConsumer.from_wsd_service(wsd_service=self.wsd_service, ssl_context_container=None)
-            self.consumer.start_all()
+            self.consumer.start_all(not_subscribed_actions=periodic_actions)
 
             with self.data_lock:
                 self.mdib = ConsumerMdib(self.consumer)
