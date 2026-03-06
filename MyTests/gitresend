@@ -1,28 +1,52 @@
 #include <iostream>
+#include <string>
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
 
-int main() {
-    // 1. Открываем порт
-    int fd = open("/dev/serial0", O_RDWR | O_NOCTTY);
-    if (fd < 0) { std::cout << "Ошибка порта\n"; return 1; }
+// Та самая отдельная функция
+std::string get_serial_data() {
+    static int fd = -1; // Сохраняет значение между вызовами
 
-    // 2. Настраиваем только самое необходимое (115200 бод, 8 бит, сырой режим)
-    struct termios tty;
-    tcgetattr(fd, &tty);
-    cfsetspeed(&tty, B115200);
-    tty.c_cflag |= (CLOCAL | CREAD | CS8);
-    tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
-    tcsetattr(fd, TCSANOW, &tty);
+    // 1. Настраиваем порт ТОЛЬКО при самом первом вызове
+    if (fd < 0) {
+        // O_NDELAY означает "не зависать, если данных пока нет"
+        fd = open("/dev/serial0", O_RDWR | O_NOCTTY | O_NDELAY);
+        if (fd < 0) return "";
 
-    // 3. Бесконечно читаем и выводим
+        struct termios tty;
+        tcgetattr(fd, &tty);
+        cfsetspeed(&tty, B115200); // Наши 115200 бод
+        tty.c_cflag |= (CLOCAL | CREAD | CS8);
+        tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+        tcsetattr(fd, TCSANOW, &tty);
+    }
+
+    // 2. Просто читаем, что успело прилететь в буфер
     char buf[256];
+    int n = read(fd, buf, sizeof(buf) - 1);
+
+    if (n > 0) {
+        buf[n] = '\0'; // Закрываем строку
+        return std::string(buf);
+    }
+
+    return ""; // Возвращаем пустоту, если в проводе тишина
+}
+
+
+// --- ТВОЙ ЧИСТЫЙ MAIN ---
+int main() {
+    std::cout << "Слушаю порт...\n";
+
     while (true) {
-        int n = read(fd, buf, sizeof(buf) - 1);
-        if (n > 0) {
-            buf[n] = '\0'; // Закрываем строку
-            std::cout << buf << std::flush; // Выводим на экран
+        // Просто вызываем функцию!
+        std::string my_value = get_serial_data();
+
+        if (!my_value.empty()) {
+            std::cout << my_value << std::flush;
+            // Тут потом можешь конвертировать строку my_value в число (std::stoi)
+            // и отправлять в свой корпоративный C++ провайдер
         }
     }
 
