@@ -1,0 +1,82 @@
+#include <iostream>
+#include <string>
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
+
+// Функция возвращает ОДНО значение пульса в виде double
+double get_single_pulse_value() {
+    static int fd = -1;
+
+    // 1. Открываем порт при первом вызове (БЕЗ O_NDELAY, чтобы функция ждала данные)
+    if (fd < 0) {
+        fd = open("/dev/serial0", O_RDWR | O_NOCTTY);
+        if (fd < 0) return -1.0;
+
+        struct termios tty;
+        tcgetattr(fd, &tty);
+
+        // Надежные 9600 бод для Pi Zero
+        cfsetspeed(&tty, B9600);
+
+        tty.c_cflag |= (CLOCAL | CREAD | CS8);
+        tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+
+        tty.c_cc[VMIN] = 1;   // Ждем хотя бы 1 байт
+        tty.c_cc[VTIME] = 10; // Таймаут 1 секунда
+
+        tcsetattr(fd, TCSANOW, &tty);
+    }
+
+    std::string line = "";
+    char buf;
+
+    // 2. Читаем строго ОДНО число до переноса строки
+    while (true) {
+        int n = read(fd, &buf, 1); // Читаем по одному символу
+
+        if (n > 0) {
+            if (buf == '\n') {
+                break; // Дошли до конца строки Ардуино - число собрано!
+            }
+            // Сохраняем только цифры и точку (защита от мусора)
+            if (isdigit(buf) || buf == '.') {
+                line += buf;
+            }
+        } else {
+            // Если сработал таймаут (1 секунда прошла, а данных нет)
+            return -1.0;
+        }
+    }
+
+    // 3. Превращаем собранную строку в double
+    if (!line.empty()) {
+        try {
+            return std::stod(line);
+        } catch (...) {
+            return -1.0; // Ошибка конвертации
+        }
+    }
+
+    return -1.0;
+}
+
+// --- ПРИМЕР ИСПОЛЬЗОВАНИЯ В ВАШЕМ ПРОВАЙДЕРЕ ---
+int main() {
+    std::cout << "Слушаю пульсометр на 9600 бод...\n";
+
+    while (true) {
+        // Запрашиваем ровно 1 значение
+        double pulse = get_single_pulse_value();
+
+        // Если датчик прислал адекватное значение (не тишину)
+        if (pulse > 0.0) {
+            std::cout << "Отправка в SDC: " << pulse << " BPM\n";
+
+            // Здесь будет ваша логика корпоративного стека:
+            // my_sdc_metric->setValue(pulse);
+        }
+    }
+
+    return 0;
+}
