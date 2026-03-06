@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import math # Добавлен импорт math
+import math
+import random # Добавлен random
 import logging
 import time
 import uuid
@@ -52,7 +53,12 @@ if __name__ == '__main__':
 
     # Конфигурация волновой формы
     waveform_handle = "wave_form_test"
-    sin_rad = 0.0
+
+    # Параметры симуляции мышцы (счетчик по сэмплам)
+    cycle_counter = 0
+    cycle_total_samples = 200 # Длина всего цикла (например 200 точек)
+    burst_start = 150         # На каком сэмпле начинается активность
+    burst_end = 180           # На каком сэмпле заканчивается
 
     # Период дискретизации (время между двумя точками).
     # В идеале должен совпадать с SamplePeriod из Descriptor мдиба, но для теста возьмем 0.005 сек
@@ -70,11 +76,22 @@ if __name__ == '__main__':
 
         # Генерируем пачку сэмплов (например, 10 штук за цикл)
         for _ in range(10):
-            sin_rad += 0.1
-            if sin_rad > 2 * math.pi:
-                sin_rad -= 2 * math.pi
-            # Значение синусоиды от -10 до 10
-            samples.append(Decimal(math.sin(sin_rad) * 10))
+            val = 0.0
+
+            # Логика: Тишина -> Всплеск -> Тишина
+            if burst_start <= cycle_counter < burst_end:
+                # Всплеск: случайная амплитуда (эмуляция сокращения мышцы)
+                val = random.uniform(-5.0, 5.0)
+            else:
+                # Тишина (ровная линия 0)
+                val = 0.0
+
+            samples.append(Decimal(val))
+
+            # Двигаем счетчик цикла
+            cycle_counter += 1
+            if cycle_counter >= cycle_total_samples:
+                cycle_counter = 0
 
         # Время окончания = время начала + (количество точек * период)
         stop_time = start_time + (len(samples) * sample_period)

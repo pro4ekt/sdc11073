@@ -100,20 +100,22 @@ if __name__ == '__main__':
     """
 
     while True:
-        liquid_volume = provider.mdib.entities.by_handle("liquid").state.MetricValue.Value
-        if (t % 500 == 0 and liquid_volume != 0):
-            print("Liquid Volume : ",liquid_volume)
-        with provider.mdib.alert_state_transaction() as alert_tr:
-            condition = alert_tr.get_state("alc1")
-            signal = alert_tr.get_state("als1")
-            if (liquid_volume == 0):
-                condition.Presence = True
-                signal.Presence = AlertSignalPresence.ON
-                if(signal.Presence == AlertSignalPresence.ON):
-                    print("ALARM IS ON! NO MORE LIQUID!")
-                if(signal.Presence == AlertSignalPresence.OFF):
-                    print("Alarm is OFF, but there is still no liquid!")
+        liquid_volume = provider.mdib.entities.by_handle("liquid").state.MetricValue.Value + 1
+        with provider.mdib.metric_state_transaction() as metric_tr:
+            state = metric_tr.get_state("liquid")
+            obj = NumericMetricValue()
+            obj.Value = liquid_volume
+            state.MetricValue = obj
         t = t + 1
+        if liquid_volume < 2000:
+            with provider.mdib.alert_state_transaction() as alert_tr:
+                alert_tr.get_state("als1").Presence = AlertSignalPresence.ON
+        else:
+            with provider.mdib.alert_state_transaction() as alert_tr:
+                alert_tr.get_state("als1").Presence = AlertSignalPresence.OFF
+        print("Liquid Volume : ", liquid_volume)
+        print("Alarm State : ", provider.mdib.entities.by_handle("als1").state.Presence)
+        #time.sleep(1)
 """
 #Цикл для показа температуры процессора
     while True:

@@ -1,0 +1,30 @@
+#include <iostream>
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
+
+int main() {
+    // 1. Открываем порт
+    int fd = open("/dev/serial0", O_RDWR | O_NOCTTY);
+    if (fd < 0) { std::cout << "Ошибка порта\n"; return 1; }
+
+    // 2. Настраиваем только самое необходимое (115200 бод, 8 бит, сырой режим)
+    struct termios tty;
+    tcgetattr(fd, &tty);
+    cfsetspeed(&tty, B115200);
+    tty.c_cflag |= (CLOCAL | CREAD | CS8);
+    tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+    tcsetattr(fd, TCSANOW, &tty);
+
+    // 3. Бесконечно читаем и выводим
+    char buf[256];
+    while (true) {
+        int n = read(fd, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0'; // Закрываем строку
+            std::cout << buf << std::flush; // Выводим на экран
+        }
+    }
+
+    return 0;
+}
