@@ -299,9 +299,9 @@ Item {
                             font.pixelSize: 24
                             font.family: "Tahoma"
                             // Use 'model.' prefix to be explicit and safe
-                            // Removed single metric value display (crutch)
+                            // ADDED: Showing main value (Alarm metric or Last metric)
                             text: "Room: " + (model.room ? model.room : "?") + " | " +
-                                  model.devicename + /*": " + model.value +*/ " | " +
+                                  model.devicename + " | " + (model.value ? model.value : "---") + " | " +
                                   (model.patientname ? model.patientname : "Unknown")
                             color: "white"
                         }

@@ -264,23 +264,23 @@ class QtDeviceHandler(QObject):
             self._operations = new_ops
             self.operationsChanged.emit()
 
-            # 3. Main Page Value (Just take the first one found)
-            # --- TEMPORARILY DISABLED (CRUTCH REMOVAL) ---
-            # if self._metrics:
-            #     first_item = self._metrics[0]
-            #     # Check the state inside the dict
-            #     if first_item['state'].MetricValue and first_item['state'].MetricValue.Value is not None:
-            #         new_val = str(first_item['state'].MetricValue.Value)
-            #     else:
-            #         new_val = "---"
-            #
-            #     if self._deviceValue != new_val:
-            #         self._deviceValue = new_val
-            #         self.deviceValueChanged.emit()
-            # else:
-            #     self._deviceValue = "---"
-            #     self.deviceValueChanged.emit()
-            # ---------------------------------------------
+            # 5. Determine Main Page Value (Alarm Priority)
+            # Logic: If alarm, show the first alarming metric. Else, show the last metric in the list.
+            display_val = "---"
+
+            # Find first alarming metric
+            alarming_metric = next((m for m in new_metrics_list if m["alarm"] == "On"), None)
+
+            if alarming_metric:
+                display_val = f"{alarming_metric['metricname']}: {alarming_metric['value']}"
+            elif new_metrics_list:
+                # No alarm, show last metric in the list as requested
+                last_mt = new_metrics_list[-1]
+                display_val = f"{last_mt['metricname']}: {last_mt['value']}"
+
+            if self._deviceValue != display_val:
+                self._deviceValue = display_val
+                self.deviceValueChanged.emit()
 
         except Exception as e:
             print(f"Error reading data: {e}")
