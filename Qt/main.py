@@ -48,6 +48,7 @@ class QtDeviceHandler(QObject):
     alarmStatusChanged = Signal()
     priorityChanged = Signal()
     metricsChanged = Signal() # ADDED: Signal for metrics list
+    operationsChanged = Signal() # ADDED: Signal for operations list
 
     # Internal signal to bridge threads
     # This signal is emitted from the Worker thread context but connected to a slot in Main thread
@@ -71,6 +72,7 @@ class QtDeviceHandler(QObject):
         self._alarmStatus = ""
         self._priority = "3"
         self._metrics = [] # ADDED: Initialize list
+        self._operations = [] # ADDED: Initialize operations list
 
         # Connect internal signal for thread-hopping
         # When updateTick is emitted (from any thread), handleUpdateTick runs in the thread this object lives in (Main)
@@ -161,7 +163,7 @@ class QtDeviceHandler(QObject):
                 self.alarmStatusChanged.emit()
             # --- ALARM LOGIC END ---
 
-            # 2. Metrics (Dynamic)
+            # 3. Metrics (Dynamic)
             # Find all NumericMetricStates, String, RealTime
             metric_types = [pm.NumericMetricState, pm.StringMetricState, pm.RealTimeSampleArrayMetricState]
             metric_states = [m for m in self._device.mdib.states.objects if m.NODETYPE in metric_types]
@@ -211,6 +213,56 @@ class QtDeviceHandler(QObject):
             # Simple diff check or just emit (optimization: equality check on list content)
             self._metrics = new_metrics_list
             self.metricsChanged.emit()
+
+            # 4. Operations (Dynamic)
+            # CHANGED: Find operation states directly instead of descriptors.
+            # This covers SetValue, Activate, SetString, etc. more reliably.
+            op_state_types = [
+                pm.SetValueOperationState,
+                pm.SetStringOperationState,
+                pm.ActivateOperationState,
+                pm.SetContextStateOperationState,
+                pm.SetMetricStateOperationState,
+                pm.SetAlertStateOperationState,
+                pm.SetComponentStateOperationState
+            ]
+
+            op_states = [s for s in self._device.mdib.states.objects if s.NODETYPE in op_state_types]
+
+            new_ops = []
+            for state in op_states:
+                # Find corresponding descriptor to get the Name/Label
+                d = self._device.mdib.descriptions.handle.get_one(state.DescriptorHandle, allow_none=True)
+                if not d:
+                    continue
+
+                op_name = d.Handle
+                # Try to get a human-readable name from ConceptDescription or Code
+                if d.Type:
+                    txt = None
+                    if hasattr(d.Type, 'ConceptDescription') and d.Type.ConceptDescription:
+                         txt = d.Type.ConceptDescription[0].text
+
+                    if not txt and hasattr(d.Type, 'Code'):
+                        txt = d.Type.Code
+
+                    if txt:
+                        op_name = txt
+
+                # Check Operating Mode (Enabled/Disabled) from the State directly
+                mode = "Enabled"
+                if state.OperatingMode:
+                    mode = str(state.OperatingMode)
+
+                new_ops.append({
+                    "name": op_name,
+                    "handle": d.Handle,
+                    "mode": mode,
+                    "type": str(d.NODETYPE.localname)
+                })
+
+            self._operations = new_ops
+            self.operationsChanged.emit()
 
             # 3. Main Page Value (Just take the first one found)
             # --- TEMPORARILY DISABLED (CRUTCH REMOVAL) ---
@@ -276,6 +328,10 @@ class QtDeviceHandler(QObject):
     @Property(str, notify=priorityChanged)
     def priority(self):
         return self._priority
+
+    @Property(list, notify=operationsChanged)
+    def operations(self):
+        return self._operations
 
 class DeviceHandler(threading.Thread):
     """

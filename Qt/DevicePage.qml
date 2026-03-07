@@ -25,6 +25,11 @@ Item {
     function setDevice(deviceObj) {
         currentDevice = deviceObj
 
+        // Pass the device object to the Operation Page too, so it can bind to signals
+        if (opPage && typeof opPage.setDevice === "function") {
+            opPage.setDevice(deviceObj)
+        }
+
         // Bind local properties to the Python object's properties
         devicename = deviceObj.epr
         patientname = deviceObj.patientName
@@ -36,6 +41,7 @@ Item {
 
         // Force refresh the list of metrics
         refreshMetrics()
+        refreshOperations()
     }
 
     function refreshMetrics() {
@@ -50,6 +56,20 @@ Item {
                     "metricname": m.metricname, // descriptor handle
                     "value": m.value,
                     "alarm": m.alarm,
+                    "timeout": 0
+                })
+            }
+        }
+    }
+
+    function refreshOperations() {
+        opListModel.clear()
+        if (currentDevice && currentDevice.operations) {
+            var ops = currentDevice.operations
+            for (var i = 0; i < ops.length; i++) {
+                opListModel.append({
+                    "opname": ops[i].name,
+                    "alarm": "Off", // Operations typically don't have "Alarms", defaults to Blue/Off
                     "timeout": 0
                 })
             }
@@ -75,6 +95,10 @@ Item {
 
         function onAlarmStatusChanged() {
             devicePage.alarm = currentDevice.alarmStatus
+        }
+
+        function onOperationsChanged() {
+            refreshOperations()
         }
     }
 
@@ -509,16 +533,7 @@ Item {
 
             ListModel {
                 id: opListModel
-                ListElement { opname: "Pulse"; alarm: "On"}
-                ListElement { opname: "Pressure"; alarm: "On"}
-                ListElement { opname: "Temperature"; alarm: "Off"}
-                ListElement { opname: "SO2"; alarm: "Off"}
-                ListElement { opname: "..."; alarm: "Off"}
-                ListElement { opname: "..."; alarm: "Off"}
-                ListElement { opname: "..."; alarm: "Off"}
-                ListElement { opname: "..."; alarm: "Off"}
-                ListElement { opname: "..."; alarm: "Off"}
-                ListElement { opname: "..."; alarm: "Off"}
+                // Removed hardcoded elements, now populated via refreshOperations
             }
 
             Flickable {
