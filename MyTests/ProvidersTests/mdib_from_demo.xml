@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" SequenceId="1">
+    <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+            <pm:Mds Handle="mds_1">
+                <pm:SystemContext Handle="sys_context_1">
+                    <pm:PatientContext Handle="pat_context_1" />
+                    <pm:LocationContext Handle="loc_context_1" />
+                    <pm:EnsembleContext Handle="ens_context_1" />
+                </pm:SystemContext>
+                <pm:Clock Handle="clock">
+                    <pm:TimeProtocol Code="532225">
+                        <pm:ConceptDescription Lang="en-us">NTPv4</pm:ConceptDescription>
+                    </pm:TimeProtocol>
+                </pm:Clock>
+
+                <pm:Vmd Handle="vmd_1">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_temperature">
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_temperature" Kind="Phy" Priority="None">
+                            <pm:Source>temperature</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_temperature" ConditionSignaled="al_condition_temperature"
+                                        Manifestation="Aud" SignalDelegationSupported="true" Latching="true">
+                        </pm:AlertSignal>
+                    </pm:AlertSystem>
+                    <pm:Sco Handle="sco_1">
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="temperature_alert_control" OperationTarget="al_signal_temperature" Retriggerable="true">
+                            <pm:ModifiableData>Presence</pm:ModifiableData>
+                            <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                            <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
+                        </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="temperature_threshold_control" OperationTarget="temperature" Retriggerable="true" />
+                    </pm:Sco>
+                    <pm:Channel Handle="sense-hat_channel_1">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temperature" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="°"></pm:Unit>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_id" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="id" />
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+
+                <pm:Vmd Handle="vmd_2">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_humidity">
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_humidity" Kind="Phy" Priority="None">
+                            <pm:Source>humidity</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_humidity" ConditionSignaled="al_condition_humidity"
+                                        Manifestation="Aud" SignalDelegationSupported="true" Latching="true">
+                        </pm:AlertSignal>
+                    </pm:AlertSystem>
+                    <pm:Sco Handle="sco_2">
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="humidity_alert_control" OperationTarget="al_signal_humidity" Retriggerable="true">
+                            <pm:ModifiableData>Presence</pm:ModifiableData>
+                            <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                            <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
+                        </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="humidity_threshold_control" OperationTarget="humidity" Retriggerable="true">
+                        </pm:Operation>
+                    </pm:Sco>
+                    <pm:Channel Handle="sense-hat_channel_2">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="humidity" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="%"></pm:Unit>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+            </pm:Mds>
+        </pm:MdDescription>
+        <pm:MdState>
+
+            <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_temperature" ActivationState="On" />
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_temperature" ActivationState="On" Presence="false" />
+            <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_temperature" ActivationState="On" Presence="Off" />
+
+            <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_humidity" ActivationState="On" />
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_humidity" ActivationState="On" Presence="false" />
+            <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_humidity" ActivationState="On" Presence="Off" />
+
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="temperature_alert_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="temperature_threshold_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="humidity_threshold_control" OperatingMode="En" />
+
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="humidity" >
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+                <pm:PhysiologicalRange Lower="18" Upper="35"></pm:PhysiologicalRange>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temperature" >
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+                <pm:PhysiologicalRange Lower="30" Upper="45"></pm:PhysiologicalRange>
+            </pm:State>
+        </pm:MdState>
+    </msg:Mdib>
+</msg:GetMdibResponse>
+
+
+

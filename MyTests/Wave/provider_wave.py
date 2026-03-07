@@ -24,7 +24,7 @@ if __name__ == '__main__':
     my_uuid = uuid.uuid5(base_uuid, "12345")
 
     # Подгрузка mdib с файла
-    mdib = ProviderMdib.from_mdib_file("mdib.xml")
+    mdib = ProviderMdib.from_mdib_file("../Stuff/mdib.xml")
 
     # Объявление компонентов(полей) провайдера
     model = ThisModelType(model_name='TestModel',
