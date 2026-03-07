@@ -22,7 +22,7 @@ Item {
             // Append data from the Python object to our QML model
             deviceModel.append({
                 "epr": device.epr, // Store UUID to identify this item later
-                "devicename": "SDC Monitor",
+                "devicename": device.deviceName, // CHANGED: Bind to actual property
                 "patientname": device.patientName,
                 "room": device.patientRoom,
                 "value": device.deviceValue,
@@ -246,6 +246,7 @@ Item {
                             function onDeviceValueChanged() { model.value = target.deviceValue }
                             function onPatientNameChanged() { model.patientname = target.patientName }
                             function onPatientRoomChanged() { model.room = target.patientRoom }
+                            function onDeviceNameChanged() { model.devicename = target.deviceName } // ADDED
                             function onMetricsChanged() { model.metrics = target.metrics }
                             // ADDED: Listen for live Alarm and Priority updates
                             function onAlarmStatusChanged() { model.alarm = target.alarmStatus }
@@ -301,7 +302,8 @@ Item {
                             // Use 'model.' prefix to be explicit and safe
                             // ADDED: Showing main value (Alarm metric or Last metric)
                             text: "Room: " + (model.room ? model.room : "?") + " | " +
-                                  model.devicename + " | " + (model.value ? model.value : "---") + " | " +
+                                  (model.devicename ? model.devicename : "Unknown") + " | " +
+                                  (model.value ? model.value : "---") + " | " +
                                   (model.patientname ? model.patientname : "Unknown")
                             color: "white"
                         }

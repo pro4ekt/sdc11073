@@ -445,13 +445,7 @@ Item {
 
             ListModel {
                 id: historyListModel
-                ListElement {name : "Pulse Decrease"; time: "10:00 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:11 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:14 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:22 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:47 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:47 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:47 09.01.26"}
+                // Cleared mock data
             }
 
             Flickable {

@@ -43,6 +43,7 @@ class QtDeviceHandler(QObject):
     # Signals to notify UI of changes
     patientNameChanged = Signal()
     patientRoomChanged = Signal()
+    deviceNameChanged = Signal() # RESTORED: Signal for Device Name
     # Add other signals as needed
     deviceValueChanged = Signal()
     alarmStatusChanged = Signal()
@@ -66,6 +67,7 @@ class QtDeviceHandler(QObject):
         # Initialize defaults
         self._patientRoom = "Unknown"
         self._patientName = "Unknown"
+        self._deviceName = "SDC Device" # RESTORED: Default Initialization
 
         # Placeholder data for UI - these would come from MDIB in real app
         self._deviceValue = "---"
@@ -119,6 +121,34 @@ class QtDeviceHandler(QObject):
 
             if patients and patients[0].CoreData:
                  self._patientName = patients[0].CoreData.Birthname or "Unknown"
+
+            # --- DEVICE NAME LOGIC ---
+            # Priority 1: DPWS FriendlyName (provider.device.FriendlyName)
+            # Priority 2: MDIB MdsDescriptor ModelName
+            # Priority 3: MDIB MdsDescriptor Type
+
+            name_candidate = "SDC Device"
+
+            # 1. Try DPWS FriendlyName
+            try:
+                name_candidate = self._device.consumer.host_description.this_device.FriendlyName[0].text
+            except Exception:
+                pass
+
+            # 2. If still default, try MDIB MdsDescriptor
+            if name_candidate == "SDC Device":
+                # Usually found in the root MDS descriptor
+                mds_descriptors = [d for d in self._device.mdib.descriptions.objects if d.NODETYPE == pm.MdsDescriptor]
+                if mds_descriptors:
+                    mds = mds_descriptors[0] # Use the first MDS found
+                    if mds.ModelName:
+                        name_candidate = mds.ModelName[0].text
+                    elif mds.Type:
+                        name_candidate = mds.Type.localname
+
+            if self._deviceName != name_candidate:
+                self._deviceName = name_candidate
+                self.deviceNameChanged.emit()
 
             # --- ALARM LOGIC START ---
             active_alert_handles = set()
@@ -312,6 +342,10 @@ class QtDeviceHandler(QObject):
     def epr(self):
         # Expose the unique ID (EPR) so QML knows which device this is
         return self._device.epr if self._device else ""
+
+    @Property(str, notify=deviceNameChanged) # RESTORED: Property getter
+    def deviceName(self):
+        return self._deviceName
 
     @Property(str, notify=deviceValueChanged)
     def deviceValue(self):
