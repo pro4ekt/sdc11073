@@ -4,6 +4,7 @@ import logging
 import time
 import uuid
 import random
+import math
 import asyncio
 import os
 from decimal import Decimal
@@ -196,6 +197,7 @@ async def main(provider):
     # Initial mock values
     temperature = Decimal(37.0)
     humidity = Decimal(45.0)
+    counter = 0.0
 
     while True:
         # Log current physiological ranges to console for debugging
@@ -207,15 +209,18 @@ async def main(provider):
         # Process any pending incoming requests (e.g. alert controls)
         await handle_requests(provider, share_state_temp, share_state_hum)
 
-        # 1. Update Mock Values (random walk)
-        temperature += Decimal(random.uniform(-0.5, 0.5))
-        humidity += Decimal(random.uniform(-1.0, 1.0))
+        # 1. Update Mock Values (Sine Wave Animation for Periodic Alarms)
+        # Temp Safe ~[30, 45]. Center: 37.5. Amplitude: 10 => Range [27.5, 47.5] for definitive alarming
+        # Hum Safe ~[18, 35]. Center: 26.5. Amplitude: 15 => Range [11.5, 41.5] for definitive alarming
+        # Different frequencies and phases ensure they don't alarm exactly at same times always
+        val_temp = 37.5 + 10.0 * math.sin(counter * 0.1)
+        val_hum = 26.5 + 15.0 * math.sin(counter * 0.08 + 2.0)
 
-        # Clamp values
-        if temperature < 30: temperature = Decimal(30)
-        if temperature > 45: temperature = Decimal(45)
-        if humidity < 20: humidity = Decimal(20)
-        if humidity > 80: humidity = Decimal(80)
+        temperature = Decimal(val_temp)
+        humidity = Decimal(val_hum)
+        counter += 1.0
+
+        # Oscillation ensures values go OUT of range periodically. No clamping.
 
         # 2. Update MDIB
         update_humidity(provider, humidity)
@@ -235,7 +240,7 @@ async def main(provider):
 
 # Add configuration constants
 NETWORK_ADAPTER = "WLAN" # Using localhost for safety/portability
-MDIB_FILE = "mdib_from_demo.xml"
+MDIB_FILE = "mdib_correct.xml"
 
 if __name__ == '__main__':
     # basic_logging_setup()
