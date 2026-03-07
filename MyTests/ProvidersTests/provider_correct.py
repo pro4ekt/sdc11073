@@ -269,7 +269,7 @@ if __name__ == '__main__':
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
 
     # ThisDeviceType object with friendly name and serial number
-    device = ThisDeviceType(friendly_name='MockDevice', serial_number='123456')
+    device = ThisDeviceType(friendly_name='MockProvider', serial_number='123456')
 
     # UDP based discovery on single network adapter
     print(f"Starting discovery on {NETWORK_ADAPTER}")
