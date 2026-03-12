@@ -43,11 +43,13 @@ class QtDeviceHandler(QObject):
     # Signals to notify UI of changes
     patientNameChanged = Signal()
     patientRoomChanged = Signal()
+    deviceNameChanged = Signal() # RESTORED: Signal for Device Name
     # Add other signals as needed
     deviceValueChanged = Signal()
     alarmStatusChanged = Signal()
     priorityChanged = Signal()
     metricsChanged = Signal() # ADDED: Signal for metrics list
+    operationsChanged = Signal() # ADDED: Signal for operations list
 
     # Internal signal to bridge threads
     # This signal is emitted from the Worker thread context but connected to a slot in Main thread
@@ -65,12 +67,14 @@ class QtDeviceHandler(QObject):
         # Initialize defaults
         self._patientRoom = "Unknown"
         self._patientName = "Unknown"
+        self._deviceName = "SDC Device" # RESTORED: Default Initialization
 
         # Placeholder data for UI - these would come from MDIB in real app
         self._deviceValue = "---"
         self._alarmStatus = ""
         self._priority = "3"
         self._metrics = [] # ADDED: Initialize list
+        self._operations = [] # ADDED: Initialize operations list
 
         # Connect internal signal for thread-hopping
         # When updateTick is emitted (from any thread), handleUpdateTick runs in the thread this object lives in (Main)
@@ -118,6 +122,34 @@ class QtDeviceHandler(QObject):
             if patients and patients[0].CoreData:
                  self._patientName = patients[0].CoreData.Birthname or "Unknown"
 
+            # --- DEVICE NAME LOGIC ---
+            # Priority 1: DPWS FriendlyName (provider.device.FriendlyName)
+            # Priority 2: MDIB MdsDescriptor ModelName
+            # Priority 3: MDIB MdsDescriptor Type
+
+            name_candidate = "SDC Device"
+
+            # 1. Try DPWS FriendlyName
+            try:
+                name_candidate = self._device.consumer.host_description.this_device.FriendlyName[0].text
+            except Exception:
+                pass
+
+            # 2. If still default, try MDIB MdsDescriptor
+            if name_candidate == "SDC Device":
+                # Usually found in the root MDS descriptor
+                mds_descriptors = [d for d in self._device.mdib.descriptions.objects if d.NODETYPE == pm.MdsDescriptor]
+                if mds_descriptors:
+                    mds = mds_descriptors[0] # Use the first MDS found
+                    if mds.ModelName:
+                        name_candidate = mds.ModelName[0].text
+                    elif mds.Type:
+                        name_candidate = mds.Type.localname
+
+            if self._deviceName != name_candidate:
+                self._deviceName = name_candidate
+                self.deviceNameChanged.emit()
+
             # --- ALARM LOGIC START ---
             active_alert_handles = set()
             new_alarm_status = "Off"
@@ -161,7 +193,7 @@ class QtDeviceHandler(QObject):
                 self.alarmStatusChanged.emit()
             # --- ALARM LOGIC END ---
 
-            # 2. Metrics (Dynamic)
+            # 3. Metrics (Dynamic)
             # Find all NumericMetricStates, String, RealTime
             metric_types = [pm.NumericMetricState, pm.StringMetricState, pm.RealTimeSampleArrayMetricState]
             metric_states = [m for m in self._device.mdib.states.objects if m.NODETYPE in metric_types]
@@ -212,23 +244,73 @@ class QtDeviceHandler(QObject):
             self._metrics = new_metrics_list
             self.metricsChanged.emit()
 
-            # 3. Main Page Value (Just take the first one found)
-            # --- TEMPORARILY DISABLED (CRUTCH REMOVAL) ---
-            # if self._metrics:
-            #     first_item = self._metrics[0]
-            #     # Check the state inside the dict
-            #     if first_item['state'].MetricValue and first_item['state'].MetricValue.Value is not None:
-            #         new_val = str(first_item['state'].MetricValue.Value)
-            #     else:
-            #         new_val = "---"
-            #
-            #     if self._deviceValue != new_val:
-            #         self._deviceValue = new_val
-            #         self.deviceValueChanged.emit()
-            # else:
-            #     self._deviceValue = "---"
-            #     self.deviceValueChanged.emit()
-            # ---------------------------------------------
+            # 4. Operations (Dynamic)
+            # CHANGED: Find operation states directly instead of descriptors.
+            # This covers SetValue, Activate, SetString, etc. more reliably.
+            op_state_types = [
+                pm.SetValueOperationState,
+                pm.SetStringOperationState,
+                pm.ActivateOperationState,
+                pm.SetContextStateOperationState,
+                pm.SetMetricStateOperationState,
+                pm.SetAlertStateOperationState,
+                pm.SetComponentStateOperationState
+            ]
+
+            op_states = [s for s in self._device.mdib.states.objects if s.NODETYPE in op_state_types]
+
+            new_ops = []
+            for state in op_states:
+                # Find corresponding descriptor to get the Name/Label
+                d = self._device.mdib.descriptions.handle.get_one(state.DescriptorHandle, allow_none=True)
+                if not d:
+                    continue
+
+                op_name = d.Handle
+                # Try to get a human-readable name from ConceptDescription or Code
+                if d.Type:
+                    txt = None
+                    if hasattr(d.Type, 'ConceptDescription') and d.Type.ConceptDescription:
+                         txt = d.Type.ConceptDescription[0].text
+
+                    if not txt and hasattr(d.Type, 'Code'):
+                        txt = d.Type.Code
+
+                    if txt:
+                        op_name = txt
+
+                # Check Operating Mode (Enabled/Disabled) from the State directly
+                mode = "Enabled"
+                if state.OperatingMode:
+                    mode = str(state.OperatingMode)
+
+                new_ops.append({
+                    "name": op_name,
+                    "handle": d.Handle,
+                    "mode": mode,
+                    "type": str(d.NODETYPE.localname)
+                })
+
+            self._operations = new_ops
+            self.operationsChanged.emit()
+
+            # 5. Determine Main Page Value (Alarm Priority)
+            # Logic: If alarm, show the first alarming metric. Else, show the last metric in the list.
+            display_val = "---"
+
+            # Find first alarming metric
+            alarming_metric = next((m for m in new_metrics_list if m["alarm"] == "On"), None)
+
+            if alarming_metric:
+                display_val = f"{alarming_metric['metricname']}: {alarming_metric['value']}"
+            elif new_metrics_list:
+                # No alarm, show last metric in the list as requested
+                last_mt = new_metrics_list[-1]
+                display_val = f"{last_mt['metricname']}: {last_mt['value']}"
+
+            if self._deviceValue != display_val:
+                self._deviceValue = display_val
+                self.deviceValueChanged.emit()
 
         except Exception as e:
             print(f"Error reading data: {e}")
@@ -261,6 +343,10 @@ class QtDeviceHandler(QObject):
         # Expose the unique ID (EPR) so QML knows which device this is
         return self._device.epr if self._device else ""
 
+    @Property(str, notify=deviceNameChanged) # RESTORED: Property getter
+    def deviceName(self):
+        return self._deviceName
+
     @Property(str, notify=deviceValueChanged)
     def deviceValue(self):
         return self._deviceValue
@@ -276,6 +362,10 @@ class QtDeviceHandler(QObject):
     @Property(str, notify=priorityChanged)
     def priority(self):
         return self._priority
+
+    @Property(list, notify=operationsChanged)
+    def operations(self):
+        return self._operations
 
 class DeviceHandler(threading.Thread):
     """
@@ -383,6 +473,7 @@ class SdcMyConsumer(QObject):
     Manager class (The "Manager").
     Scans the network and spawns a Worker thread for every unique device found.
 
+    ARCHITECTURE NOTE:
     To prevent "Zombie Loops" where a disconnected device is immediately re-discovered
     via the WSDiscovery cache (leading to infinite connect->fail->retry cycles),
     we must explicitly clear the specific device from the WSDiscovery cache in 'remove_device'

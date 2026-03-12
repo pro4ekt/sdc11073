@@ -11,11 +11,41 @@ Item {
     property var opname
     property var timeout
     property var alarm
+    property var currentDevice: null // ADDED: reference to current Python device
 
+    // Keep existing setOp for header/legacy if needed
     function setOp(data) {
         opname = data.opname
         timeout = data.timeout
         alarm = data.alarm
+    }
+
+    // ADDED: Function to link this page to a specific device and fetch operations
+    function setDevice(device) {
+        currentDevice = device
+        updateOperations()
+    }
+
+    // ADDED: Listen for updates from Python
+    Connections {
+        target: currentDevice ? currentDevice : null
+        function onOperationsChanged() { updateOperations() }
+        ignoreUnknownSignals: true
+    }
+
+    // ADDED: Logic to populate ListModel from Python list
+    function updateOperations() {
+        opListModel.clear()
+        if (currentDevice && currentDevice.operations) {
+            var ops = currentDevice.operations
+            for (var i = 0; i < ops.length; i++) {
+                opListModel.append({
+                    "name": ops[i].name,
+                    "mode": ops[i].mode,
+                    "handle": ops[i].handle
+                })
+            }
+        }
     }
 
     // ---------------- TOP BAR ----------------
@@ -41,10 +71,10 @@ Item {
             height: parent.height
 
             source: alarm === "On" && timeout === 1
-                    ? "qrc:/img/noSound.png"
+                    ? "img/noSound.png"
                     : (alarm === "On" && timeout === 0
-                        ? "qrc:/img/bellOn.png"
-                        : "qrc:/img/bellOff.png")
+                        ? "img/bellOn.png"
+                        : "img/bellOff.png")
 
             fillMode: Image.PreserveAspectCrop
             layer.enabled: true
@@ -73,7 +103,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 150
             height: 150
-            source: "qrc:/img/homepage.png"
+            source: "img/homepage.png"
 
             MouseArea {
                 anchors.fill: parent
@@ -90,7 +120,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             width: 80
             height: 140
-            source: "qrc:/img/arrow.png"
+            source: "img/arrow.png"
 
             MouseArea {
                 anchors.fill: parent
@@ -243,10 +273,7 @@ Item {
 
             ListModel {
                 id: opListModel
-                ListElement {name : "Call a Doctor"; time: "09.01.26 14:00";}
-                ListElement {name : "Lower Threshold Controll"; time: "09.01.26 14:00";}
-                ListElement {name : "Upper Threshold Controll"; time: "09.01.26 14:00";}
-                ListElement {name : "..."; time: "09.01.26 14:00";}
+                // Cleared static data to support dynamic loading
             }
 
             Flickable {
@@ -281,7 +308,9 @@ Item {
                             width: opsColumn.width
                             height: opsColumn.width * 0.2
                             radius: 10
-                            gradient: gradOff
+                            // Gray out if disabled
+                            color: (model.mode && model.mode !== "Enabled") ? "#2c3144" : "transparent"
+                            gradient: (model.mode && model.mode !== "Enabled") ? null : gradOff
 
                             Gradient {
                                 id: gradOff
@@ -292,16 +321,32 @@ Item {
                             Text {
                                 id: textItem2
                                 anchors.centerIn: parent
-                                text:name
+                                text: name
                                 font.pixelSize: 20
-                                color: "white"
+                                color: (model.mode && model.mode !== "Enabled") ? "gray" : "white"
                                 font.family: "Tahoma"
+                            }
+
+                            // Optional: Show mode if disabled
+                            Text {
+                                anchors.bottom: parent.bottom
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.bottomMargin: 5
+                                text: (model.mode && model.mode !== "Enabled") ? "(" + model.mode + ")" : ""
+                                font.pixelSize: 12
+                                color: "#aaaaaa"
+                                visible: (model.mode && model.mode !== "Enabled")
                             }
 
                             MouseArea {
                                 anchors.fill: parent
                                 onClicked: {
+                                    // Set the logic to show details for this chosen operation
+                                    // You can use model.handle later to invoke it
                                     descriptionBlockContent.visible = true
+
+                                    // Example: Update the detail view text (requires ID on text element in 3rd block)
+                                    // For now just showing the block as requested
                                 }
                             }
                         }
@@ -400,13 +445,7 @@ Item {
 
             ListModel {
                 id: historyListModel
-                ListElement {name : "Pulse Decrease"; time: "10:00 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:11 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:14 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:22 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:47 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:47 09.01.26"}
-                ListElement {name : "Pulse Decrease"; time: "10:47 09.01.26"}
+                // Cleared mock data
             }
 
             Flickable {
@@ -680,4 +719,3 @@ Item {
         }
     }
 }
-
