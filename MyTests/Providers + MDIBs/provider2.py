@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import Counter
 
-import keyboard
 import os
 import platform
 import logging
@@ -62,7 +61,7 @@ if __name__ == '__main__':
     my_uuid = uuid.uuid5(base_uuid, "12345")
 
     # Подгрузка mdib с файла
-    mdib = ProviderMdib.from_mdib_file("test_mdib.xml")
+    mdib = ProviderMdib.from_mdib_file("mdib2.xml")
 
     # Объявление компонентов(полей) провайдера
     model = ThisModelType(model_name='TestModel',
