@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension"
+    SequenceId="1">
+      <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+          <pm:Mds Handle="mds1">
+            <ext:Extension>
+             <msg:Retrievability>
+              <msg:By Method="Get"/>
+              <msg:By Method="Ep"/>
+             </msg:Retrievability>
+            </ext:Extension>
+            <pm:AlertSystem Handle="al1">
+              <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+               </ext:Extension>
+              <pm:AlertCondition Handle="alc1" Kind="Phy" Priority="Me">
+                <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+               </ext:Extension>
+                <pm:Type Code="1">
+                  <pm:ConceptDescription Lang="en-US">Problems detected</pm:ConceptDescription>
+                </pm:Type>
+              </pm:AlertCondition>
+              <pm:AlertSignal Handle="als1" Manifestation="Vis" SignalDelegationSupported="true" Latching="true">
+                <ext:Extension>
+                  <msg:Retrievability>
+                    <msg:By Method="Get"/>
+                    <msg:By Method="Ep"/>
+                  </msg:Retrievability>
+               </ext:Extension>
+                <pm:Type Code="2">
+                  <pm:ConceptDescription Lang="en-US">Normal</pm:ConceptDescription>
+                </pm:Type>
+              </pm:AlertSignal>
+            </pm:AlertSystem>
+            <pm:Sco Handle="sco1" DescriptorVersion="1">
+                <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="inject" OperationTarget="liquid" DescriptorVersion="1"></pm:Operation>
+                <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="alert_op" OperationTarget="als1" Retriggerable="true">
+                    <pm:ModifiableData>Presence</pm:ModifiableData>
+                    <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                    <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
+                </pm:Operation>
+            </pm:Sco>
+            <pm:SystemContext Handle="sc1" DescriptorVersion="1">
+              <pm:PatientContext Handle="pc0" />
+              <pm:LocationContext Handle="lc0" />
+              <pm:EnsembleContext Handle="ec0" />
+            </pm:SystemContext>
+            <pm:Clock Handle="cl0">
+					<pm:TimeProtocol Code="532225">
+						<pm:ConceptDescription Lang="en-us">NTPv4
+						</pm:ConceptDescription>
+					</pm:TimeProtocol>
+				</pm:Clock>
+
+            <pm:Vmd Handle="vmd1">
+              <pm:Channel Handle="ch1">
+                <pm:Metric xsi:type="pm:StringMetricDescriptor" Handle="met1" MetricCategory="Msrmt" MetricAvailability="Cont">
+                  <pm:Unit Code="s" CodingSystem="UCUM"> </pm:Unit>
+                </pm:Metric>
+                <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="liquid" MetricCategory="Set" MetricAvailability="Intr" Resolution="1">
+                    <pm:Unit Code="Number" CodingSystem="UCUN"></pm:Unit>
+                    <pm:TechnicalRange Lower="0" Upper="100"></pm:TechnicalRange>
+                </pm:Metric>
+                <pm:Metric xsi:type="pm:RealTimeSampleArrayMetricDescriptor" Handle="wave_form_test" Resolution="1" MetricAvailability="Cont" MetricCategory="Msrmt" SamplePeriod="PT0.1S">
+                    <pm:Unit Code="mV" CodingSystem="UCUM"></pm:Unit>
+                </pm:Metric>
+              </pm:Channel>
+            </pm:Vmd>
+          </pm:Mds>
+        </pm:MdDescription>
+        <pm:MdState>
+         <pm:State DescriptorHandle="met1" xsi:type="pm:StringMetricState" StateVersion="1">
+           <pm:MetricValue Value="0">
+             <pm:MetricQuality Validity="Vld">
+             </pm:MetricQuality>
+           </pm:MetricValue>
+         </pm:State>
+         <pm:State DescriptorHandle="liquid" xsi:type="pm:NumericMetricState" StateVersion="1">
+           <pm:MetricValue Value="100">
+             <pm:MetricQuality Validity="Vld">
+             </pm:MetricQuality>
+           </pm:MetricValue>
+         </pm:State>
+         <pm:State DescriptorHandle="alc1" xsi:type="pm:AlertConditionState" StateVersion="1" ActivationState="Off" Presence="false"></pm:State>
+         <pm:State DescriptorHandle="als1" xsi:type="pm:AlertSignalState" StateVersion="1" ActivationState="On" Presence="Off"></pm:State>
+         <pm:State DescriptorHandle="inject" xsi:type="pm:SetValueOperationState" OperatingMode="En"></pm:State>
+         <pm:State DescriptorHandle="wave_form_test" xsi:type="pm:RealTimeSampleArrayMetricState">
+             <pm:MetricValue Samples="0" DeterminationTime="0" StartTime="0" StopTime="0">
+                 <pm:MetricQuality Validity="Vld">
+                 </pm:MetricQuality>
+             </pm:MetricValue>
+         </pm:State>
+        </pm:MdState>
+      </msg:Mdib>
+</msg:GetMdibResponse>

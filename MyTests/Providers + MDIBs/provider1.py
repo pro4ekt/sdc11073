@@ -74,7 +74,7 @@ if __name__ == '__main__':
     my_uuid = uuid.uuid5(base_uuid, "test_provider_1")
 
     # getting mdib from xml file and converting it to mdib.py object
-    mdib = ProviderMdib.from_mdib_file("mdib.xml")
+    mdib = ProviderMdib.from_mdib_file("mdib1.xml")
 
     metrics = []
     metrics1 = []
