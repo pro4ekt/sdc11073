@@ -32,6 +32,8 @@ Item {
                 "deviceObj": device, // Store the Python Object for live updates via Connections
                 "timeout": "0"
             })
+            // Trigger sort when new device appears
+            sortTimer.restart()
         }
 
         // Signal handler for deviceDisconnected(str epr)
@@ -46,20 +48,47 @@ Item {
         }
     }
 
+    // Timer to debounce sorting so UI doesn't stutter on multiple rapid updates
+    Timer {
+        id: sortTimer
+        interval: 100 // Wait 100ms after last update then sort
+        repeat: false
+        onTriggered: sortByPriority()
+    }
+
     //функция сортировки по приоритету
     function sortByPriority() {
         let items = [];
 
+        // Manual copy to preserve deviceObj reference (JSON.stringify destroys Python objects)
         for (let i = 0; i < deviceModel.count; i++) {
-            items.push(JSON.parse(JSON.stringify(deviceModel.get(i))));
+            let item = deviceModel.get(i);
+            items.push({
+                "epr": item.epr,
+                "devicename": item.devicename,
+                "patientname": item.patientname,
+                "room": item.room,
+                "value": item.value,
+                "alarm": item.alarm,
+                "priority": item.priority,
+                "metrics": item.metrics,
+                "deviceObj": item.deviceObj, // Keep the connection target alive!
+                "timeout": item.timeout
+            });
         }
 
         items.sort((a, b) => {
-            if (a.alarm === "On" && b.alarm === "Off") return -1;
-            if (a.alarm === "Off" && b.alarm === "On") return 1;
-            return b.priority - a.priority;
+            // Sort Logic: Alarm 'On' > Alarm 'Off' > Priority High to Low
+            let alarmA = (a.alarm === "On");
+            let alarmB = (b.alarm === "On");
+
+            if (alarmA && !alarmB) return -1;
+            if (!alarmA && alarmB) return 1;
+
+            return parseInt(b.priority) - parseInt(a.priority);
         });
 
+        // Re-populate the models
         deviceModel.clear();
         for (let item of items) {
             deviceModel.append(item);
@@ -246,11 +275,17 @@ Item {
                             function onDeviceValueChanged() { model.value = target.deviceValue }
                             function onPatientNameChanged() { model.patientname = target.patientName }
                             function onPatientRoomChanged() { model.room = target.patientRoom }
-                            function onDeviceNameChanged() { model.devicename = target.deviceName } // ADDED
+                            function onDeviceNameChanged() { model.devicename = target.deviceName }
                             function onMetricsChanged() { model.metrics = target.metrics }
-                            // ADDED: Listen for live Alarm and Priority updates
-                            function onAlarmStatusChanged() { model.alarm = target.alarmStatus }
-                            function onPriorityChanged() { model.priority = target.priority }
+                            // ADDED: Listen for live Alarm and Priority updates AND trigger Sort
+                            function onAlarmStatusChanged() {
+                                model.alarm = target.alarmStatus;
+                                sortTimer.restart();
+                            }
+                            function onPriorityChanged() {
+                                model.priority = target.priority;
+                                sortTimer.restart();
+                            }
                         }
 
                         width: column.width

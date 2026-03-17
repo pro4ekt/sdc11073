@@ -49,14 +49,32 @@ Item {
 
         if (currentDevice && currentDevice.metrics) {
             // currentDevice.metrics comes from @Property(list) in main.py
-            var m_list = currentDevice.metrics
-            for (var i = 0; i < m_list.length; i++) {
-                var m = m_list[i]
+            // 1. Copy to JS array for sorting
+            var metricsArray = []
+            var sourceList = currentDevice.metrics
+            for (var i = 0; i < sourceList.length; i++) {
+                metricsArray.push(sourceList[i])
+            }
+
+            // 2. Sort Logic: Alarm 'On' > Alarm 'Off'
+            metricsArray.sort(function(a, b) {
+                var alarmA = (a.alarm === "On")
+                var alarmB = (b.alarm === "On")
+
+                if (alarmA && !alarmB) return -1
+                if (!alarmA && alarmB) return 1
+                return 0 // Keep original order if statuses match
+            })
+
+            // 3. Populate Model
+            for (var j = 0; j < metricsArray.length; j++) {
+                var m = metricsArray[j]
                 metricListModel.append({
                     "metricname": m.metricname, // descriptor handle
                     "value": m.value,
                     "alarm": m.alarm,
-                    "timeout": 0
+                    "timeout": 0,
+                    "metricObj": m // Store the actual data object (fixes index mismatch when sorted)
                 })
             }
         }
@@ -425,8 +443,9 @@ Item {
                             MouseArea {
                                 anchors.fill: parent
                                 onClicked: {
-                                    // Fetch the full metric object from the source using the model index
-                                    var metricData = devicePage.currentDevice.metrics[index]
+                                    // CHANGED: Use the stored sorted object instead of index
+                                    // 'index' refers to UI row, which doesn't match backend list if sorted.
+                                    var metricData = model.metricObj
 
                                     metricPage.setMetric(metricData)
 
