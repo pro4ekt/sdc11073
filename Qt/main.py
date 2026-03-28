@@ -451,6 +451,22 @@ class DeviceHandler(threading.Thread):
                 if self.qtDeviceHandler:
                     self.qtDeviceHandler.scheduleUpdate()
 
+                # АКТИВНАЯ ПРОВЕРКА (После бага с Vector Provider)
+                try:
+                    # Пытаемся сделать легкий запрос с коротким тайм-аутом
+                    if self.consumer and self.consumer.is_connected:
+                        # ИСПРАВЛЕНИЕ: Обращаемся к context_service_client напрямую (это свойство, а не функция)
+                        if self.consumer.context_service_client:
+                            self.consumer.context_service_client.get_context_states()
+                        else:
+                            # Если ContextService нет (редко, но бывает), можно дернуть GetService
+                            # self.consumer.get_service_client.get_md_state()
+                            pass
+                except Exception as e:
+                    print(f"[Worker {self.epr}] Ping failed: {e}")
+                    self.error_occurred = True
+                    break
+
                 # CHANGED: Reverted to 1.0 second standard update rate (cancels smooth scrolling idea)
                 await asyncio.sleep(1.0)
 
