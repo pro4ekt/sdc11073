@@ -13,6 +13,9 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtCore import QObject, Signal, Slot, Property
 
+from asyncua.sync import Server
+from asyncua.ua import Double
+
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.xml_types.actions import periodic_actions
@@ -388,6 +391,7 @@ class DeviceHandler(threading.Thread):
         self.qtDeviceHandler = None
         self.error_occurred = False  # Track if the session ended with an error
         self.data_lock = threading.Lock() # Lock for MDIB access
+        self.opcua_server = None # Placeholder for OPC UA Server instance if needed
 
     def run(self):
         # 1. Isolation: Create a new asyncio event loop for this thread.
@@ -413,6 +417,20 @@ class DeviceHandler(threading.Thread):
             # 3. Connection: Create SDC Consumer for this specific service
             self.consumer = SdcConsumer.from_wsd_service(wsd_service=self.wsd_service, ssl_context_container=None)
             self.consumer.start_all(not_subscribed_actions=periodic_actions)
+
+            # OPTIONAL: Start an OPC UA Server for this device (for testing or integration purposes)
+            self.opcua_server = Server()
+            self.opcua_server.set_endpoint("opc.tcp://192.168.0.101:4840")
+            # Аналог MDS в OPC UA
+            mds = self.opcua_server.register_namespace("Provider NodeSpace")
+            # Аналог VMD в OPC UA
+            vmd = self.opcua_server.nodes.objects.add_object(mds, "ProviderVMD")
+            # Aналог Channel в OPC UA
+            channel = vmd.add_object(mds, "ProviderChannel")
+            # Аналог Metric в OPC UA
+            temp = channel.add_variable(mds, "ProviderMetric", 0.0, varianttype=Double)
+            temp.set_writable()
+            self.opcua_server.start()
 
             with self.data_lock:
                 self.mdib = ConsumerMdib(self.consumer)
