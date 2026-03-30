@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from GateWay import sdc_opc_gateway
+
 import sys
 import sdc11073
 import asyncio
@@ -422,47 +424,7 @@ class DeviceHandler(threading.Thread):
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
 
-            #Start an OPC UA Server for this device (for testing or integration purposes)
-            vmd_descriptors = [d for d in self.mdib.descriptions.objects if d.NODETYPE == pm.VmdDescriptor]
-            channel_descriptors = [d for d in self.mdib.descriptions.objects if d.NODETYPE == pm.ChannelDescriptor]
-            metric_descriptors = [m for m in self.mdib.descriptions.objects if m.NODETYPE == pm.NumericMetricDescriptor]
-
-            # Создаем словарь стейтов для быстрого доступа по Handle
-            metrics_states = {s.DescriptorHandle: s for s in self.mdib.states.objects if s.NODETYPE == pm.NumericMetricState}
-
-            self.opcua_server = Server()
-            self.opcua_server.set_endpoint("opc.tcp://192.168.0.101:4840")
-
-            mds_idx = self.opcua_server.register_namespace("Provider NodeSpace")
-            opc_objects = self.opcua_server.nodes.objects
-
-            opc_nodes = {}
-
-            # 1. Создаем VMD объекты
-            for vmd in vmd_descriptors:
-                opc_nodes[vmd.Handle] = opc_objects.add_object(mds_idx, vmd.Handle)
-
-            # 2. Создаем Channel объекты (привязываем к их родительским VMD)
-            for channel in channel_descriptors:
-                parent_node = opc_nodes.get(channel.parent_handle, opc_objects)
-                opc_nodes[channel.Handle] = parent_node.add_object(mds_idx, channel.Handle)
-
-            # 3. Создаем Metric переменные (привязываем к их родительским Channel)
-            for metric in metric_descriptors:
-                parent_node = opc_nodes.get(metric.parent_handle, opc_objects)
-
-                state = metrics_states.get(metric.Handle)
-                initial_value = 0.0
-                if state and getattr(state, 'MetricValue', None) and getattr(state.MetricValue, 'Value', None) is not None:
-                    try:
-                        initial_value = float(state.MetricValue.Value)
-                    except ValueError:
-                        pass
-
-                opc_metric = parent_node.add_variable(mds_idx, metric.Handle, initial_value, varianttype=Double)
-                opc_metric.set_writable()
-                opc_nodes[metric.Handle] = opc_metric
-
+            self.opcua_server = sdc_opc_gateway.SdcOpcGateway(self.consumer)
             self.opcua_server.start()
 
             # 4. Subscription (Placeholder for future functionality)
