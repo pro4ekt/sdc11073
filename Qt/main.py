@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from GateWay import sdc_opc_gateway
+
 import sys
 import sdc11073
 import asyncio
@@ -388,6 +390,7 @@ class DeviceHandler(threading.Thread):
         self.qtDeviceHandler = None
         self.error_occurred = False  # Track if the session ended with an error
         self.data_lock = threading.Lock() # Lock for MDIB access
+        self.opcua_server = None # Placeholder for OPC UA Server instance if needed
 
     def run(self):
         # 1. Isolation: Create a new asyncio event loop for this thread.
@@ -417,6 +420,9 @@ class DeviceHandler(threading.Thread):
             with self.data_lock:
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
+
+            self.opcua_server = sdc_opc_gateway.SdcOpcGateway(self.consumer)
+            self.opcua_server.start()
 
             # 4. Subscription (Placeholder for future functionality)
             # observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
