@@ -421,8 +421,10 @@ class DeviceHandler(threading.Thread):
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
 
-            self.opcua_server = sdc_opc_gateway.SdcOpcGateway(self.consumer)
-            self.opcua_server.start()
+            # Регистрируем устройство в OPC UA Gateway только ПОСЛЕ инициализации MDIB
+            if self.manager.opcua_gateway is not None:
+                print(f"[Worker {self.epr}] Registering in Central OPC UA Server...")
+                self.manager.opcua_gateway.add_device(self.mdib, self.epr)
 
             # 4. Subscription (Placeholder for future functionality)
             # observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
@@ -514,10 +516,21 @@ class SdcMyConsumer(QObject):
         self.lock = threading.Lock() # Ensures safe access to self.devices dictionary
         self.discovery = None  # Reference to WSDiscovery instance
 
+        # OPC UA Server инициализируется позже, чтобы отвязать от старта Qt
+        self.opcua_gateway = None
+
         # Start the Discovery Loop in a background thread
         self.discovery_thread = threading.Thread(target=self._run_discovery, daemon=True)
 
     def start(self):
+        # Получаем локальный IP адрес машины для OPC UA Сервера
+        local_ip = get_local_ip()
+        print(f"[Manager] Starting Central OPC UA Server on IP: {local_ip}")
+        
+        # Initialize Central OPC UA Server
+        self.opcua_gateway = sdc_opc_gateway.SdcOpcGateway(bind_ip=local_ip)
+        self.opcua_gateway.start()
+
         self.discovery_thread.start()
         print("[Manager] System started. Discovery loop active.")
 
@@ -564,6 +577,8 @@ class SdcMyConsumer(QObject):
                                 device = DeviceHandler(service, self)
                                 self.devices[epr] = device
                                 device.start()
+
+
                     except Exception as loop_err:
                         print(f"[Manager] Error processing a discovered service: {loop_err}")
 

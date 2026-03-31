@@ -1,66 +1,56 @@
-from sdc11073.consumer import SdcConsumer
 from sdc11073.xml_types import pm_qnames as pm
 
 from asyncua.sync import Server
-from asyncua.ua import Double
-
+from asyncua.ua import Double, String
 
 class SdcOpcGateway:
-    def __init__(self, sdc_consumer):
-        self.opcua_server = None
-        self.sdc_consumer = sdc_consumer
-        self.mdib = self.sdc_consumer.mdib
+    def __init__(self, bind_ip="0.0.0.0", port=4840):
+        self.opcua_server = Server()
+        # Устанавливаем переданный IP-адрес или 0.0.0.0 по умолчанию
+        self.endpoint = f"opc.tcp://{bind_ip}:{port}"
+        self.opcua_server.set_endpoint(self.endpoint)
+        self.mds_idx = self.opcua_server.register_namespace("SDC NodeSpace")
+        self.opc_nodes = {}  # epr -> {handle: node}
+        self.vmd_alarms_folders = {} # epr -> {handle: node}
 
     def start(self):
-        # Start an OPC UA Server for this device (for testing or integration purposes)
-        vmd_descriptors = [d for d in self.mdib.descriptions.objects if d.NODETYPE == pm.VmdDescriptor]
-        channel_descriptors = [d for d in self.mdib.descriptions.objects if d.NODETYPE == pm.ChannelDescriptor]
-        metric_descriptors = [m for m in self.mdib.descriptions.objects if m.NODETYPE == pm.NumericMetricDescriptor]
+        self.opcua_server.start()
+        print(f"[OPC UA] Central Server started on {self.endpoint}")
 
-        # Создаем словарь стейтов для быстрого доступа по Handle
-        metrics_states = {s.DescriptorHandle: s for s in self.mdib.states.objects if
-                          s.NODETYPE == pm.NumericMetricState}
-
-        alert_signal_descriptors = [
-            d for d in self.mdib.descriptions.objects
-            if d.NODETYPE == pm.AlertSignalDescriptor
-        ]
-        alert_signal_states = {
-            s.DescriptorHandle: s for s in self.mdib.states.objects
-            if s.NODETYPE == pm.AlertSignalState
-        }
-
-        alert_cond_desc_types = [pm.AlertConditionDescriptor, pm.LimitAlertConditionDescriptor]
-        condition_descriptors = [
-            d for d in self.mdib.descriptions.objects
-            if d.NODETYPE in alert_cond_desc_types
-        ]
-        condition_states = {
-            s.DescriptorHandle: s for s in self.mdib.states.objects
-            if s.NODETYPE in [pm.AlertConditionState, pm.LimitAlertConditionState]
-        }
-
-        self.opcua_server = Server()
-        self.opcua_server.set_endpoint("opc.tcp://192.168.0.101:4840")
-
-        mds_idx = self.opcua_server.register_namespace("Provider NodeSpace")
+    def add_device(self, mdib, epr):
         opc_objects = self.opcua_server.nodes.objects
+        
+        # Initialize storage for this specific device
+        self.opc_nodes[epr] = {}
+        self.vmd_alarms_folders[epr] = {}
 
-        opc_nodes = {}
+        # Создаем корневой узел для конкретного провайдера (устройства)
+        provider_node = opc_objects.add_object(self.mds_idx, f"Provider_{epr}")
+        self.opc_nodes[epr]['Provider'] = provider_node
+        
+        self._create_vmds(mdib, epr, provider_node)
+        self._create_channels(mdib, epr, provider_node)
+        self._create_metrics(mdib, epr, provider_node)
+        self._create_alarms(mdib, epr, provider_node)
 
-        # 1. Создаем VMD объекты
+    def _create_vmds(self, mdib, epr, root_node):
+        vmd_descriptors = [d for d in mdib.descriptions.objects if d.NODETYPE == pm.VmdDescriptor]
         for vmd in vmd_descriptors:
-            opc_nodes[vmd.Handle] = opc_objects.add_object(mds_idx, vmd.Handle)
+            self.opc_nodes[epr][vmd.Handle] = root_node.add_object(self.mds_idx, vmd.Handle)
 
-        # 2. Создаем Channel объекты (привязываем к их родительским VMD)
+    def _create_channels(self, mdib, epr, root_node):
+        channel_descriptors = [d for d in mdib.descriptions.objects if d.NODETYPE == pm.ChannelDescriptor]
         for channel in channel_descriptors:
-            parent_node = opc_nodes.get(channel.parent_handle, opc_objects)
-            opc_nodes[channel.Handle] = parent_node.add_object(mds_idx, channel.Handle)
+            parent_node = self.opc_nodes[epr].get(channel.parent_handle, root_node)
+            self.opc_nodes[epr][channel.Handle] = parent_node.add_object(self.mds_idx, channel.Handle)
 
-        # 3. Создаем Metric переменные (привязываем к их родительским Channel)
+    def _create_metrics(self, mdib, epr, root_node):
+        # 1. ЧИСЛОВЫЕ МЕТРИКИ
+        metric_descriptors = [m for m in mdib.descriptions.objects if m.NODETYPE == pm.NumericMetricDescriptor]
+        metrics_states = {s.DescriptorHandle: s for s in mdib.states.objects if s.NODETYPE == pm.NumericMetricState}
+
         for metric in metric_descriptors:
-            parent_node = opc_nodes.get(metric.parent_handle, opc_objects)
-
+            parent_node = self.opc_nodes[epr].get(metric.parent_handle, root_node)
             state = metrics_states.get(metric.Handle)
             initial_value = 0.0
             if state and getattr(state, 'MetricValue', None) and getattr(state.MetricValue, 'Value', None) is not None:
@@ -69,57 +59,72 @@ class SdcOpcGateway:
                 except ValueError:
                     pass
 
-            opc_metric = parent_node.add_variable(mds_idx, metric.Handle, initial_value, varianttype=Double)
+            opc_metric = parent_node.add_variable(self.mds_idx, metric.Handle, initial_value, varianttype=Double)
             opc_metric.set_writable()
-            opc_nodes[metric.Handle] = opc_metric
+            self.opc_nodes[epr][metric.Handle] = opc_metric
 
-        # Вспомогательная функция для поиска родительского VMD
-        def get_vmd_handle(desc_handle):
-            desc = next((d for d in self.mdib.descriptions.objects if d.Handle == desc_handle), None)
-            while desc and desc.parent_handle:
-                desc = next((d for d in self.mdib.descriptions.objects if d.Handle == desc.parent_handle), None)
-                if desc and desc.NODETYPE == pm.VmdDescriptor:
-                    return desc.Handle
-            return None
+        # 2. СТРОКОВЫЕ МЕТРИКИ (String / Enum)
+        string_desc_types = [pm.StringMetricDescriptor, pm.EnumStringMetricDescriptor]
+        string_descriptors = [m for m in mdib.descriptions.objects if m.NODETYPE in string_desc_types]
+        string_states = {s.DescriptorHandle: s for s in mdib.states.objects if s.NODETYPE in [pm.StringMetricState, pm.EnumStringMetricState]}
 
-        # Функция для получения/создания папки Alarms внутри VMD
-        vmd_alarms_folders = {}
+        for metric in string_descriptors:
+            parent_node = self.opc_nodes[epr].get(metric.parent_handle, root_node)
+            state = string_states.get(metric.Handle)
+            initial_value = "---"
+            if state and getattr(state, 'MetricValue', None) and getattr(state.MetricValue, 'Value', None) is not None:
+                initial_value = str(state.MetricValue.Value)
 
-        def get_alarms_folder(vmd_handle):
-            if vmd_handle not in vmd_alarms_folders:
-                parent_node = opc_nodes.get(vmd_handle, opc_objects)
-                vmd_alarms_folders[vmd_handle] = parent_node.add_object(mds_idx, "Alarms")
-            return vmd_alarms_folders[vmd_handle]
+            opc_metric = parent_node.add_variable(self.mds_idx, metric.Handle, initial_value, varianttype=String)
+            opc_metric.set_writable()
+            self.opc_nodes[epr][metric.Handle] = opc_metric
 
-        # 4. Создаем узлы для Alarms в соответствующих VMD на основе дескрипторов
+    def _get_vmd_handle(self, mdib, epr, desc_handle):
+        desc = next((d for d in mdib.descriptions.objects if d.Handle == desc_handle), None)
+        while desc and desc.parent_handle:
+            desc = next((d for d in mdib.descriptions.objects if d.Handle == desc.parent_handle), None)
+            if desc and desc.NODETYPE == pm.VmdDescriptor:
+                return desc.Handle
+        return None
+
+    def _get_alarms_folder(self, vmd_handle, epr, root_node):
+        if vmd_handle not in self.vmd_alarms_folders[epr]:
+            parent_node = self.opc_nodes[epr].get(vmd_handle, root_node)
+            self.vmd_alarms_folders[epr][vmd_handle] = parent_node.add_object(self.mds_idx, "Alarms")
+        return self.vmd_alarms_folders[epr][vmd_handle]
+
+    def _create_alarms(self, mdib, epr, root_node):
+        alert_cond_desc_types = [pm.AlertConditionDescriptor, pm.LimitAlertConditionDescriptor]
+        condition_descriptors = [d for d in mdib.descriptions.objects if d.NODETYPE in alert_cond_desc_types]
+        condition_states = {s.DescriptorHandle: s for s in mdib.states.objects if s.NODETYPE in [pm.AlertConditionState, pm.LimitAlertConditionState]}
+        
+        alert_signal_descriptors = [d for d in mdib.descriptions.objects if d.NODETYPE == pm.AlertSignalDescriptor]
+        alert_signal_states = {s.DescriptorHandle: s for s in mdib.states.objects if s.NODETYPE == pm.AlertSignalState}
+
         for alert_desc in condition_descriptors:
-            vmd_handle = get_vmd_handle(alert_desc.Handle)
-            alarms_folder = get_alarms_folder(vmd_handle)
+            vmd_handle = self._get_vmd_handle(mdib, epr, alert_desc.Handle)
+            alarms_folder = self._get_alarms_folder(vmd_handle, epr, root_node)
 
             source_handles = ""
             if hasattr(alert_desc, 'Source') and alert_desc.Source:
                 source_handles = ",".join([str(sh) for sh in alert_desc.Source])
 
-            # Создаем отдельный объект под Condition, чтобы хранить несколько параметров
-            cond_folder = alarms_folder.add_object(mds_idx, f"Condition_{alert_desc.Handle}")
-
+            cond_folder = alarms_folder.add_object(self.mds_idx, f"Condition_{alert_desc.Handle}")
             state = condition_states.get(alert_desc.Handle)
             presence = getattr(state, 'Presence', False) if state else False
 
-            opc_presence = cond_folder.add_variable(mds_idx, "Presence", presence)
+            opc_presence = cond_folder.add_variable(self.mds_idx, "Presence", presence)
             opc_presence.set_writable()
 
-            opc_source = cond_folder.add_variable(mds_idx, "Source", source_handles)
+            opc_source = cond_folder.add_variable(self.mds_idx, "Source", source_handles)
             opc_source.set_writable()
 
         for signal_desc in alert_signal_descriptors:
-            vmd_handle = get_vmd_handle(signal_desc.Handle)
-            alarms_folder = get_alarms_folder(vmd_handle)
+            vmd_handle = self._get_vmd_handle(mdib, epr, signal_desc.Handle)
+            alarms_folder = self._get_alarms_folder(vmd_handle, epr, root_node)
 
             state = alert_signal_states.get(signal_desc.Handle)
             activation_state = str(getattr(state, 'ActivationState', 'Unknown')) if state else 'Unknown'
 
-            opc_signal = alarms_folder.add_variable(mds_idx, f"Signal_{signal_desc.Handle}", activation_state)
+            opc_signal = alarms_folder.add_variable(self.mds_idx, f"Signal_{signal_desc.Handle}", activation_state)
             opc_signal.set_writable()
-
-        self.opcua_server.start()
