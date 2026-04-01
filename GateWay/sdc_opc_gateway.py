@@ -3,9 +3,12 @@ from sdc11073.xml_types import pm_qnames as pm
 # Переключаемся с asyncua.sync на asyncua
 from asyncua import Server, ua, pubsub
 from asyncua.ua import Double, String
+import sqlite3
+import time
+import os
 
 class SdcOpcGateway:
-    def __init__(self, bind_ip="0.0.0.0", port=4840, pubsub_url="opc.udp://239.0.0.1:4840"):
+    def __init__(self, bind_ip="0.0.0.0", port=4840, pubsub_url="opc.udp://239.0.0.1:4840", db_name="gateway_latency.db"):
         self.server = Server()
         self.endpoint = f"opc.tcp://{bind_ip}:{port}/freeopcua/server/"
         self.pubsub_url = pubsub_url
@@ -16,6 +19,24 @@ class SdcOpcGateway:
         self.pubsub_connection = None
         self.pubsub_service = None
         self.writer_group_id = 1
+        
+        # Настройка базы данных SQLite для логирования Latency (сохраняем в папку со скриптом)
+        self.db_path = os.path.join(os.path.dirname(__file__), db_name)
+        self._setup_db()
+        
+    def _setup_db(self):
+        # check_same_thread=False нужен, потому что мы пишем из асинхронного цикла
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS latency_logs (
+                local_timestamp REAL,
+                epr TEXT,
+                handle TEXT,
+                value TEXT
+            )
+        ''')
+        self.conn.commit()
         
     async def init(self):
         await self.server.init()
@@ -57,13 +78,22 @@ class SdcOpcGateway:
         if epr not in self.opc_nodes:
             return
             
+        local_ts = time.time()
+        cursor = self.conn.cursor()
+            
         for handle, value in updates.items():
+            # Пишем метку времени и данные в БД
+            cursor.execute("INSERT INTO latency_logs (local_timestamp, epr, handle, value) VALUES (?, ?, ?, ?)",
+                           (local_ts, epr, handle, str(value)))
+                           
             node = self.opc_nodes[epr].get(handle)
             if node:
                 try:
                     await node.write_value(value)
                 except Exception as e:
                     print(f"[OPC UA] Error updating node {handle}: {e}")
+                    
+        self.conn.commit()
 
     async def _create_published_dataset(self, epr):
         # Очищаем epr от спецсимволов, ломающих парсер NodeId (особенно двоеточий)

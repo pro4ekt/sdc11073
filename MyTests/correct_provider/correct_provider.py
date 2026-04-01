@@ -7,6 +7,7 @@ import random
 import math
 import asyncio
 import os
+import sqlite3
 from decimal import Decimal
 from copy import deepcopy
 
@@ -51,6 +52,18 @@ ALARM_CONFIG = {
 REQUEST = {"temperature": False, "humidity": False}
 TIME_T = 0
 TIME_H = 0
+
+# Setup SQLite for Provider Latency
+db_path = os.path.join(os.path.dirname(__file__), 'provider_latency.db')
+prov_conn = sqlite3.connect(db_path, check_same_thread=False)
+prov_cursor = prov_conn.cursor()
+prov_cursor.execute('''CREATE TABLE IF NOT EXISTS provider_logs (timestamp REAL, handle TEXT, value TEXT)''')
+prov_conn.commit()
+
+def log_provider_latency(handle, value):
+    prov_cursor.execute("INSERT INTO provider_logs (timestamp, handle, value) VALUES (?, ?, ?)",
+                        (time.time(), handle, str(value)))
+    prov_conn.commit()
 
 def update_humidity(provider, value: Decimal):
     with provider.mdib.metric_state_transaction() as tr:
@@ -224,7 +237,9 @@ async def main(provider):
 
         # 2. Update MDIB
         update_humidity(provider, humidity)
+        log_provider_latency('humidity', humidity)
         update_temperature(provider, temperature)
+        log_provider_latency('temperature', temperature)
         metrics_info(provider)
 
         # 6. Evaluate alarms
@@ -246,7 +261,7 @@ if __name__ == '__main__':
     # basic_logging_setup()
 
     # UUID objects (universally unique identifiers) according to RFC 4122
-    base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050231}')
+    base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050234}')
     my_uuid = uuid.uuid5(base_uuid, "test_provider_mock")
 
     # getting mdib from xml file and converting it to mdib.py object

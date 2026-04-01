@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from GateWay import sdc_opc_gateway
+# from GateWay import sdc_opc_gateway
 
 import sys
 import sdc11073
@@ -424,13 +424,13 @@ class DeviceHandler(threading.Thread):
 
             # Регистрируем устройство в OPC UA Gateway только ПОСЛЕ инициализации MDIB
             # ВАЖНО: Делаем вызов потокобезопасным, перекидывая задачу в event loop Менеджера!
-            if self.manager.opcua_gateway is not None and hasattr(self.manager, 'manager_loop'):
-                print(f"[Worker {self.epr}] Registering in Async Central OPC UA Server...")
-                future = asyncio.run_coroutine_threadsafe(
-                    self.manager.opcua_gateway.add_device(self.mdib, self.epr),
-                    self.manager.manager_loop
-                )
-                future.result() # Ожидаем завершения добавления нод
+            # if self.manager.opcua_gateway is not None and hasattr(self.manager, 'manager_loop'):
+            #     print(f"[Worker {self.epr}] Registering in Async Central OPC UA Server...")
+            #     future = asyncio.run_coroutine_threadsafe(
+            #         self.manager.opcua_gateway.add_device(self.mdib, self.epr),
+            #         self.manager.manager_loop
+            #     )
+            #     future.result() # Ожидаем завершения добавления нод
 
             # 4. Subscription (Bindings for real-time updates)
             observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
@@ -497,8 +497,8 @@ class DeviceHandler(threading.Thread):
 
     def on_metric_update(self, metrics_by_handle):
         """Callback invoked by SDC library when metrics change."""
-        if not self.manager.opcua_gateway or not hasattr(self.manager, 'manager_loop'):
-            return
+        # if not self.manager.opcua_gateway or not hasattr(self.manager, 'manager_loop'):
+        #     return
             
         updates = {}
         for handle, state in metrics_by_handle.items():
@@ -514,17 +514,17 @@ class DeviceHandler(threading.Thread):
                 if val is not None:
                     updates[handle] = str(val)
 
-        if updates:
+        # if updates:
             # Передаем обновление в асинхронный цикл менеджера для безопасной записи в OPC
-            asyncio.run_coroutine_threadsafe(
-                self.manager.opcua_gateway.update_values(self.epr, updates),
-                self.manager.manager_loop
-            )
+            # asyncio.run_coroutine_threadsafe(
+            #     self.manager.opcua_gateway.update_values(self.epr, updates),
+            #     self.manager.manager_loop
+            # )
 
     def on_alert_update(self, alert_by_handle):
         """Callback invoked by SDC library when alerts change."""
-        if not self.manager.opcua_gateway or not hasattr(self.manager, 'manager_loop'):
-            return
+        # if not self.manager.opcua_gateway or not hasattr(self.manager, 'manager_loop'):
+        #     return
 
         updates = {}
         for handle, state in alert_by_handle.items():
@@ -535,12 +535,12 @@ class DeviceHandler(threading.Thread):
                 signal_presence = str(getattr(state, 'Presence', 'Unknown'))
                 updates[f"Signal_{handle}"] = signal_presence
 
-        if updates:
+        # if updates:
             # Передаем обновление в асинхронный цикл менеджера для безопасной записи в OPC
-            asyncio.run_coroutine_threadsafe(
-                self.manager.opcua_gateway.update_values(self.epr, updates),
-                self.manager.manager_loop
-            )
+            # asyncio.run_coroutine_threadsafe(
+            #     self.manager.opcua_gateway.update_values(self.epr, updates),
+            #     self.manager.manager_loop
+            # )
 
     def stop(self):
         self.running = False
@@ -600,11 +600,11 @@ class SdcMyConsumer(QObject):
         print(f"[Manager] Network Scan on IP: {local_ip}")
 
         # Initialize Central Async OPC UA Server & PubSub here
-        print(f"[Manager] Starting Central Async OPC UA Server on IP: {local_ip}")
-        pubsub_url = f"opc.udp://{local_ip}:4840" 
-        self.opcua_gateway = sdc_opc_gateway.SdcOpcGateway(bind_ip=local_ip, pubsub_url=pubsub_url)
-        await self.opcua_gateway.init()
-        await self.opcua_gateway.start()
+        # print(f"[Manager] Starting Central Async OPC UA Server on IP: {local_ip}")
+        # pubsub_url = f"opc.udp://{local_ip}:4840" 
+        # self.opcua_gateway = sdc_opc_gateway.SdcOpcGateway(bind_ip=local_ip, pubsub_url=pubsub_url)
+        # await self.opcua_gateway.init()
+        # await self.opcua_gateway.start()
 
         self.discovery = WSDiscovery(local_ip)
         self.discovery.start()

@@ -145,3 +145,4 @@ if __name__ == '__main__':
             t = t + 1
         """
         temperature = temperature + 1
+        time.sleep(1)

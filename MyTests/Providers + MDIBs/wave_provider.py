@@ -20,8 +20,8 @@ from sdc11073.xml_types.pm_types import SampleArrayValue # Добавлен Samp
 if __name__ == '__main__':
     #logging.basicConfig(level=logging.INFO)
 
-    base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050230}')
-    my_uuid = uuid.uuid5(base_uuid, "12345")
+    # Генерируем полностью уникальный EPR для каждого запуска
+    my_uuid = uuid.uuid4()
 
     # Подгрузка mdib с файла
     mdib = ProviderMdib.from_mdib_file("wave_mdib.xml")
@@ -45,7 +45,7 @@ if __name__ == '__main__':
     # Запуск Дискавери
     discovery.start()
 
-    # Запуск всех сервисов провайера
+    # Запуск всех сервисов провайдера
     provider.start_all()
 
     # Публикация провайлера в сеть чтобы его можно было обнаружить
