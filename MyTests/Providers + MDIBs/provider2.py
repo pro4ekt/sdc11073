@@ -114,7 +114,7 @@ if __name__ == '__main__':
                 if(signal.Presence == AlertSignalPresence.OFF):
                     print("Alarm is OFF, but there is still no liquid!")
         t = t + 1
-        time.sleep(1)
+        #time.sleep(1)
 """
 #Цикл для показа температуры процессора
     while True:
