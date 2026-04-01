@@ -28,6 +28,10 @@ class SdcOpcGateway:
         # check_same_thread=False нужен, потому что мы пишем из асинхронного цикла
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         cursor = self.conn.cursor()
+        
+        # Очищаем таблицу при каждом запуске гейтвея, чтобы замеры были свежими
+        cursor.execute('DROP TABLE IF EXISTS latency_logs')
+        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS latency_logs (
                 local_timestamp REAL,

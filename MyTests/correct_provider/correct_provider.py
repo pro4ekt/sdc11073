@@ -57,6 +57,10 @@ TIME_H = 0
 db_path = os.path.join(os.path.dirname(__file__), 'provider_latency.db')
 prov_conn = sqlite3.connect(db_path, check_same_thread=False)
 prov_cursor = prov_conn.cursor()
+
+# Очищаем таблицу при каждом запуске провайдера, чтобы замеры были свежими
+prov_cursor.execute('DROP TABLE IF EXISTS provider_logs')
+
 prov_cursor.execute('''CREATE TABLE IF NOT EXISTS provider_logs (timestamp REAL, handle TEXT, value TEXT)''')
 prov_conn.commit()
 

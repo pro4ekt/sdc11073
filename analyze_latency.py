@@ -20,22 +20,21 @@ def analyze_latency():
     cursor.execute(f"ATTACH DATABASE '{prov_db}' AS prov")
     cursor.execute(f"ATTACH DATABASE '{gw_db}' AS gw")
 
-    # SQL-запрос с учетом погрешности преобразования float <-> string
-    # Ограничение по времени - 10 секунд от отправки.
+    # SQL-запрос с более гибким поиском совпадений по времени (с учетом погрешности ОС ±10 секунд)
+    # и безопасным сравнением как строк, так и чисел float.
     query = """
         SELECT 
             p.timestamp AS provider_ts,
-            g.local_timestamp AS gateway_ts,
-            (g.local_timestamp - p.timestamp) AS total_latency,
+            MIN(g.local_timestamp) AS gateway_ts,
+            ABS(MIN(g.local_timestamp) - p.timestamp) AS total_latency,
             p.handle,
             p.value
         FROM prov.provider_logs p
         JOIN gw.latency_logs g 
             ON p.handle = g.handle 
-            AND ABS(CAST(p.value AS REAL) - CAST(g.value AS REAL)) < 0.001
-            AND g.local_timestamp >= p.timestamp 
-            AND g.local_timestamp - p.timestamp < 10.0
-        GROUP BY p.timestamp, p.handle
+            AND (p.value = g.value OR ABS(CAST(p.value AS REAL) - CAST(g.value AS REAL)) < 0.001)
+            AND ABS(g.local_timestamp - p.timestamp) < 10.0
+        GROUP BY p.timestamp, p.handle, p.value
         ORDER BY p.timestamp ASC
     """
 
@@ -45,6 +44,10 @@ def analyze_latency():
     if not rows:
         print("Нет совпадений данных. Убедитесь, что скрипты работали одновременно.")
         return
+
+    # Добавим предупреждение при подозрительно большом количестве записей (чтобы выявить старые данные если скрипты не перезапускались)
+    if len(rows) > 10000:
+        print(f"Внимание: Обработано очень много записей ({len(rows)}). Возможно базы данных не были очищены при перезапуске скриптов.")
 
     csv_path = os.path.join(base_dir, "latency_report.csv")
 
