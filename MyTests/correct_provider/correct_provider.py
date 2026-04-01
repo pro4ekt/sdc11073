@@ -61,12 +61,12 @@ prov_cursor = prov_conn.cursor()
 # Очищаем таблицу при каждом запуске провайдера, чтобы замеры были свежими
 prov_cursor.execute('DROP TABLE IF EXISTS provider_logs')
 
-prov_cursor.execute('''CREATE TABLE IF NOT EXISTS provider_logs (timestamp REAL, handle TEXT, value TEXT)''')
+prov_cursor.execute('''CREATE TABLE IF NOT EXISTS provider_logs (timestamp REAL, epr TEXT, handle TEXT, value TEXT)''')
 prov_conn.commit()
 
-def log_provider_latency(handle, value):
-    prov_cursor.execute("INSERT INTO provider_logs (timestamp, handle, value) VALUES (?, ?, ?)",
-                        (time.time(), handle, str(value)))
+def log_provider_latency(epr, handle, value):
+    prov_cursor.execute("INSERT INTO provider_logs (timestamp, epr, handle, value) VALUES (?, ?, ?, ?)",
+                        (time.time(), epr, handle, str(value)))
     prov_conn.commit()
 
 def update_humidity(provider, value: Decimal):
@@ -206,7 +206,7 @@ async def process_metric(provider, metric_name, value, timeout_duration):
     evaluate_alarm(provider, metric_name, value, False)
     return False
 
-async def main(provider):
+async def main(provider, my_epr):
     # Create deep copies of the physiological ranges to detect changes later
     share_state_temp = deepcopy(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0])
     share_state_hum = deepcopy(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0])
@@ -241,9 +241,9 @@ async def main(provider):
 
         # 2. Update MDIB
         update_humidity(provider, humidity)
-        log_provider_latency('humidity', humidity)
+        log_provider_latency(my_epr, 'humidity', humidity)
         update_temperature(provider, temperature)
-        log_provider_latency('temperature', temperature)
+        log_provider_latency(my_epr, 'temperature', temperature)
         metrics_info(provider)
 
         # 6. Evaluate alarms
@@ -312,7 +312,7 @@ if __name__ == '__main__':
     provider.publish()
 
     try:
-        asyncio.run(main(provider))
+        asyncio.run(main(provider, str(my_uuid)))
     except KeyboardInterrupt:
         print("Stopping provider...")
         provider.stop_all()

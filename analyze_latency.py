@@ -20,8 +20,7 @@ def analyze_latency():
     cursor.execute(f"ATTACH DATABASE '{prov_db}' AS prov")
     cursor.execute(f"ATTACH DATABASE '{gw_db}' AS gw")
 
-    # SQL-запрос с более гибким поиском совпадений по времени (с учетом погрешности ОС ±10 секунд)
-    # и безопасным сравнением как строк, так и чисел float.
+    # SQL-запрос теперь сопоставляет данные с помощью LIKE для игнорирования префикса 'urn:uuid:'
     query = """
         SELECT 
             p.timestamp AS provider_ts,
@@ -31,7 +30,8 @@ def analyze_latency():
             p.value
         FROM prov.provider_logs p
         JOIN gw.latency_logs g 
-            ON p.handle = g.handle 
+            ON g.epr LIKE '%' || p.epr || '%'
+            AND p.handle = g.handle 
             AND (p.value = g.value OR ABS(CAST(p.value AS REAL) - CAST(g.value AS REAL)) < 0.001)
             AND ABS(g.local_timestamp - p.timestamp) < 10.0
         GROUP BY p.timestamp, p.handle, p.value
