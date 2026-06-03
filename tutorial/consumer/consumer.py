@@ -100,7 +100,7 @@ if __name__ == '__main__':
                 # we can subscribe to updates in the MDIB through the
                 # Observable Properties in order to get a callback on
                 # specific changes in the MDIB
-                observableproperties.bind(my_mdib, metrics_by_handle=on_metric_update)
+                observableproperties.bind(my_mdib, metrics_by_handle=lambda metrics_by_handle: print(f"Got update on: {list(metrics_by_handle.keys())}"))
                 # in order to end the 'scan' loop
                 found_device = True
 
