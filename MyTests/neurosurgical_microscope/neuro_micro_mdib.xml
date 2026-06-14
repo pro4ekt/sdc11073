@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<msg:GetMdibResponse xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message" xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension" SequenceId="1">
+    <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+            <pm:Mds Handle="mds_microscope">
+                <pm:SystemContext Handle="sys_context_micro">
+                    <pm:PatientContext xsi:type="pm:PatientContextDescriptor" Handle="pat_ctx_desc" />
+                    <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_ctx_desc" />
+                    <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_ctx_desc" />
+                    <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="wf_ctx_desc" />
+                </pm:SystemContext>
+                <pm:Clock Handle="clock_micro">
+                    <pm:TimeProtocol Code="532225">
+                        <pm:ConceptDescription Lang="en-us">NTPv4</pm:ConceptDescription>
+                    </pm:TimeProtocol>
+                </pm:Clock>
+
+                <pm:Vmd Handle="vmd_optics">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_sys_overheat">
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_cond_overheat" Kind="Phy" Priority="Me">
+                            <pm:Source>light_temperature</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_sig_overheat" ConditionSignaled="al_cond_overheat" Manifestation="Aud" SignalDelegationSupported="true" Latching="true"/>
+                    </pm:AlertSystem>
+
+                    <pm:Sco Handle="sco_micro">
+                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="op_zoom_control" OperationTarget="zoom_level" Retriggerable="true" />
+                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="op_brightness_control" OperationTarget="brightness_level" Retriggerable="true" />
+                        <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="op_filter_control" OperationTarget="filter_state" Retriggerable="true" />
+                        <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="op_set_statemachine" OperationTarget="metric_statemachine" Retriggerable="true" />
+                    </pm:Sco>
+
+                    <pm:Channel Handle="chan_optics">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="zoom_level" MetricCategory="Set" MetricAvailability="Cont" Resolution="0.1">
+                            <pm:Unit Code="262656"/>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="brightness_level" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="262688"/>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:EnumStringMetricDescriptor" Handle="filter_state" MetricCategory="Set" MetricAvailability="Cont">
+                            <pm:Unit Code="262656"/>
+                            <pm:AllowedValue><pm:Value>None</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>5-ALA</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>ICG</pm:Value></pm:AllowedValue>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="light_temperature" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="0.1">
+                            <pm:Unit Code="268192"/>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:EnumStringMetricDescriptor" Handle="metric_statemachine" MetricCategory="Set" MetricAvailability="Cont">
+                            <pm:Unit Code="262656"/>
+                            <pm:AllowedValue><pm:Value>Idle</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Running</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Paused</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Complete</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Aborted</pm:Value></pm:AllowedValue>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+
+                <pm:Vmd Handle="vmd_motors">
+                    <pm:Channel Handle="chan_motors">
+                        <pm:Metric xsi:type="pm:EnumStringMetricDescriptor" Handle="motor_movement" MetricCategory="Msrmt" MetricAvailability="Cont">
+                            <pm:Unit Code="262656"/>
+                            <pm:AllowedValue><pm:Value>Stopped</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Moving</pm:Value></pm:AllowedValue>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+            </pm:Mds>
+        </pm:MdDescription>
+        <pm:MdState>
+            <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="pat_ctx_desc" Handle="pat_ctx_state">
+                <pm:CoreData>
+                    <pm:Givenname>Neurosurgery</pm:Givenname>
+                    <pm:Familyname>Patient</pm:Familyname>
+                </pm:CoreData>
+            </pm:State>
+            <pm:State xsi:type="pm:LocationContextState" DescriptorHandle="loc_ctx_desc" Handle="loc_ctx_state">
+                <pm:LocationDetail Room="OR-1" />
+            </pm:State>
+            <pm:State xsi:type="pm:EnsembleContextState" DescriptorHandle="ens_ctx_desc" Handle="ens_ctx_state" >
+            </pm:State>
+            <pm:State xsi:type="pm:WorkflowContextState" DescriptorHandle="wf_ctx_desc" Handle="wf_ctx_state">
+                <pm:WorkflowDetail>
+                    <pm:Patient>
+                        <pm:Identification>
+                            <pm:IdentifierName>123</pm:IdentifierName>
+                        </pm:Identification>
+                    </pm:Patient>
+                    <pm:RelevantClinicalInfo>
+                        <pm:Criticality>Hi</pm:Criticality>
+                        <pm:RelatedMeasurement>
+                            <pm:Value xsi:type="pm:Measurement" MeasuredValue="0.0">
+                                <pm:MeasurementUnit Code="1"/>
+                            </pm:Value>
+                        </pm:RelatedMeasurement>
+                    </pm:RelevantClinicalInfo>
+                </pm:WorkflowDetail>
+            </pm:State>
+
+            <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_optics" ActivationState="StndBy" />
+            <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_motors" ActivationState="StndBy" />
+
+            <pm:State xsi:type="pm:AlertSystemState" DescriptorHandle="al_sys_overheat" ActivationState="On" />
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_cond_overheat" ActivationState="On" Presence="false" />
+            <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_sig_overheat" ActivationState="On" Presence="Off" />
+
+            <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="op_zoom_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="op_brightness_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="op_filter_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="op_set_statemachine" OperatingMode="En" />
+
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="zoom_level">
+                <pm:MetricValue Value="1.0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="brightness_level">
+                <pm:MetricValue Value="80">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:EnumStringMetricState" DescriptorHandle="filter_state">
+                <pm:MetricValue Value="None">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="light_temperature">
+                <pm:MetricValue Value="45.0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+                <pm:PhysiologicalRange Lower="20" Upper="60"></pm:PhysiologicalRange>
+            </pm:State>
+            <pm:State xsi:type="pm:EnumStringMetricState" DescriptorHandle="motor_movement">
+                <pm:MetricValue Value="Stopped">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:EnumStringMetricState" DescriptorHandle="metric_statemachine">
+                <pm:MetricValue Value="Idle">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+        </pm:MdState>
+    </msg:Mdib>
+</msg:GetMdibResponse>

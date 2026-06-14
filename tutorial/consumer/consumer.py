@@ -28,7 +28,7 @@ def set_ensemble_context(mdib: ConsumerMdib, sdc_consumer: SdcConsumer) -> None:
     # calling operation on remote device 
     print("Trying to set ensemble context of device A")
     # first we get the container to the element in the MDIB
-    ensemble_descriptor_container = mdib.descriptions.NODETYPE.getOne(pm.EnsembleContextDescriptor)
+    ensemble_descriptor_container = mdib.descriptions.NODETYPE.get_one(pm.EnsembleContextDescriptor)
     # get the context of our provider(client)
     context_client = sdc_consumer.context_service_client
     # start with empty operation handle and try to find the one we need
@@ -105,7 +105,7 @@ if __name__ == '__main__':
                 found_device = True
 
                 # now we demonstrate how to call a remote operation on the consumer
-                # set_ensemble_context(my_mdib, my_client)
+                set_ensemble_context(my_mdib, my_client)
 
 
     # endless loop to keep the client running and get notified on metric changes through callback

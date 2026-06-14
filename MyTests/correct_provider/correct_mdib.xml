@@ -6,7 +6,8 @@
                 <pm:SystemContext Handle="sys_context_1">
                     <pm:PatientContext xsi:type="pm:PatientContextDescriptor" Handle="pat_context_descriptor" />
                     <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_context_1" />
-                    <pm:EnsembleContext Handle="ens_context_1" />
+                    <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_context_1">
+                    </pm:EnsembleContext>
                 </pm:SystemContext>
                 <pm:Clock Handle="clock">
                     <pm:TimeProtocol Code="532225">
@@ -37,6 +38,13 @@
                         </pm:Metric>
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_id" MetricCategory="Set" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="id" />
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:EnumStringMetricDescriptor" Handle="system_statemachine" MetricCategory="Msrmt" MetricAvailability="Cont">
+                            <pm:Unit Code="262656"/>
+                            <pm:AllowedValue><pm:Value>Idle</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Running</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Aborted</pm:Value></pm:AllowedValue>
+                            <pm:AllowedValue><pm:Value>Complete</pm:Value></pm:AllowedValue>
                         </pm:Metric>
                     </pm:Channel>
                 </pm:Vmd>
@@ -93,6 +101,11 @@
 
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
                 <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:EnumStringMetricState" DescriptorHandle="system_statemachine">
+                <pm:MetricValue Value="Idle">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>
             </pm:State>
