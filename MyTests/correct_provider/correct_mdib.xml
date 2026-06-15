@@ -3,6 +3,11 @@
     <msg:Mdib MdibVersion="1" SequenceId="1">
         <pm:MdDescription DescriptionVersion="1">
             <pm:Mds Handle="mds_1">
+                <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="mds_al_system">
+                </pm:AlertSystem>
+                <pm:Sco Handle="sco_mds">
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="set_patient_context_op" OperationTarget="pat_context_descriptor" Retriggerable="true"/>
+                </pm:Sco>
                 <pm:SystemContext Handle="sys_context_1">
                     <pm:PatientContext xsi:type="pm:PatientContextDescriptor" Handle="pat_context_descriptor" />
                     <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_context_1" />
@@ -64,8 +69,7 @@
                             <pm:ModifiableData>ActivationState</pm:ModifiableData>
                             <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
                         </pm:Operation>
-                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="humidity_threshold_control" OperationTarget="humidity" Retriggerable="true">
-                        </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="humidity_threshold_control" OperationTarget="humidity" Retriggerable="true" />
                     </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel_2">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="humidity" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
@@ -76,14 +80,11 @@
             </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
-
-            <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="pat_context_descriptor" Handle="pat_context_state">
+            <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="pat_context_descriptor" Handle="pat_context_state" ContextAssociation="Assoc">
                 <pm:CoreData>
-                    <pm:Birthname>TestProvider</pm:Birthname>
+                    <pm:Givenname></pm:Givenname>
+                    <pm:Familyname></pm:Familyname>
                 </pm:CoreData>
-            </pm:State>
-            <pm:State DescriptorHandle="loc_context_1" xsi:type="pm:LocationContextState" Handle="loc_context_state">
-                <pm:LocationDetail Room="101" />
             </pm:State>
 
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_temperature" ActivationState="On" />
@@ -93,6 +94,8 @@
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_humidity" ActivationState="On" />
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_humidity" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_humidity" ActivationState="On" Presence="Off" />
+
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_patient_context_op" OperatingMode="En" />
 
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="temperature_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />

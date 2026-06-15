@@ -1,10 +1,13 @@
+from __future__ import annotations
 import asyncio
 import socket
 import threading
+from typing import TYPE_CHECKING
 from qtDeviceHandler import QtDeviceHandler
 from deviceHandler import DeviceHandler
 from PySide6.QtCore import QObject, Signal, Slot, Property
 from sdc11073.wsdiscovery import WSDiscovery
+from fhirData import FHIRPatientData
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -35,8 +38,9 @@ class SdcMyConsumer(QObject):
     # NEW: Signal when a device is removed (passes the UUID string)
     deviceDisconnected = Signal(str, arguments=['epr'])
 
-    def __init__(self):
+    def __init__(self, fhir_data: FHIRPatientData = None):
         super().__init__()
+        self.fhir_data = fhir_data  # Данные пациента из FHIR для создания контекстов
         self.running = True
         self.devices = {}  # Registry: { UUID (epr): DeviceHandler_Object }
         self.lock = threading.Lock()  # Ensures safe access to self.devices dictionary
@@ -52,6 +56,49 @@ class SdcMyConsumer(QObject):
         # Перенесли запуск OPC UA сервера в асинхронный цикл discovery_loop
         self.discovery_thread.start()
         print("[Manager] System started. Discovery loop active.")
+
+    def get_patient_context_data(self) -> dict:
+        """
+        Возвращает только нужные для SDC-контекста данные пациента:
+        имя (given/family), диагнозы, рост и вес с единицами измерения.
+        """
+        if not self.fhir_data:
+            return {}
+
+        full_name = self.fhir_data.get_name()
+        name_parts = full_name.split(' ', 1)
+        given_name = name_parts[0] if name_parts else ''
+        family_name = name_parts[1] if len(name_parts) > 1 else ''
+
+        conditions = self.fhir_data.get_condition_names()
+        birth_date = self.fhir_data.get_birth_date()
+
+        weight_value, weight_unit = None, 'kg'
+        height_value, height_unit = None, 'cm'
+
+        for obs in self.fhir_data.get_observation_summaries():
+            name_lower = obs['name'].lower()
+            try:
+                parts = obs['value'].split()
+                val = float(parts[0])
+                unit = parts[1] if len(parts) > 1 else ''
+                if 'weight' in name_lower or 'вес' in name_lower:
+                    weight_value, weight_unit = val, unit or 'kg'
+                elif 'height' in name_lower or 'length' in name_lower or 'рост' in name_lower:
+                    height_value, height_unit = val, unit or 'cm'
+            except (ValueError, IndexError):
+                pass
+
+        return {
+            'given_name':   given_name,
+            'family_name':  family_name,
+            'birth_date':   birth_date,
+            'conditions':   conditions,
+            'weight_value': weight_value,
+            'weight_unit':  weight_unit,
+            'height_value': height_value,
+            'height_unit':  height_unit,
+        }
 
     def stop(self):
         self.running = False

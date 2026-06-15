@@ -5,6 +5,7 @@ import os
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from sdcMyConsumer import SdcMyConsumer
+from fhirData import FHIRPatientData
 """
 import sdc11073
 import asyncio
@@ -27,14 +28,27 @@ from sdc11073.xml_types.pm_types import AlertSignalPresence, AlertActivation
 
 if __name__ == "__main__":
 
-    manager = SdcMyConsumer()
+    #131896579 - Patient ID for tests
+    patient_id = input("Введите ID пациента и нажмите Enter: ").strip()
+
+    fhir = FHIRPatientData()
+    try:
+        fhir.fetch(patient_id)
+        fhir.print_summary()
+    except Exception as e:
+        print(f"Ошибка загрузки данных пациента: {e}")
+
+    manager = SdcMyConsumer(fhir_data=fhir)
     manager.start()
+
+    a = manager.fhir_data
 
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()
 
     # Expose the manager to QML context
     engine.rootContext().setContextProperty("sdcManager", manager)
+    engine.rootContext().setContextProperty("fhirData", fhir)
 
     # Load the QML file
     qml_file = os.path.join(os.path.dirname(__file__), "Main.qml")

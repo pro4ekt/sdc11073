@@ -11,6 +11,7 @@ from decimal import Decimal
 from copy import deepcopy
 
 from sdc11073.loghelper import basic_logging_setup
+from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.mdib import ProviderMdib
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.components import SdcProviderComponents
@@ -19,7 +20,6 @@ from sdc11073.wsdiscovery import WSDiscoverySingleAdapter
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import AlertSignalPresence
-from sdc11073.xml_types.pm_types import MeasurementValidity
 
 # Mocking MySdcProvider to replace missing myproviderimpl
 class MySdcProvider(SdcProvider):
@@ -202,10 +202,15 @@ async def main(provider):
 
     while True:
         # Log current physiological ranges to console for debugging
-        print("Temp Low = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower))
+        """
+         print("Temp Low = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower))
         print("Temp High = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Upper))
         print("Hum Low = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Lower))
         print("Hum High = " + str(provider.mdib.entities.by_handle("humidity").state.PhysiologicalRange[0].Upper))
+        """
+        patients = provider.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
+        given_names = [p.CoreData.Givenname for p in patients if p.CoreData and p.CoreData.Givenname]
+        print("Given names = " + str(given_names))
 
         # Process any pending incoming requests (e.g. alert controls)
         await handle_requests(provider, share_state_temp, share_state_hum)
