@@ -10,8 +10,8 @@ import os
 from decimal import Decimal
 from copy import deepcopy
 
-from sdc11073.loghelper import basic_logging_setup
 from sdc11073.xml_types import pm_qnames as pm
+from sdc11073.xml_types import pm_types
 from sdc11073.mdib import ProviderMdib
 from sdc11073.provider import SdcProvider
 from sdc11073.provider.components import SdcProviderComponents
@@ -20,6 +20,16 @@ from sdc11073.wsdiscovery import WSDiscoverySingleAdapter
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import AlertSignalPresence
+from sdc11073.xml_types.pm_types import Measurement, RelatedMeasurement
+
+@classmethod
+def _related_measurement_from_node(cls, node):
+    # Передаем заглушку Measurement, чтобы обойти ошибку __init__ "missing 1 required argument 'value'"
+    obj = cls(Measurement(None, None))
+    obj.update_from_node(node)
+    return obj
+
+RelatedMeasurement.from_node = _related_measurement_from_node
 
 # Mocking MySdcProvider to replace missing myproviderimpl
 class MySdcProvider(SdcProvider):
@@ -32,6 +42,38 @@ class MySdcProvider(SdcProvider):
     def find_string_in_request(self, request, search_string):
         # Dummy implementation
         return False
+
+    def simulate_self_checkout(self, is_successful: bool = True) -> bool:
+        vmd_states = self.mdib.states.NODETYPE.get(pm.VmdState, [])
+        if not vmd_states:
+            print("[Provider] Error: No VMD states found in MDIB.")
+            with self.mdib.metric_state_transaction() as tr:
+                device_health_state = tr.get_state("device_health")
+                mv = device_health_state.MetricValue
+                mv.Value = Decimal(0)
+            return False
+            
+        vmd_handle = vmd_states[0].DescriptorHandle
+        
+        with self.mdib.component_state_transaction() as mgr:
+            state = mgr.get_state(vmd_handle)
+            if is_successful:
+                state.ActivationState = pm_types.ComponentActivation.STANDBY
+            else:
+                state.ActivationState = pm_types.ComponentActivation.FAIL
+                
+        print(f"[Provider] VMD {vmd_handle} ActivationState changed to {state.ActivationState}")
+        
+        # Печать проверки!
+        check_state = self.mdib.states.descriptor_handle.get_one(vmd_handle)
+        print(f"[Provider Test] Current ActivationState of {vmd_handle} in MDIB is now: {check_state.ActivationState}")
+
+        with self.mdib.metric_state_transaction() as tr:
+            device_health_state = tr.get_state("device_health")
+            mv = device_health_state.MetricValue
+            mv.Value = Decimal(100)
+
+        return True
 
 # --- Constants for Alarms ---
 ALARM_CONFIG = {
@@ -216,7 +258,19 @@ async def main(provider):
         locations = provider.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
         rooms = [l.LocationDetail.Room for l in locations if getattr(l, "LocationDetail", None)]
         
-        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}")
+        workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
+        danger_codes = []
+        for w in workflows:
+            if getattr(w, "WorkflowDetail", None):
+                # В зависимости от того, как sdc11073 парсит нестандартные/кастомные теги,
+                # значение может лежать в .DangerCode, .RelevantClinicalInfo или расширениях.
+                if hasattr(w.WorkflowDetail, 'DangerCode') and w.WorkflowDetail.DangerCode:
+                    code = w.WorkflowDetail.DangerCode[0].Code
+                    danger_codes.append(code)
+                else:
+                    danger_codes.append(None)
+        
+        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}, Danger codes = {danger_codes}")
 
         # Process any pending incoming requests (e.g. alert controls)
         await handle_requests(provider, share_state_temp, share_state_hum)
@@ -294,6 +348,8 @@ if __name__ == '__main__':
                              this_device=device,
                              device_mdib_container=mdib,
                              specific_components=components)
+
+    provider.simulate_self_checkout()
 
     # Discovery start
     discovery.start()

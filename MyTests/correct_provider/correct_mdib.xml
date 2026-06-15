@@ -11,8 +11,8 @@
                 <pm:SystemContext Handle="sys_context_1">
                     <pm:PatientContext xsi:type="pm:PatientContextDescriptor" Handle="pat_context_descriptor" />
                     <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_context_descriptor" />
-                    <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_context_descriptor">
-                    </pm:EnsembleContext>
+                    <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_context_descriptor" />
+                    <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="wrkflow_context_descriptor" />
                 </pm:SystemContext>
                 <pm:Clock Handle="clock">
                     <pm:TimeProtocol Code="532225">
@@ -38,6 +38,10 @@
                         <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="temperature_threshold_control" OperationTarget="temperature" Retriggerable="true" />
                     </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel_1">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_health" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="%"></pm:Unit>
+                            <pm:TechnicalRange Lower="0" Upper="100"></pm:TechnicalRange>
+                        </pm:Metric>
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="temperature" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
                             <pm:Unit Code="°"></pm:Unit>
                         </pm:Metric>
@@ -95,6 +99,28 @@
             <pm:State xsi:type="pm:LocationContextState" DescriptorHandle="loc_context_descriptor" Handle="loc_context_state" ContextAssociation="Assoc">
                 <pm:LocationDetail Room="" Facility="" Bed="" />
             </pm:State>
+            <pm:State xsi:type="pm:WorkflowContextState" DescriptorHandle="wrkflow_context_descriptor" Handle="wrkflow_context_state" ContextAssociation="Assoc">
+                <pm:WorkflowDetail>
+                    <pm:Patient>
+                        <pm:Identification></pm:Identification>
+                    </pm:Patient>
+                    <pm:DangerCode Code=" ">
+                        <pm:ConceptDescription></pm:ConceptDescription>
+                    </pm:DangerCode>
+                    <pm:RelevantClinicalInfo>
+                        <pm:Criticality>Hi</pm:Criticality>
+                        <pm:Description></pm:Description>
+                        <pm:RelatedMeasurement>
+                            <pm:Value MeasuredValue="0">
+                                <pm:MeasurementUnit Code="123"></pm:MeasurementUnit>
+                            </pm:Value>
+                        </pm:RelatedMeasurement>
+                    </pm:RelevantClinicalInfo>
+                </pm:WorkflowDetail>
+            </pm:State>
+
+            <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_1" ActivationState="On" />
+            <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_2" ActivationState="On" />
 
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_temperature" ActivationState="On" />
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_temperature" ActivationState="On" Presence="false" />
@@ -112,6 +138,11 @@
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="humidity_threshold_control" OperatingMode="En" />
 
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_health">
                 <pm:MetricValue Value="0">
                     <pm:MetricQuality Validity="Vld" />
                 </pm:MetricValue>

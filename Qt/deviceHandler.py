@@ -10,7 +10,16 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.pm_types import Measurement, CodedValue
 from sdc11073 import observableproperties
 from PySide6.QtGui import QGuiApplication
-import time
+from sdc11073.xml_types.pm_types import Measurement, RelatedMeasurement
+
+@classmethod
+def _related_measurement_from_node(cls, node):
+    # Передаем заглушку Measurement, чтобы обойти ошибку __init__ "missing 1 required argument 'value'"
+    obj = cls(Measurement(None, None))
+    obj.update_from_node(node)
+    return obj
+
+RelatedMeasurement.from_node = _related_measurement_from_node
 
 class DeviceHandler(threading.Thread):
     """
@@ -217,6 +226,45 @@ class DeviceHandler(threading.Thread):
                 proposed_loc.LocationDetail.Facility = "My Mock Facility"
                 proposed_loc.LocationDetail.Bed = "Bed A"
                 states_to_send.append(proposed_loc)
+
+            # --- Обновляем WorkflowContextState ---
+            wf_descriptors = self.mdib.descriptions.NODETYPE.get(pm.WorkflowContextDescriptor, [])
+            if wf_descriptors:
+                wf_descriptor = wf_descriptors[0]
+                
+                existing_wf_states = self.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
+                if existing_wf_states:
+                    proposed_wf_state = existing_wf_states[0].mk_copy()
+                else:
+                    proposed_wf_state = self.consumer.context_service_client.mk_proposed_context_object(wf_descriptor.Handle)
+                
+                proposed_wf_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+                
+                if not hasattr(proposed_wf_state, 'WorkflowDetail') or proposed_wf_state.WorkflowDetail is None:
+                    proposed_wf_state.WorkflowDetail = pm_types.WorkflowDetail()
+
+                # Привязка ID Пациента
+                patient_id = ctx.get('patient_id')
+                if patient_id:
+                    patient_data = pm_types.PatientDemographicsCoreData()
+                    identifier = pm_types.InstanceIdentifier(root="Hospital_FHIR", extension_string=str(patient_id))
+                    patient_data.Identification.append(identifier)
+                    proposed_wf_state.WorkflowDetail.Patient = patient_data
+
+                # Внедрение кода заболевания
+                conditions = ctx.get('conditions', [])
+                if conditions:
+                    if not proposed_wf_state.WorkflowDetail.DangerCode:
+                        proposed_wf_state.WorkflowDetail.DangerCode = []
+                    # Очищаем старые если были, чтобы не дублировать
+                    proposed_wf_state.WorkflowDetail.DangerCode.clear()
+
+                    for condition in conditions:
+                        # Используем название заболевания напрямую как код
+                        danger_code_obj = pm_types.CodedValue(str(condition))
+                        proposed_wf_state.WorkflowDetail.DangerCode.append(danger_code_obj)
+
+                states_to_send.append(proposed_wf_state)
 
             # 5. Отправляем SetContextState запрос провайдеру
             if self.consumer.context_service_client:

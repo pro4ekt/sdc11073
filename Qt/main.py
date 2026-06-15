@@ -38,10 +38,9 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Ошибка загрузки данных пациента: {e}")
 
+    a = fhir
     manager = SdcMyConsumer(fhir_data=fhir)
     manager.start()
-
-    a = manager.fhir_data
 
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()
