@@ -10,6 +10,7 @@ from sdc11073.xml_types import pm_types
 from sdc11073.xml_types.pm_types import Measurement, CodedValue
 from sdc11073 import observableproperties
 from PySide6.QtGui import QGuiApplication
+import time
 
 class DeviceHandler(threading.Thread):
     """
@@ -166,8 +167,15 @@ class DeviceHandler(threading.Thread):
                 return
             operation_handle = set_ctx_ops[0].Handle
 
-            # 3. Создаём новый PatientContextState через клиент
-            proposed_state = self.consumer.context_service_client.mk_proposed_context_object(descriptor.Handle)
+            # 3. Берём существующее состояние или создаём новое
+            existing_states = self.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
+            if existing_states:
+                # Если в MDIB уже есть пациент (например, "пустой", прописанный в XML) - мы просто обновим его
+                proposed_state = existing_states[0].mk_copy()
+            else:
+                # Иначе предлагаем новый
+                proposed_state = self.consumer.context_service_client.mk_proposed_context_object(descriptor.Handle)
+                
             proposed_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
 
             # 4. Заполняем CoreData данными из FHIR
@@ -175,17 +183,28 @@ class DeviceHandler(threading.Thread):
             proposed_state.CoreData.Givenname = ctx.get('given_name') or None
             proposed_state.CoreData.Familyname = ctx.get('family_name') or None
 
-            if ctx.get('weight_value') is not None:
+            weight_num = ctx.get('weight_value')
+            if weight_num is not None:
+                # Use str() correctly depending on if it's a number/float
+                weight_val_str = str(weight_num).split()[0] if isinstance(weight_num, str) else str(weight_num)
                 proposed_state.CoreData.Weight = Measurement(
-                    Decimal(str(ctx['weight_value'])),
-                    CodedValue(ctx['weight_unit'])
+                    Decimal(weight_val_str),
+                    CodedValue(ctx.get('weight_unit') or 'kg')
                 )
+            else:
+                proposed_state.CoreData.Weight = None
 
-            if ctx.get('height_value') is not None:
+            height_num = ctx.get('height_value')
+            if height_num is not None:
+                height_val_str = str(height_num).split()[0] if isinstance(height_num, str) else str(height_num)
                 proposed_state.CoreData.Height = Measurement(
-                    Decimal(str(ctx['height_value'])),
-                    CodedValue(ctx['height_unit'])
+                    Decimal(height_val_str),
+                    CodedValue(ctx.get('height_unit') or 'cm')
                 )
+            else:
+                proposed_state.CoreData.Height = None
+
+            states_to_send = [proposed_state]
 
             # 5. Отправляем SetContextState запрос провайдеру
             if self.consumer.context_service_client:
@@ -196,7 +215,7 @@ class DeviceHandler(threading.Thread):
                 print(f"[Worker {self.epr}] Sending SetContextState with operation '{operation_handle}'")
                 self.consumer.context_service_client.set_context_state(
                     operation_handle=operation_handle,
-                    proposed_context_states=[proposed_state]
+                    proposed_context_states=states_to_send
                 )
                 print(f"[Worker {self.epr}] PatientContext applied: "
                       f"{ctx.get('given_name')} {ctx.get('family_name')}")

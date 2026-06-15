@@ -82,8 +82,14 @@
         <pm:MdState>
             <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="pat_context_descriptor" Handle="pat_context_state" ContextAssociation="Assoc">
                 <pm:CoreData>
-                    <pm:Givenname></pm:Givenname>
+                    <pm:Givenname>aboba</pm:Givenname>
                     <pm:Familyname></pm:Familyname>
+                    <pm:Height MeasuredValue="0">
+                        <pm:MeasurementUnit Code="123"></pm:MeasurementUnit>
+                    </pm:Height>
+                    <pm:Weight MeasuredValue="0">
+                        <pm:MeasurementUnit Code="123"></pm:MeasurementUnit>
+                    </pm:Weight>
                 </pm:CoreData>
             </pm:State>
 

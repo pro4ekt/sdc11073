@@ -28,7 +28,7 @@ from sdc11073.xml_types.pm_types import AlertSignalPresence, AlertActivation
 
 if __name__ == "__main__":
 
-    #131896579 - Patient ID for tests
+    #example - Patient ID for tests
     patient_id = input("Введите ID пациента и нажмите Enter: ").strip()
 
     fhir = FHIRPatientData()
