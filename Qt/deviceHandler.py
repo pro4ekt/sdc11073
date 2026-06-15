@@ -206,6 +206,18 @@ class DeviceHandler(threading.Thread):
 
             states_to_send = [proposed_state]
 
+            # --- Обновляем существующий LocationContextState моковыми данными ---
+            existing_loc_states = self.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
+            if existing_loc_states:
+                proposed_loc = existing_loc_states[0].mk_copy()
+                proposed_loc.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+                if proposed_loc.LocationDetail is None:
+                    proposed_loc.LocationDetail = pm_types.LocationDetail()
+                proposed_loc.LocationDetail.Room = "Room 101"
+                proposed_loc.LocationDetail.Facility = "My Mock Facility"
+                proposed_loc.LocationDetail.Bed = "Bed A"
+                states_to_send.append(proposed_loc)
+
             # 5. Отправляем SetContextState запрос провайдеру
             if self.consumer.context_service_client:
                 # ВАЖНО: operation_handle не может быть None или пустым строкой согласно XSD.

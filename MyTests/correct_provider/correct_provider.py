@@ -212,7 +212,11 @@ async def main(provider):
         given_names = [p.CoreData.Givenname for p in patients if p.CoreData and p.CoreData.Givenname]
         heights = [p.CoreData.Height.MeasuredValue if p.CoreData and p.CoreData.Height else None for p in patients]
         weights = [p.CoreData.Weight.MeasuredValue if p.CoreData and p.CoreData.Weight else None for p in patients]
-        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}")
+        
+        locations = provider.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
+        rooms = [l.LocationDetail.Room for l in locations if getattr(l, "LocationDetail", None)]
+        
+        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}")
 
         # Process any pending incoming requests (e.g. alert controls)
         await handle_requests(provider, share_state_temp, share_state_hum)
