@@ -270,7 +270,23 @@ async def main(provider):
                 else:
                     danger_codes.append(None)
         
-        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}, Danger codes = {danger_codes}")
+        ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+        ens_info_list = []
+        for e in ensembles:
+            if getattr(e, "Identification", None) and len(e.Identification) > 0:
+                ident = e.Identification[0]
+                # Извлекаем IdentifierName (может быть как объектом LocalizedText, так и списком)
+                ident_name_str = "None"
+                if getattr(ident, "IdentifierName", None):
+                    ident_name = ident.IdentifierName[0] if isinstance(ident.IdentifierName, list) else ident.IdentifierName
+                    ident_name_str = str(getattr(ident_name, "text", ident_name))
+                
+                # Выводим Root, Extension и IdentifierName для наглядности
+                ens_info_list.append(f" Name:{ident_name_str}")
+            else:
+                ens_info_list.append(None)
+        
+        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}, Danger codes = {danger_codes}, Ensembles = {ens_info_list}")
 
         # Process any pending incoming requests (e.g. alert controls)
         await handle_requests(provider, share_state_temp, share_state_hum)

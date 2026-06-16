@@ -24,6 +24,7 @@
                     </pm:AlertSystem>
 
                     <pm:Sco Handle="sco_micro">
+                        <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="set_ensemble_context_op" OperationTarget="ens_ctx_desc" Retriggerable="true"/>
                         <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="op_zoom_control" OperationTarget="zoom_level" Retriggerable="true" />
                         <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="op_brightness_control" OperationTarget="brightness_level" Retriggerable="true" />
                         <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="op_filter_control" OperationTarget="filter_state" Retriggerable="true" />
@@ -31,6 +32,10 @@
                     </pm:Sco>
 
                     <pm:Channel Handle="chan_optics">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_health" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Unit Code="%"/>
+                            <pm:TechnicalRange Lower="0" Upper="100"/>
+                        </pm:Metric>
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="zoom_level" MetricCategory="Set" MetricAvailability="Cont" Resolution="0.1">
                             <pm:Unit Code="262656"/>
                         </pm:Metric>
@@ -78,7 +83,10 @@
             <pm:State xsi:type="pm:LocationContextState" DescriptorHandle="loc_ctx_desc" Handle="loc_ctx_state">
                 <pm:LocationDetail Room="OR-1" />
             </pm:State>
-            <pm:State xsi:type="pm:EnsembleContextState" DescriptorHandle="ens_ctx_desc" Handle="ens_ctx_state" >
+            <pm:State xsi:type="pm:EnsembleContextState" DescriptorHandle="ens_ctx_desc" Handle="ens_ctx_state" ContextAssociation="Assoc">
+                <pm:Identification Root="b1111111-1111-1111-1111-111111111111" Extension="initial">
+                    <pm:IdentifierName></pm:IdentifierName>
+                </pm:Identification>
             </pm:State>
             <pm:State xsi:type="pm:WorkflowContextState" DescriptorHandle="wf_ctx_desc" Handle="wf_ctx_state">
                 <pm:WorkflowDetail>
@@ -105,11 +113,17 @@
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_cond_overheat" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_sig_overheat" ActivationState="On" Presence="Off" />
 
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_ensemble_context_op" OperatingMode="En" />
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="op_zoom_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="op_brightness_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="op_filter_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="op_set_statemachine" OperatingMode="En" />
 
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_health">
+                <pm:MetricValue Value="0">
+                    <pm:MetricQuality Validity="Vld" />
+                </pm:MetricValue>
+            </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="zoom_level">
                 <pm:MetricValue Value="1.0">
                     <pm:MetricQuality Validity="Vld" />

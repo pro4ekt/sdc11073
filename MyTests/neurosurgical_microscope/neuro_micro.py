@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 import asyncio
 import os
+from decimal import Decimal
 
 from sdc11073.loghelper import basic_logging_setup
 from sdc11073.mdib import ProviderMdib
@@ -16,6 +17,7 @@ from sdc11073.xml_types.pm_types import AlertSignalPresence
 from sdc11073.xml_types.pm_types import MeasurementValidity
 from sdc11073.xml_types.pm_types import RelatedMeasurement
 from sdc11073.xml_types.pm_types import ComponentActivation
+from sdc11073.xml_types import pm_qnames as pm
 
 # === НАШ МАНКИ-ПАТЧ ИСПРАВЛЕНИЯ БАГА БИБЛИОТЕКИ ===
 from sdc11073.xml_types.pm_types import RelatedMeasurement, Measurement
@@ -29,6 +31,71 @@ def _related_measurement_from_node(cls, node):
 
 RelatedMeasurement.from_node = _related_measurement_from_node
 # === КОНЕЦ ПАТЧА ===
+
+def update_device_health(provider):
+    """
+    Вычисляет и обновляет device_health на основе ActivationState обоих VMD.
+    Логика:
+      - vmd_optics=ON  + vmd_motors=ON  → 100%
+      - vmd_optics=STANDBY              → 50%
+      - vmd_optics=FAILURE              → 0%
+    """
+    optics_state = provider.mdib.entities.by_handle("vmd_optics").state.ActivationState
+    motors_state = provider.mdib.entities.by_handle("vmd_motors").state.ActivationState
+
+    if optics_state == ComponentActivation.FAILURE:
+        health = Decimal(0)
+    elif optics_state == ComponentActivation.ON and motors_state == ComponentActivation.ON:
+        health = Decimal(100)
+    else:
+        # STANDBY или любое другое состояние
+        health = Decimal(50)
+
+    with provider.mdib.metric_state_transaction() as tr:
+        h_state = tr.get_state("device_health")
+        if h_state.MetricValue is None:
+            h_state.mk_metric_value()
+        h_state.MetricValue.Value = health
+
+    return health
+
+
+def print_contexts(provider):
+    """Печатает все контексты: пациент, локация, ансамбль, workflow."""
+    patients = provider.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
+    given_names = [p.CoreData.Givenname for p in patients if p.CoreData and p.CoreData.Givenname]
+
+    locations = provider.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
+    rooms = [l.LocationDetail.Room for l in locations if getattr(l, "LocationDetail", None)]
+
+    workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
+    danger_codes = []
+    for w in workflows:
+        if getattr(w, "WorkflowDetail", None):
+            if hasattr(w.WorkflowDetail, 'DangerCode') and w.WorkflowDetail.DangerCode:
+                danger_codes.append(w.WorkflowDetail.DangerCode[0].Code)
+            else:
+                danger_codes.append(None)
+
+    ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+    ens_info_list = []
+    for e in ensembles:
+        if getattr(e, "Identification", None) and len(e.Identification) > 0:
+            ident = e.Identification[0]
+            ident_name_str = "None"
+            if getattr(ident, "IdentifierName", None):
+                ident_name = ident.IdentifierName[0] if isinstance(ident.IdentifierName, list) else ident.IdentifierName
+                ident_name_str = str(getattr(ident_name, "text", ident_name))
+            ens_info_list.append(f"Root:{ident.Root} | Ext:{ident.Extension} | Name:{ident_name_str}")
+        else:
+            ens_info_list.append(None)
+
+    health_state = provider.mdib.entities.by_handle("device_health").state.MetricValue
+    health_val = health_state.Value if health_state else "N/A"
+
+    print(f"[Context] Patients={given_names} | Rooms={rooms} | DangerCodes={danger_codes} | "
+          f"Ensembles={ens_info_list} | DeviceHealth={health_val}%")
+
 
 def update_statemachine_and_vmd(provider, new_state: str):
     """
@@ -80,18 +147,25 @@ async def main(provider):
         current_state = states_to_simulate[i % len(states_to_simulate)]
         print(f"\n--- Simulating command: Transition to {current_state} ---")
         update_statemachine_and_vmd(provider, current_state)
-        
+
+        # Обновляем device_health на основе текущих VMD ActivationState
+        health = update_device_health(provider)
+
         # Выведем текущие состояния, чтобы удостовериться в синхронизации
         vmd_act = provider.mdib.entities.by_handle("vmd_optics").state.ActivationState
         vmd_motors_act = provider.mdib.entities.by_handle("vmd_motors").state.ActivationState
         sm_val = provider.mdib.entities.by_handle("metric_statemachine").state.MetricValue.Value
         mot_val = provider.mdib.entities.by_handle("motor_movement").state.MetricValue.Value
-        
-        print(f"VMD Optics State   : {vmd_act}")
-        print(f"VMD Motors State   : {vmd_motors_act}")
+
+        print(f"VMD Optics State     : {vmd_act}")
+        print(f"VMD Motors State     : {vmd_motors_act}")
         print(f"Workflow StateMachine: {sm_val}")
         print(f"Motor Movement State : {mot_val}")
-        
+        print(f"Device Health        : {health}%")
+
+        # Печатаем все контексты
+        print_contexts(provider)
+
         i += 1
         await asyncio.sleep(5)
 

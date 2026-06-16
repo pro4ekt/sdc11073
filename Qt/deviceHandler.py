@@ -179,7 +179,6 @@ class DeviceHandler(threading.Thread):
             # 3. Берём существующее состояние или создаём новое
             existing_states = self.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
             if existing_states:
-                # Если в MDIB уже есть пациент (например, "пустой", прописанный в XML) - мы просто обновим его
                 proposed_state = existing_states[0].mk_copy()
             else:
                 # Иначе предлагаем новый
@@ -215,6 +214,7 @@ class DeviceHandler(threading.Thread):
 
             states_to_send = [proposed_state]
 
+            """
             # --- Обновляем существующий LocationContextState моковыми данными ---
             existing_loc_states = self.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
             if existing_loc_states:
@@ -226,6 +226,7 @@ class DeviceHandler(threading.Thread):
                 proposed_loc.LocationDetail.Facility = "My Mock Facility"
                 proposed_loc.LocationDetail.Bed = "Bed A"
                 states_to_send.append(proposed_loc)
+            """
 
             # --- Обновляем WorkflowContextState ---
             wf_descriptors = self.mdib.descriptions.NODETYPE.get(pm.WorkflowContextDescriptor, [])
@@ -284,6 +285,78 @@ class DeviceHandler(threading.Thread):
 
         except Exception as e:
             print(f"[Worker {self.epr}] Failed to apply patient context: {e}")
+
+    def apply_ensemble_context(self, ensemble_uuid: str):
+        """Отправляет сгенерированный EnsembleContext(UUID) на провайдер."""
+        try:
+            from sdc11073.xml_types import pm_qnames as pm
+            from sdc11073.xml_types import pm_types
+
+            with self.data_lock:
+                if not self.mdib:
+                    return
+
+                # 1. Ищем дескриптор EnsembleContext
+                ens_descriptors = self.mdib.descriptions.NODETYPE.get(pm.EnsembleContextDescriptor, [])
+                if not ens_descriptors:
+                    print(f"[Worker {self.epr}] No EnsembleContextDescriptor found.")
+                    return
+                descriptor = ens_descriptors[0]
+
+                # 2. Ищем операцию для его изменения
+                operation_handle = None
+                set_ctx_ops = self.mdib.descriptions.NODETYPE.get(pm.SetContextStateOperationDescriptor, [])
+                for op in set_ctx_ops:
+                    if op.OperationTarget == descriptor.Handle:
+                        operation_handle = op.Handle
+                        break
+                        
+                if not operation_handle:
+                    print(f"[Worker {self.epr}] No SetContext operation found for EnsembleContext.")
+                    return
+
+                # 3. Берём существующее состояние или создаём новое
+                existing_states = self.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+                if existing_states:
+                    proposed_state = existing_states[0].mk_copy()
+
+                    # Clear existing identifications before adding new ones
+                    if hasattr(proposed_state, 'Identification') and proposed_state.Identification is not None:
+                        proposed_state.Identification.clear()
+                else:
+                    proposed_state = self.consumer.context_service_client.mk_proposed_context_object(descriptor.Handle)
+
+                proposed_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+
+                # Записываем идентификатор (UUID) ансамбля
+                # ВАЖНО: Указываем и Root, и Extension
+                identifier = pm_types.InstanceIdentifier(root="bce837e3-0c46-4e52-af32-15bb36cfd746", extension_string=ensemble_uuid)
+
+                # Инициализируем IdentifierName, чтобы соотвествовать XML схеме провайдера
+                # Используем сам сгенерированный ensemble_uuid в качестве имени
+                identifier.IdentifierName = [pm_types.LocalizedText(ensemble_uuid)]
+
+                # Ensure Identification list exists
+                if not hasattr(proposed_state, 'Identification') or proposed_state.Identification is None:
+                    proposed_state.Identification = []
+
+                proposed_state.Identification.append(identifier)
+
+                states_to_send = [proposed_state]
+
+            # 4. Выполняем сетевой запрос (без лока, чтобы не блокировать данные при пинге)
+            if self.consumer.context_service_client:
+                print(f"[Worker {self.epr}] Sending EnsembleContext SetContextState...")
+                self.consumer.context_service_client.set_context_state(
+                    operation_handle=operation_handle,
+                    proposed_context_states=states_to_send
+                )
+                print(f"[Worker {self.epr}] EnsembleContext applied successfully!")
+            else:
+                print(f"[Worker {self.epr}] No context_service_client available.")
+
+        except Exception as e:
+            print(f"[Worker {self.epr}] Failed to apply EnsembleContext: {e}")
 
     def on_metric_update(self, metrics_by_handle):
         """Callback invoked by SDC library when metrics change remotely."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import threading
+import uuid
 from typing import TYPE_CHECKING
 from qtDeviceHandler import QtDeviceHandler
 from deviceHandler import DeviceHandler
@@ -43,6 +44,7 @@ class SdcMyConsumer(QObject):
         self.fhir_data = fhir_data  # Данные пациента из FHIR для создания контекстов
         self.running = True
         self.devices = {}  # Registry: { UUID (epr): DeviceHandler_Object }
+        self.ensemble_devices = {}  # { epr: ensemble_uuid }
         self.lock = threading.Lock()  # Ensures safe access to self.devices dictionary
         self.discovery = None  # Reference to WSDiscovery instance
 
@@ -113,6 +115,69 @@ class SdcMyConsumer(QObject):
         # Entry point for the discovery thread
         asyncio.run(self._discovery_loop())
 
+    async def _ensemble_formation_task(self):
+        # Ждем 40 секунд после запуска сети
+        await asyncio.sleep(10)
+        print("\n[Ensemble Manager] 40 seconds passed. Checking connected devices...")
+
+        with self.lock:
+            # Копируем список устройств, чтобы безопасно итерировать
+            devices_snapshot = list(self.devices.values())
+
+        if not devices_snapshot:
+            print("[Ensemble Manager] No devices found to form an ensemble.")
+            return
+
+        from sdc11073.xml_types import pm_qnames as pm
+
+        # Сбор данных с устройств
+        print("-" * 40)
+        for dev in devices_snapshot:
+            with dev.data_lock:
+                if not dev.mdib:
+                    continue
+
+                # 1. Считываем LocationContext
+                loc_str = "Unknown"
+                loc_states = dev.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
+                if loc_states and loc_states[0].LocationDetail:
+                    detail = loc_states[0].LocationDetail
+                    loc_str = f"Facility:{getattr(detail, 'Facility', '')} Room:{getattr(detail, 'Room', '')} Bed:{getattr(detail, 'Bed', '')}"
+
+                # 2. Считываем device_health (из states по Handle)
+                health = "Unknown"
+
+                # Ищем стейт с нужным DescriptorHandle через NODETYPE для NumericMetricState
+                metric_state = None
+                numeric_states = dev.mdib.states.NODETYPE.get(pm.NumericMetricState, [])
+                for state in numeric_states:
+                    if getattr(state, 'DescriptorHandle', None) == "device_health":
+                        metric_state = state
+                        break
+
+                if metric_state and getattr(metric_state, 'MetricValue', None) is not None:
+                    health = metric_state.MetricValue.Value
+
+                print(f"[Device] EPR: {dev.epr} | Location: {loc_str} | Health: {health}")
+        print("-" * 40)
+
+        # Важно: запускаем синхронный input() в отдельном потоке, чтобы не заблочить цикл asyncio
+        ans = await asyncio.to_thread(input, "Create Ensemble for these devices? (y/n): ")
+
+        if ans.strip().lower() == 'y':
+            ensemble_uuid = str(uuid.uuid4())
+            print(f"\n[Ensemble Manager] Creating Ensemble with UUID: {ensemble_uuid}")
+
+            # Сохраняем в память
+            for dev in devices_snapshot:
+                self.ensemble_devices[dev.epr] = ensemble_uuid
+
+            # Рассылаем UUID на устройства
+            for dev in devices_snapshot:
+                dev.apply_ensemble_context(ensemble_uuid)
+        else:
+            print("[Ensemble Manager] Ensemble creation aborted.")
+
     async def _discovery_loop(self):
         self.manager_loop = asyncio.get_running_loop()  # Сохраняем ссылку на цикл для воркеров
 
@@ -128,6 +193,8 @@ class SdcMyConsumer(QObject):
 
         self.discovery = WSDiscovery(local_ip)
         self.discovery.start()
+
+        self.manager_loop.create_task(self._ensemble_formation_task())
 
         while self.running:
             try:
