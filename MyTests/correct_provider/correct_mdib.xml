@@ -98,7 +98,7 @@
                 </pm:CoreData>
             </pm:State>
             <pm:State xsi:type="pm:LocationContextState" DescriptorHandle="loc_context_descriptor" Handle="loc_context_state" ContextAssociation="Assoc">
-                <pm:LocationDetail Room="MockRoom" Facility="ICU" Bed="MockBed" />
+                <pm:LocationDetail Room="OR-1" Facility="ICU" Bed="MockBed" />
             </pm:State>
             <pm:State xsi:type="pm:EnsembleContextState" DescriptorHandle="ens_context_descriptor" Handle="ens_context_state" ContextAssociation="Assoc">
                  <pm:Identification Root="b1111111-1111-1111-1111-111111111111" Extension="initial">

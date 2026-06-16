@@ -45,6 +45,7 @@ class SdcMyConsumer(QObject):
         self.running = True
         self.devices = {}  # Registry: { UUID (epr): DeviceHandler_Object }
         self.ensemble_devices = {}  # { epr: ensemble_uuid }
+        self.orchestrator_room = "OR-1"  # Жестко зашитая операционная Оркестратора по умолчанию
         self.lock = threading.Lock()  # Ensures safe access to self.devices dictionary
         self.discovery = None  # Reference to WSDiscovery instance
 
@@ -116,9 +117,9 @@ class SdcMyConsumer(QObject):
         asyncio.run(self._discovery_loop())
 
     async def _ensemble_formation_task(self):
-        # Ждем 40 секунд после запуска сети
+        # Ждем 10 секунд после запуска сети
         await asyncio.sleep(10)
-        print("\n[Ensemble Manager] 40 seconds passed. Checking connected devices...")
+        print("\n[Ensemble Manager] Checking connected devices...")
 
         with self.lock:
             # Копируем список устройств, чтобы безопасно итерировать
@@ -130,13 +131,57 @@ class SdcMyConsumer(QObject):
 
         from sdc11073.xml_types import pm_qnames as pm
 
-        # Сбор данных с устройств
-        print("-" * 40)
+        # Фильтруем устройства: если Room не совпадает с операционной Оркестратора
+        # или ActivationState == FAILURE, устройство должно удаляться из массива devices_snapshot
+        valid_devices = []
         for dev in devices_snapshot:
             with dev.data_lock:
                 if not dev.mdib:
                     continue
 
+                # 1. Считываем LocationContext
+                room_str = "Unknown"
+                loc_states = dev.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
+                if loc_states and loc_states[0].LocationDetail:
+                    room_str = loc_states[0].LocationDetail.Room or "Unknown"
+
+                # 2. Проверяем ActivationState == FAILURE во всех MdsState и VmdState
+                has_failure = False
+                vmd_states = dev.mdib.states.NODETYPE.get(pm.VmdState, [])
+                for s in vmd_states:
+                    act_state = getattr(s, 'ActivationState', None)
+                    if act_state and str(act_state).lower() in ("fail", "failure"):
+                        has_failure = True
+                        break
+
+                mds_states = dev.mdib.states.NODETYPE.get(pm.MdsState, [])
+                for s in mds_states:
+                    act_state = getattr(s, 'ActivationState', None)
+                    if act_state and str(act_state).lower() in ("fail", "failure"):
+                        has_failure = True
+                        break
+
+                # Если комната совпадает с операционной Оркестратора и нет FAILURE
+                if room_str == self.orchestrator_room and not has_failure:
+                    valid_devices.append(dev)
+                else:
+                    reason = []
+                    if room_str != self.orchestrator_room:
+                        reason.append(f"Room mismatch ('{room_str}' != '{self.orchestrator_room}')")
+                    if has_failure:
+                        reason.append("ActivationState is FAILURE")
+                    print(f"[Ensemble Manager] Filtered out device {dev.epr}. Reason: {', '.join(reason)}")
+
+        devices_snapshot = valid_devices
+
+        if not devices_snapshot:
+            print("[Ensemble Manager] No valid devices remaining to form an ensemble.")
+            return
+
+        # Сбор данных с устройств
+        print("-" * 40)
+        for dev in devices_snapshot:
+            with dev.data_lock:
                 # 1. Считываем LocationContext
                 loc_str = "Unknown"
                 loc_states = dev.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])

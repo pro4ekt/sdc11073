@@ -75,8 +75,6 @@ class DeviceHandler(threading.Thread):
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
 
-            # Записываем данные пациента из FHIR в PatientContext провайдера
-            self.apply_patient_to_mdib()
 
             # Регистрируем устройство в OPC UA Gateway только ПОСЛЕ инициализации MDIB
             # ВАЖНО: Делаем вызов потокобезопасным, перекидывая задачу в event loop Менеджера!
@@ -344,19 +342,95 @@ class DeviceHandler(threading.Thread):
 
                 states_to_send = [proposed_state]
 
-            # 4. Выполняем сетевой запрос (без лока, чтобы не блокировать данные при пинге)
+                # 4. Формируем PatientContextState и WorkflowContextState для отправки единым пакетом
+                if self.patient_context:
+                    ctx = self.patient_context
+                    
+                    # PatientContextState
+                    pat_descriptors = self.mdib.descriptions.NODETYPE.get(pm.PatientContextDescriptor, [])
+                    if pat_descriptors:
+                        pat_descriptor = pat_descriptors[0]
+                        existing_pat_states = self.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
+                        if existing_pat_states:
+                            proposed_pat_state = existing_pat_states[0].mk_copy()
+                        else:
+                            proposed_pat_state = self.consumer.context_service_client.mk_proposed_context_object(pat_descriptor.Handle)
+                        
+                        proposed_pat_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+                        proposed_pat_state.CoreData.Givenname = ctx.get('given_name') or None
+                        proposed_pat_state.CoreData.Familyname = ctx.get('family_name') or None
+
+                        weight_num = ctx.get('weight_value')
+                        if weight_num is not None:
+                            weight_val_str = str(weight_num).split()[0] if isinstance(weight_num, str) else str(weight_num)
+                            proposed_pat_state.CoreData.Weight = Measurement(
+                                Decimal(weight_val_str),
+                                CodedValue(ctx.get('weight_unit') or 'kg')
+                            )
+                        else:
+                            proposed_pat_state.CoreData.Weight = None
+
+                        height_num = ctx.get('height_value')
+                        if height_num is not None:
+                            height_val_str = str(height_num).split()[0] if isinstance(height_num, str) else str(height_num)
+                            proposed_pat_state.CoreData.Height = Measurement(
+                                Decimal(height_val_str),
+                                CodedValue(ctx.get('height_unit') or 'cm')
+                            )
+                        else:
+                            proposed_pat_state.CoreData.Height = None
+
+                        states_to_send.append(proposed_pat_state)
+
+                    # WorkflowContextState
+                    wf_descriptors = self.mdib.descriptions.NODETYPE.get(pm.WorkflowContextDescriptor, [])
+                    if wf_descriptors:
+                        wf_descriptor = wf_descriptors[0]
+                        existing_wf_states = self.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
+                        if existing_wf_states:
+                            proposed_wf_state = existing_wf_states[0].mk_copy()
+                        else:
+                            proposed_wf_state = self.consumer.context_service_client.mk_proposed_context_object(wf_descriptor.Handle)
+                        
+                        proposed_wf_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+                        
+                        if not hasattr(proposed_wf_state, 'WorkflowDetail') or proposed_wf_state.WorkflowDetail is None:
+                            proposed_wf_state.WorkflowDetail = pm_types.WorkflowDetail()
+
+                        # Привязка ID Пациента
+                        patient_id = ctx.get('patient_id')
+                        if patient_id:
+                            patient_data = pm_types.PatientDemographicsCoreData()
+                            patient_identifier = pm_types.InstanceIdentifier(root="Hospital_FHIR", extension_string=str(patient_id))
+                            patient_data.Identification.append(patient_identifier)
+                            proposed_wf_state.WorkflowDetail.Patient = patient_data
+
+                        # Внедрение кода заболевания
+                        conditions = ctx.get('conditions', [])
+                        if conditions:
+                            if not proposed_wf_state.WorkflowDetail.DangerCode:
+                                proposed_wf_state.WorkflowDetail.DangerCode = []
+                            proposed_wf_state.WorkflowDetail.DangerCode.clear()
+
+                            for condition in conditions:
+                                danger_code_obj = pm_types.CodedValue(str(condition))
+                                proposed_wf_state.WorkflowDetail.DangerCode.append(danger_code_obj)
+
+                        states_to_send.append(proposed_wf_state)
+
+            # 5. Выполняем единый сетевой запрос (без лока, чтобы не блокировать данные при пинге)
             if self.consumer.context_service_client:
-                print(f"[Worker {self.epr}] Sending EnsembleContext SetContextState...")
+                print(f"[Worker {self.epr}] Sending EnsembleContext along with Patient and Workflow Contexts in a single SetContextState payload...")
                 self.consumer.context_service_client.set_context_state(
                     operation_handle=operation_handle,
                     proposed_context_states=states_to_send
                 )
-                print(f"[Worker {self.epr}] EnsembleContext applied successfully!")
+                print(f"[Worker {self.epr}] All Contexts applied successfully in one batch!")
             else:
                 print(f"[Worker {self.epr}] No context_service_client available.")
 
         except Exception as e:
-            print(f"[Worker {self.epr}] Failed to apply EnsembleContext: {e}")
+            print(f"[Worker {self.epr}] Failed to apply contexts in batch: {e}")
 
     def on_metric_update(self, metrics_by_handle):
         """Callback invoked by SDC library when metrics change remotely."""
