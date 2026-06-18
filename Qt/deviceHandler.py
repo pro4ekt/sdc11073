@@ -235,17 +235,67 @@ class DeviceHandler(threading.Thread):
             # ------------------------------------------------------------------
             # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция пропусков репортов)
             # ------------------------------------------------------------------
-            # mdib_version — обычное свойство ConsumerMdib (не ObservableProperty),
-            # поэтому bind() к нему невозможен. Вместо этого используем два механизма:
+            # ЧТО ТАКОЕ ObservableProperty (механизм sdc11073):
+            # ─────────────────────────────────────────────────────────────────
+            # ObservableProperty — это Python-дескриптор (аналог property), объявленный
+            # на уровне класса ConsumerMdib. Например:
             #
-            # Механизм 1: sequence_or_instance_id_changed_event (ObservableProperty)
+            #   class ConsumerMdib:
+            #       sequence_or_instance_id_changed_event = ObservableProperty()
+            #       metrics_by_handle                     = ObservableProperty()
+            #       alert_by_handle                       = ObservableProperty()
+            #       ...
+            #
+            # Дескриптор перехватывает операцию присваивания (=) и при каждом
+            # изменении значения автоматически вызывает всех зарегистрированных
+            # подписчиков. Внутри это выглядит примерно так:
+            #
+            #   class ObservableProperty:
+            #       def __set__(self, obj, value):
+            #           obj._storage[self.name] = value       # сохраняем значение
+            #           for cb in obj._subscribers[self.name]: # уведомляем всех
+            #               cb(value)
+            #
+            # КТО ДЕЛАЕТ ПРИСВАИВАНИЕ:
+            # sdc11073, когда получает входящий SOAP-репорт от устройства:
+            #
+            #   # Внутри ConsumerMdib (упрощённо):
+            #   def _on_episodic_metric_report(self, report):
+            #       states = {s.DescriptorHandle: s for s in report.states}
+            #       self.metrics_by_handle = states   # ← ObservableProperty срабатывает здесь
+            #       # → все подписанные callback'и вызываются автоматически
+            #
+            # КАК ПОДПИСАТЬСЯ — функция observableproperties.bind():
+            #   observableproperties.bind(obj, имя_поля=callback)
+            #   Эквивалентно: obj._subscribers['имя_поля'].append(callback)
+            #
+            # ВАЖНО — НЕ ВСЕ ПОЛЯ ConsumerMdib являются ObservableProperty.
+            # Список ObservableProperty в ConsumerMdib (можно привязать через bind()):
+            #   ✓ sequence_or_instance_id_changed_event — перезапуск/смена сессии
+            #   ✓ metrics_by_handle     — EpisodicMetricReport
+            #   ✓ alert_by_handle       — EpisodicAlertReport
+            #   ✓ operation_by_handle   — EpisodicOperationalStateReport
+            #   ✓ context_by_handle     — EpisodicContextReport
+            #   ✓ component_by_handle   — EpisodicComponentReport
+            #   ✓ waveform_by_handle    — WaveformStream
+            #   ✓ description_modifications — DescriptionModificationReport
+            #
+            # Обычные атрибуты (bind() к ним вызовет ошибку):
+            #   ✗ mdib_version  — просто int, обновляется внутри при каждом репорте,
+            #                     но НЕ через ObservableProperty → нельзя подписаться.
+            #
+            # Именно поэтому мы используем два механизма ниже:
+            # ─────────────────────────────────────────────────────────────────
+            #
+            # Механизм 1: sequence_or_instance_id_changed_event (ObservableProperty ✓)
             #   Срабатывает когда устройство изменяет SequenceId или InstanceId —
             #   это признак перезапуска или сброса сессии на стороне устройства.
-            #   Callback вызывается из потока уведомлений sdc11073.
+            #   Callback (_on_sequence_id_changed) вызывается из потока уведомлений sdc11073.
             #
             # Механизм 2: Проверка gap'а в основном цикле мониторинга (ниже).
             #   После каждого успешного пинга сравниваем self.mdib.mdib_version
-            #   с self._last_mdib_version. Если разница > 1 → потеряны репорты.
+            #   (обычный int) с self._last_mdib_version напрямую.
+            #   Если разница > 1 → между пингами потеряны репорты.
             observableproperties.bind(
                 self.mdib,
                 sequence_or_instance_id_changed_event=self._on_sequence_id_changed
@@ -254,10 +304,20 @@ class DeviceHandler(threading.Thread):
             # ------------------------------------------------------------------
             # ШАГ 3: Подписка на push-уведомления через observableproperties
             # ------------------------------------------------------------------
-            # bind() регистрирует callback'и, которые вызываются библиотекой sdc11073
-            # в момент получения соответствующего отчёта от устройства.
-            # metrics_by_handle — изменения значений метрик (температура, давление и т.д.)
-            # alert_by_handle   — изменения состояний тревог
+            # Используем тот же механизм ObservableProperty (см. описание выше).
+            #
+            # Поток данных для metrics_by_handle:
+            #   Устройство (сеть)
+            #     ↓  SOAP EpisodicMetricReport
+            #   sdc11073 внутренний поток уведомлений
+            #     ↓  ConsumerMdib._on_episodic_metric_report()
+            #     ↓  self.metrics_by_handle = { handle: MetricState }
+            #   ObservableProperty.__set__() → вызывает подписчиков
+            #     ↓
+            #   on_metric_update(metrics_by_handle)  ← наш callback
+            #
+            # Аналогично для alert_by_handle — только триггером служит EpisodicAlertReport.
+            #
             # ПРИМЕЧАНИЕ: сейчас оба callback'а просто делают return (OPC UA отключён),
             # но инфраструктура сохранена для будущего использования.
             observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
