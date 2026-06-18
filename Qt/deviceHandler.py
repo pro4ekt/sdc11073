@@ -233,13 +233,23 @@ class DeviceHandler(threading.Thread):
                 self._last_mdib_version = self.mdib.mdib_version
 
             # ------------------------------------------------------------------
-            # ШАГ 2b: Подписка на изменения MdibVersion (SDPi-A R1030/R1031)
+            # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция пропусков репортов)
             # ------------------------------------------------------------------
-            # Каждый входящий SOAP-репорт увеличивает mdib_version на 1.
-            # Если версия прыгнула сразу на N > 1 — значит N-1 репортов были потеряны
-            # (сетевой сбой без разрыва TCP). Это могло привести к пропуску критических тревог.
-            # Callback вызывается из потока обработки уведомлений sdc11073 (не из asyncio loop).
-            observableproperties.bind(self.mdib, mdib_version=self._on_mdib_version_changed)
+            # mdib_version — обычное свойство ConsumerMdib (не ObservableProperty),
+            # поэтому bind() к нему невозможен. Вместо этого используем два механизма:
+            #
+            # Механизм 1: sequence_or_instance_id_changed_event (ObservableProperty)
+            #   Срабатывает когда устройство изменяет SequenceId или InstanceId —
+            #   это признак перезапуска или сброса сессии на стороне устройства.
+            #   Callback вызывается из потока уведомлений sdc11073.
+            #
+            # Механизм 2: Проверка gap'а в основном цикле мониторинга (ниже).
+            #   После каждого успешного пинга сравниваем self.mdib.mdib_version
+            #   с self._last_mdib_version. Если разница > 1 → потеряны репорты.
+            observableproperties.bind(
+                self.mdib,
+                sequence_or_instance_id_changed_event=self._on_sequence_id_changed
+            )
 
             # ------------------------------------------------------------------
             # ШАГ 3: Подписка на push-уведомления через observableproperties
@@ -316,6 +326,29 @@ class DeviceHandler(threading.Thread):
                         # Если ContextService недоступен (редкий случай) — пропускаем пинг.
                         # В этом случае missed_heartbeats не сбрасывается, что правильно.
                     missed_heartbeats = 0  # Пинг успешен — сбрасываем счётчик
+
+                    # ----------------------------------------------------------
+                    # SDPi-A R1030/R1031: проверка пропуска SOAP-репортов
+                    # ----------------------------------------------------------
+                    # mdib_version увеличивается на 1 при каждом EpisodicReport.
+                    # Проверяем это здесь (не через bind), т.к. mdib_version —
+                    # обычное свойство (не ObservableProperty) в ConsumerMdib.
+                    current_version = self.mdib.mdib_version
+                    if self._last_mdib_version is not None and current_version is not None:
+                        gap = current_version - self._last_mdib_version
+                        if gap > 1:
+                            missed = gap - 1
+                            print(f"[Worker {self.epr}] WARNING SDPi-A R1030: MDIB version gap! "
+                                  f"Expected {self._last_mdib_version + 1}, got {current_version}. "
+                                  f"Missed {missed} report(s) — possible lost alert/metric data.")
+                            if gap > 5:
+                                # Слишком большой пропуск — переподключаемся для свежего GetMdib
+                                print(f"[Worker {self.epr}] Gap {gap} exceeds threshold. "
+                                      f"Forcing reconnect to resync MDIB.")
+                                self.error_occurred = True
+                                break
+                    self._last_mdib_version = current_version
+
                 except Exception as e:
                     missed_heartbeats += 1
                     print(f"[Worker {self.epr}] Ping failed ({missed_heartbeats}/{MAX_MISSED}): {e}")
@@ -874,59 +907,38 @@ class DeviceHandler(threading.Thread):
             print(f"[Worker {self.epr}] DEV-49: Error during graceful shutdown: {e}")
 
     # =========================================================================
-    # SDPi-A R1030/R1031: Детекция пропущенных SOAP-репортов
+    # SDPi-A R1030/R1031: Детекция перезапуска / смены сессии устройства
     # =========================================================================
-    def _on_mdib_version_changed(self, mdib_version: int):
+    def _on_sequence_id_changed(self, sequence_or_instance_id_changed_event: bool):
         """
-        Callback для observableproperties: вызывается при изменении MdibVersion.
+        Callback для observableproperties: срабатывает когда устройство изменяет
+        SequenceId или InstanceId в заголовках SOAP-репортов.
 
-        Каждый SOAP EpisodicReport (метрики, тревоги, контексты) атомарно увеличивает
-        mdib_version на 1. Прыжок версии на N > 1 означает, что N-1 репортов потеряны
-        — TCP-стек не успел сообщить о сбое, но данные уже рассинхронизированы.
+        SequenceId/InstanceId меняется при:
+          - Перезапуске устройства (reboot)
+          - Сбросе SDC-сессии (software reset)
+          - Смене активного сетевого интерфейса
 
-        ОПАСНОСТЬ: пропущенный AlertReport может означать, что критическая тревога
-        (например, SpO2 < 70%) никогда не будет отображена на дашборде.
+        В любом из этих случаев текущая MDIB-копия устарела:
+        устройство начало новую "жизнь" с новым MDIB.
+        Единственное корректное действие — разорвать соединение и переподключиться,
+        выполнив GetMdib заново для получения актуального состояния всех тревог.
 
-        Стратегия обработки:
-          - Малый пропуск (2–5 репортов): логируем предупреждение, продолжаем.
-            sdc11073 попытается догнать через следующий Periodic Report.
-          - Большой пропуск (> 5 репортов): принудительное переподключение.
-            DeviceHandler завершится, Manager создаст новый и вызовет init_mdib() заново,
-            получая гарантированно актуальное состояние всех тревог и метрик.
+        NOTE: _last_mdib_version сбрасываем в None, чтобы цикл мониторинга
+        не ложно детектировал "gap" при следующем сравнении версий.
 
-        THREAD SAFETY: этот метод вызывается из потока уведомлений sdc11073,
-        а не из asyncio loop. Запись в self.running и self.error_occurred безопасна
-        благодаря GIL Python для атомарных присваиваний bool/int.
+        THREAD SAFETY: вызывается из потока уведомлений sdc11073 (не asyncio loop).
+        Запись bool в self.running/self.error_occurred атомарна благодаря GIL Python.
         """
-        if self._last_mdib_version is None:
-            self._last_mdib_version = mdib_version
-            return
+        if not sequence_or_instance_id_changed_event:
+            return  # False-значение — игнорируем (ObservableProperty может сбрасываться)
 
-        gap = mdib_version - self._last_mdib_version
+        print(f"[Worker {self.epr}] WARNING SDPi-A: SequenceId/InstanceId changed! "
+              f"Device may have restarted — forcing reconnect to resync MDIB.")
+        self._last_mdib_version = None  # Сбрасываем — иначе ложный gap после переподключения
+        self.error_occurred = True
+        self.running = False  # Выход из цикла при следующей итерации
 
-        if gap > 1:
-            missed = gap - 1
-            print(f"[Worker {self.epr}] WARNING SDPi-A R1030: MDIB version gap! "
-                  f"Expected {self._last_mdib_version + 1}, got {mdib_version}. "
-                  f"Missed {missed} report(s) — possible lost alert/metric data.")
-
-            if gap > 5:
-                # Слишком большой пропуск — безопаснее переподключиться и получить
-                # свежий MDIB через GetMdib, чем работать с устаревшей базой тревог.
-                print(f"[Worker {self.epr}] Gap {gap} exceeds threshold (5). "
-                      f"Forcing reconnect to resync MDIB.")
-                self.error_occurred = True
-                self.running = False  # Выход из цикла при следующей итерации
-
-        elif gap < 0:
-            # SequenceId изменился (устройство перезапустилось или сбросило сессию)
-            print(f"[Worker {self.epr}] WARNING: MdibVersion went backwards "
-                  f"({self._last_mdib_version} → {mdib_version}). "
-                  f"Device may have restarted — forcing reconnect.")
-            self.error_occurred = True
-            self.running = False
-
-        self._last_mdib_version = mdib_version
 
     # =========================================================================
     # Сигнал остановки
