@@ -75,8 +75,6 @@
         </pm:MdDescription>
         <pm:MdState>
             <pm:State xsi:type="pm:ClockState" DescriptorHandle="clock_decs" RemoteSync="true">
-                <pm:ActiveSyncProtocol Code="">
-                </pm:ActiveSyncProtocol>
             </pm:State>
             <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="pat_ctx_desc" Handle="pat_ctx_state">
                 <pm:CoreData>
