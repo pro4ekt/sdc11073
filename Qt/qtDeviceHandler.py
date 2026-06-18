@@ -1,148 +1,277 @@
+"""
+qtDeviceHandler.py — Qt/QML-обёртка над DeviceHandler для одного SDC-устройства.
+
+АРХИТЕКТУРА (мост между рабочим потоком и UI):
+  DeviceHandler живёт в рабочем потоке и владеет MDIB устройства.
+  QML не может напрямую обращаться к объектам из других потоков.
+
+  Решение — объект QtDeviceHandler (QObject):
+    1. Создаётся в рабочем потоке (вместе с DeviceHandler).
+    2. Перемещается в главный UI-поток через moveToThread().
+    3. Рабочий поток вызывает scheduleUpdate() → Qt-сигнал → handleUpdateTick()
+       выполняется в главном потоке → update_data() читает MDIB.
+
+  Результат: QML видит только чистые свойства (str, list) без знания о потоках.
+
+ПРИНЦИП РАБОТЫ СИГНАЛОВ Qt (для справки):
+  Signal() — декларация сигнала на уровне класса.
+  emit()   — испускание сигнала (потокобезопасно).
+  При пересечении границы потоков Qt автоматически ставит вызов в очередь
+  того потока, в котором живёт объект-получатель (Qt::QueuedConnection).
+"""
+
+import time
+from decimal import Decimal, ROUND_HALF_UP
+
 from PySide6.QtCore import QObject, Signal, Slot, Property
+
+# pm — QName-имена типов BICEPS/SDC для фильтрации объектов MDIB
 from sdc11073.xml_types import pm_qnames as pm
+
+# pm_types — Python-классы с enum'ами и структурами BICEPS
+# Нужны для сравнения Presence (AlertSignalPresence.ON/ACK/LATCH/OFF)
+from sdc11073.xml_types import pm_types
+
 from typing import TYPE_CHECKING
 
+# TYPE_CHECKING = True только при статическом анализе (mypy/PyCharm).
+# Позволяет использовать DeviceHandler в аннотациях, не создавая циклического импорта.
 if TYPE_CHECKING:
     from deviceHandler import DeviceHandler
 
 
 class QtDeviceHandler(QObject):
     """
-    Specialized Worker class for Qt integration.
+    Qt-обёртка над DeviceHandler для одного SDC-устройства.
+
+    Предоставляет QML:
+      - Свойства (Property): patientName, patientRoom, deviceName, deviceValue,
+                             alarmStatus, priority, metrics, operations, epr
+      - Сигналы изменения каждого свойства (notify-сигналы для QML-биндингов)
+      - Слот acknowledgeAlarm() для квитирования тревог из UI
+
+    Потокобезопасность обеспечивается:
+      - Чтением MDIB только через data_lock (неблокирующий acquire)
+      - Передачей обновлений через updateTick Signal (авто-маршалинг Qt)
     """
 
-    # Signals to notify UI of changes
-    patientNameChanged = Signal()
-    patientRoomChanged = Signal()
-    deviceNameChanged = Signal() # RESTORED: Signal for Device Name
-    # Add other signals as needed
-    deviceValueChanged = Signal()
-    alarmStatusChanged = Signal()
-    priorityChanged = Signal()
-    metricsChanged = Signal() # ADDED: Signal for metrics list
-    operationsChanged = Signal() # ADDED: Signal for operations list
+    # =========================================================================
+    # Сигналы изменения свойств (notify-сигналы для QML Property bindings)
+    # =========================================================================
+    # Каждый сигнал соответствует одному @Property и испускается в update_data()
+    # при изменении значения свойства. QML-элементы подписаны автоматически через binding.
 
-    # Internal signal to bridge threads
-    # This signal is emitted from the Worker thread context but connected to a slot in Main thread
+    patientNameChanged  = Signal()   # Имя пациента изменилось
+    patientRoomChanged  = Signal()   # Палата/комната пациента изменилась
+    deviceNameChanged   = Signal()   # Название устройства изменилось
+    deviceValueChanged  = Signal()   # Отображаемое значение метрики изменилось
+    alarmStatusChanged  = Signal()   # Статус тревоги изменился (Off/On/Ack/Latch/COMM_FAILURE)
+    priorityChanged     = Signal()   # Приоритет устройства изменился
+    metricsChanged      = Signal()   # Список метрик обновился
+    operationsChanged   = Signal()   # Список доступных операций обновился
+    eprChanged          = Signal()   # EPR (ID устройства) изменился (теоретически не меняется)
+    connectedChanged    = Signal()   # Статус подключения изменился (резерв)
+
+    # Внутренний сигнал для "переброса" обновления между потоками.
+    # Рабочий поток испускает updateTick → Qt ставит вызов в очередь главного потока
+    # → handleUpdateTick() выполняется в главном потоке → update_data() читает MDIB.
     updateTick = Signal()
 
-    # Add signal for EPR if needed, though usually constant
-    eprChanged = Signal()
-
-    connectedChanged = Signal()
-
     def __init__(self, device: 'DeviceHandler'):
+        """
+        Параметры:
+          device — ссылка на DeviceHandler (рабочий поток устройства).
+                   Используется для доступа к MDIB и consumer в update_data().
+        """
         super().__init__()
-        self._device = device # Keep reference (WeakRef recommended in production)
 
-        # Initialize defaults
-        self._patientRoom = "Unknown"
-        self._patientName = "Unknown"
-        self._deviceName = "SDC Device" # RESTORED: Default Initialization
+        # Храним ссылку на DeviceHandler.
+        # В production-коде лучше использовать weakref, чтобы избежать
+        # удержания DeviceHandler в памяти после его остановки.
+        self._device = device
 
-        # Placeholder data for UI - these would come from MDIB in real app
-        self._deviceValue = "---"
-        self._alarmStatus = ""
-        self._priority = "3"
-        self._metrics = [] # ADDED: Initialize list
-        self._operations = [] # ADDED: Initialize operations list
+        # Начальные значения свойств (показываются до первого успешного update_data())
+        self._patientRoom  = "Unknown"
+        self._patientName  = "Unknown"
+        self._deviceName   = "SDC Device"
+        self._deviceValue  = "---"
+        self._alarmStatus  = ""
+        self._priority     = "3"
+        self._metrics      = []   # Список dict'ов: {descriptor, state, metricname, value, samples, alarm}
+        self._operations   = []   # Список dict'ов: {name, handle, mode, type}
 
-        # Connect internal signal for thread-hopping
-        # When updateTick is emitted (from any thread), handleUpdateTick runs in the thread this object lives in (Main)
+        # Подключаем внутренний сигнал: любой вызов emit() из любого потока
+        # автоматически вызовет handleUpdateTick() в потоке, которому принадлежит этот объект.
         self.updateTick.connect(self.handleUpdateTick)
 
-        # Initial Data Fetch (Snapshot)
+        # Первичное чтение данных (синхронно, прямо при создании объекта).
+        # В этот момент объект ещё в рабочем потоке, но MDIB уже готов (init_mdib завершён).
         self.update_data()
 
+    # =========================================================================
+    # Потокобезопасный запрос обновления из рабочего потока
+    # =========================================================================
     def scheduleUpdate(self):
         """
-        Thread-safe method to be called from the Worker Thread.
-        Emits a signal which Qt automatically marshals to the Main Thread event loop.
+        Вызывается из рабочего потока DeviceHandler в каждой итерации цикла мониторинга.
+        Испускает updateTick — Qt автоматически маршалирует его в главный поток.
+        НЕ выполняет никакой работы напрямую — только сигнализирует.
         """
         self.updateTick.emit()
 
     @Slot()
     def handleUpdateTick(self):
-        """Slot called from Worker thread via Signal to ensure updates run on Main Thread."""
+        """
+        Слот, вызываемый в ГЛАВНОМ ПОТОКЕ при получении updateTick.
+        Декоратор @Slot() — явная регистрация как Qt-слот (нужно для корректной маршалинги).
+        """
         self.update_data()
 
+    # =========================================================================
+    # Основной метод чтения MDIB и обновления свойств
+    # =========================================================================
     def update_data(self):
-        """Reads data from the device MDIB and updates properties."""
+        """
+        Читает актуальные данные из MDIB устройства и обновляет все Qt-свойства.
+
+        ВЫЗЫВАЕТСЯ: в главном потоке (через updateTick Signal).
+        БЛОКИРОВКА: использует неблокирующий acquire(blocking=False) на data_lock.
+                    Если рабочий поток занят (держит лок) — пропускаем этот кадр,
+                    чтобы не зависать в UI.
+
+        ПОРЯДОК ОБНОВЛЕНИЙ:
+          1. LocationContext → patientRoom
+          2. PatientContext  → patientName
+          3. Имя устройства  → deviceName
+          4. Матрица тревог  → alarmStatus (On > Ack > Latch > Off)
+          5. SelfCheckPeriod → COMM_FAILURE если AlertSystem молчит слишком долго
+          6. Метрики         → metrics (с округлением по StepWidth)
+          7. Операции        → operations
+          8. Главное значение → deviceValue (первая тревожная метрика или последняя)
+        """
         if not self._device:
             return
 
-        # Attempt to acquire lock non-blocking to avoid freezing UI if worker is busy
+        # Пытаемся захватить лок без блокировки.
+        # Если рабочий поток сейчас пишет в MDIB — возвращаемся; следующий updateTick всё обновит.
         if hasattr(self._device, 'data_lock'):
             if not self._device.data_lock.acquire(blocking=False):
-                return # Skip this update frame if locked
+                return  # Пропускаем кадр — MDIB занят
         else:
-            # Fallback if lock doesn't exist yet (initialization race)
+            # data_lock ещё не создан (гонка при инициализации) — пропускаем
             return
 
         try:
             if not self._device.mdib:
-                return
+                return  # MDIB ещё не инициализирован (init_mdib не завершён)
 
-            locations = [l for l in self._device.mdib.context_states.objects if l.NODETYPE == pm.LocationContextState]
-            patients = [p for p in self._device.mdib.context_states.objects if p.NODETYPE == pm.PatientContextState]
+            # ------------------------------------------------------------------
+            # 1. КОНТЕКСТ МЕСТОПОЛОЖЕНИЯ (LocationContext)
+            # ------------------------------------------------------------------
+            # LocationContextState содержит данные о палате, корпусе, кровати пациента.
+            # Используем list comprehension вместо NODETYPE.get() для совместимости
+            # с разными версиями sdc11073 (некоторые не индексируют context_states по NODETYPE).
+            locations = [l for l in self._device.mdib.context_states.objects
+                         if l.NODETYPE == pm.LocationContextState]
+            patients  = [p for p in self._device.mdib.context_states.objects
+                         if p.NODETYPE == pm.PatientContextState]
 
-            # Safely access data
             if locations and locations[0].LocationDetail:
+                # Room может быть None или пустой строкой — заменяем на "Unknown"
                 self._patientRoom = locations[0].LocationDetail.Room or "Unknown"
 
+            # ------------------------------------------------------------------
+            # 2. КОНТЕКСТ ПАЦИЕНТА (PatientContext)
+            # ------------------------------------------------------------------
+            # CoreData.Givenname = имя, CoreData.Familyname = фамилия.
+            # ВАЖНО: Birthname (девичья фамилия) — это не то же самое, что Familyname!
             if patients and patients[0].CoreData:
-                 self._patientName = patients[0].CoreData.Birthname or "Unknown"
+                given  = patients[0].CoreData.Givenname  or ""
+                family = patients[0].CoreData.Familyname or ""
+                # strip() убирает лишние пробелы если одно из полей пустое
+                self._patientName = f"{given} {family}".strip() or "Unknown"
 
-            # --- DEVICE NAME LOGIC ---
-            # Priority 1: DPWS FriendlyName (provider.device.FriendlyName)
-            # Priority 2: MDIB MdsDescriptor ModelName
-            # Priority 3: MDIB MdsDescriptor Type
+            # ------------------------------------------------------------------
+            # 3. ИМЯ УСТРОЙСТВА (приоритетная цепочка)
+            # ------------------------------------------------------------------
+            # Попытка 1: DPWS FriendlyName — самое человекочитаемое имя
+            # Попытка 2: MDIB MdsDescriptor.ModelName — модель устройства
+            # Попытка 3: MDIB MdsDescriptor.Type.localname — технический тип
 
-            name_candidate = "SDC Device"
+            name_candidate = "SDC Device"  # Fallback по умолчанию
 
-            # 1. Try DPWS FriendlyName
             try:
+                # host_description — DPWS-метаданные провайдера
+                # this_device.FriendlyName — список локализованных строк, берём первую
                 name_candidate = self._device.consumer.host_description.this_device.FriendlyName[0].text
             except Exception:
-                pass
+                pass  # FriendlyName может отсутствовать — не страшно
 
-            # 2. If still default, try MDIB MdsDescriptor
             if name_candidate == "SDC Device":
-                # Usually found in the root MDS descriptor
-                mds_descriptors = [d for d in self._device.mdib.descriptions.objects if d.NODETYPE == pm.MdsDescriptor]
+                # MdsDescriptor — корневой дескриптор устройства в иерархии BICEPS
+                mds_descriptors = [d for d in self._device.mdib.descriptions.objects
+                                   if d.NODETYPE == pm.MdsDescriptor]
                 if mds_descriptors:
-                    mds = mds_descriptors[0] # Use the first MDS found
+                    mds = mds_descriptors[0]
                     if mds.ModelName:
                         name_candidate = mds.ModelName[0].text
                     elif mds.Type:
+                        # localname — локальная часть XML QName (без namespace)
                         name_candidate = mds.Type.localname
 
+            # Обновляем свойство и испускаем сигнал только при изменении (оптимизация)
             if self._deviceName != name_candidate:
                 self._deviceName = name_candidate
                 self.deviceNameChanged.emit()
 
-            # --- ALARM LOGIC START ---
+            # ------------------------------------------------------------------
+            # 4. ЛОГИКА ТРЕВОГ (Alert Logic)
+            # ------------------------------------------------------------------
+            # active_alert_handles — set handle'ов метрик, на которые есть активная тревога.
+            # Используется далее при построении списка метрик для пометки тревожных.
             active_alert_handles = set()
-            new_alarm_status = "Off"
+            new_alarm_status = "Off"  # Начальный статус — тревог нет
 
-            # 1. Alert Signals (Global Alarm Status)
-            # Find signals that are ON and Active (not suppressed/paused) to set the Device's global alarm state.
+            # Собираем все AlertSignalState из MDIB
             alert_signals = [
                 s for s in self._device.mdib.states.objects
                 if s.NODETYPE == pm.AlertSignalState
             ]
 
+            # ------------------------------------------------------------------
+            # 4a. Матрица приоритетов тревог (BICEPS AlertSignalPresence)
+            # ------------------------------------------------------------------
+            # Стандарт BICEPS определяет 4 значения Presence у AlertSignalState:
+            #   On    (3) — тревога активна, звук + индикация включены
+            #   Ack   (2) — пользователь квитировал: звук отключён, индикация остаётся
+            #   Latch (1) — причина устранена, но требуется ручной сброс
+            #   Off   (0) — тревога неактивна
+            #
+            # Итерируем ВСЕ сигналы и выбираем НАИВЫСШИЙ приоритет.
+            # Нельзя останавливаться на первом "On" — нужно проверить все сигналы.
+            _ALARM_PRIORITY = {
+                str(pm_types.AlertSignalPresence.ON):    3,
+                str(pm_types.AlertSignalPresence.ACK):   2,
+                str(pm_types.AlertSignalPresence.LATCH): 1,
+                str(pm_types.AlertSignalPresence.OFF):   0,
+            }
+            highest_priority = 0
+
             for s in alert_signals:
-                # Robust check for 'On' state (handles both Enum and String representation)
-                is_present = str(s.Presence) == 'On'
-                #is_active = str(s.ActivationState) == 'On'
+                presence_str = str(s.Presence)
+                priority = _ALARM_PRIORITY.get(presence_str, 0)
+                if priority > highest_priority:
+                    highest_priority = priority
+                    # Сохраняем строковое значение напрямую ('On', 'Ack', 'Latch', 'Off')
+                    new_alarm_status = presence_str
 
-                if is_present:
-                    new_alarm_status = "On"
-                    break
-
-            # 2. Alert Conditions (Metric Associations)
-            # Find active physiological alarms (Conditions) to highlight specific metrics.
+            # ------------------------------------------------------------------
+            # 4b. Alert Conditions → источники тревог (для подсветки метрик)
+            # ------------------------------------------------------------------
+            # AlertConditionState.Presence = True означает, что условие тревоги выполнено
+            # (например, значение вышло за допустимый диапазон).
+            # У каждого AlertConditionDescriptor есть поле Source — список handle'ов метрик,
+            # которые "провоцируют" эту тревогу. Собираем их для подсветки в UI.
             alert_condition_types = [pm.AlertConditionState, pm.LimitAlertConditionState]
             active_conditions = [
                 s for s in self._device.mdib.states.objects
@@ -150,132 +279,196 @@ class QtDeviceHandler(QObject):
             ]
 
             for alert in active_conditions:
-                # Find the descriptor to check for sources
-                alert_desc = self._device.mdib.descriptions.handle.get_one(alert.DescriptorHandle, allow_none=True)
-
-                # The 'Source' field contains a list of Handles (metrics) that this alert monitors
+                alert_desc = self._device.mdib.descriptions.handle.get_one(
+                    alert.DescriptorHandle, allow_none=True
+                )
+                # Source — список handle'ов метрик, которые мониторит эта тревога
                 if alert_desc and hasattr(alert_desc, 'Source') and alert_desc.Source:
                     for source_handle in alert_desc.Source:
                         active_alert_handles.add(source_handle)
 
-            # Update Global Status property if changed
+            # ------------------------------------------------------------------
+            # 4c. SelfCheckPeriod validation (IHE SDPi / BICEPS)
+            # ------------------------------------------------------------------
+            # AlertSystemDescriptor.SelfCheckPeriod — ожидаемый интервал самодиагностики
+            # системы тревог в секундах (тип DurationType = float).
+            # AlertSystemState.LastSelfCheck — Unix-timestamp последней самодиагностики.
+            #
+            # Если текущее время превышает LastSelfCheck + SelfCheckPeriod * 1.5 →
+            # AlertSystem молчит слишком долго → переводим устройство в COMM_FAILURE.
+            # Коэффициент 1.5 даёт допуск на задержки сети (50% сверх нормы).
+            _SELF_CHECK_MULTIPLIER = 1.5
+            alert_system_state_list = [
+                s for s in self._device.mdib.states.objects
+                if s.NODETYPE == pm.AlertSystemState
+            ]
+            for als in alert_system_state_list:
+                als_desc = self._device.mdib.descriptions.handle.get_one(
+                    als.DescriptorHandle, allow_none=True
+                )
+                # Проверяем только если оба поля заполнены (не все устройства публикуют SelfCheck)
+                if als_desc and als_desc.SelfCheckPeriod and als.LastSelfCheck:
+                    # Перевод таймаута в миллисекунды (SelfCheckPeriod в секундах)
+                    deadline_ms = als_desc.SelfCheckPeriod * _SELF_CHECK_MULTIPLIER * 1000
+                    # Текущее время также умножаем на 1000, чтобы получить миллисекунды
+                    current_time_ms = time.time() * 1000
+
+                    if current_time_ms - float(als.LastSelfCheck) > deadline_ms:
+                        print(f"[QtHandler {self._device.epr}] COMMUNICATION FAILURE: "
+                              f"AlertSystem '{als.DescriptorHandle}' SelfCheck overdue!")
+                        # Перекрываем любой другой статус — это критическая ошибка коммуникации
+                        new_alarm_status = "COMM_FAILURE"
+                        break  # Достаточно одного нарушения
+
+            # Обновляем свойство alarmStatus только при реальном изменении
             if self._alarmStatus != new_alarm_status:
                 self._alarmStatus = new_alarm_status
                 self.alarmStatusChanged.emit()
             # --- ALARM LOGIC END ---
 
-            # 3. Metrics (Dynamic)
-            # Find all NumericMetricStates, String, RealTime
-            metric_types = [pm.NumericMetricState, pm.StringMetricState, pm.RealTimeSampleArrayMetricState]
-            metric_states = [m for m in self._device.mdib.states.objects if m.NODETYPE in metric_types]
+            # ------------------------------------------------------------------
+            # 5. СПИСОК МЕТРИК (Metrics)
+            # ------------------------------------------------------------------
+            # Собираем все NumericMetricState, StringMetricState, RealTimeSampleArrayMetricState.
+            # Для каждого формируем dict с данными для QML.
+            metric_types = [
+                pm.NumericMetricState,
+                pm.StringMetricState,
+                pm.RealTimeSampleArrayMetricState
+            ]
+            metric_states = [m for m in self._device.mdib.states.objects
+                             if m.NODETYPE in metric_types]
 
             new_metrics_list = []
 
             for state in metric_states:
-                # Find corresponding descriptor to get the Name/Label
+                # Дескриптор содержит метаданные: handle, единицы измерения, диапазон и т.д.
                 descriptor = self._device.mdib.descriptions.handle.get_one(state.DescriptorHandle)
 
-                # Prepare QML helper strings
-                metric_name = descriptor.Handle
+                # handle дескриптора используется как имя метрики в UI
+                metric_name    = descriptor.Handle
+                metric_value   = "---"   # Значение по умолчанию (нет данных)
+                metric_samples = []      # Для waveform-метрик: список float-значений
 
-                metric_value = "---"
-                metric_samples = []
-
-                # Check if this metric is causing an alarm
+                # Проверяем, является ли эта метрика источником активной тревоги
                 metric_alarm = "On" if descriptor.Handle in active_alert_handles else "Off"
 
-                # FIXED logic: Safely handle types that don't have a scalar 'Value' field (like RealTime Waveforms)
                 try:
                     if state.NODETYPE == pm.RealTimeSampleArrayMetricState:
+                        # RealTime waveform — нет скалярного Value, только массив Samples
                         metric_value = "Waveform"
-                        # Extract samples specifically for graphing
                         if state.MetricValue and state.MetricValue.Samples:
+                            # Samples — список Decimal → конвертируем в float для QML
                             metric_samples = [float(x) for x in state.MetricValue.Samples]
+
                     elif state.MetricValue:
-                        # Use getattr to safely try accessing 'Value'.
-                        # This prevents crash if the property doesn't exist on this metric type.
+                        # NumericMetric и StringMetric имеют поле Value
+                        # getattr с default None защищает от AttributeError
                         val = getattr(state.MetricValue, 'Value', None)
                         if val is not None:
+                            # --------------------------------------------------
+                            # ОКРУГЛЕНИЕ ПО StepWidth (только для NumericMetric)
+                            # --------------------------------------------------
+                            # NumericMetricDescriptor.TechnicalRange[0].StepWidth —
+                            # шаг допустимых значений (например, Decimal('0.1') для одного знака).
+                            # quantize() округляет val до нужного числа знаков после запятой.
+                            # ROUND_HALF_UP: 120.005 при step=0.1 → 120.0 (стандартное медицинское округление)
+                            try:
+                                if (state.NODETYPE == pm.NumericMetricState and
+                                        hasattr(descriptor, 'TechnicalRange') and
+                                        descriptor.TechnicalRange and
+                                        descriptor.TechnicalRange[0].StepWidth is not None):
+                                    step = descriptor.TechnicalRange[0].StepWidth
+                                    val = Decimal(str(val)).quantize(step, rounding=ROUND_HALF_UP)
+                            except Exception:
+                                pass  # Если округление не удалось — используем исходное значение
                             metric_value = str(val)
-                except Exception:
-                    # If conversion fails, keep default "---"
-                    pass
 
-                # Store raw descriptor and state as requested, plus QML strings
+                except Exception:
+                    pass  # Ошибка конверсии — оставляем "---"
+
                 new_metrics_list.append({
-                    "descriptor": descriptor,
-                    "state": state,
-                    "metricname": metric_name,
-                    "value": metric_value,
-                    "samples": metric_samples, # New field containing list of floats for graph
-                    "alarm": metric_alarm
+                    "descriptor": descriptor,    # Сырой объект дескриптора (для доп. обработки в QML)
+                    "state":      state,         # Сырой объект стейта
+                    "metricname": metric_name,   # Строка: handle метрики (для отображения)
+                    "value":      metric_value,  # Строка: текущее значение (или "---"/"Waveform")
+                    "samples":    metric_samples, # list[float]: для графика waveform
+                    "alarm":      metric_alarm   # "On" / "Off": есть ли тревога по этой метрике
                 })
 
-            # Simple diff check or just emit (optimization: equality check on list content)
             self._metrics = new_metrics_list
             self.metricsChanged.emit()
 
-            # 4. Operations (Dynamic)
-            # CHANGED: Find operation states directly instead of descriptors.
-            # This covers SetValue, Activate, SetString, etc. more reliably.
+            # ------------------------------------------------------------------
+            # 6. СПИСОК ОПЕРАЦИЙ (Operations)
+            # ------------------------------------------------------------------
+            # Операции — это действия, которые Consumer может выполнить на Provider'е:
+            # SetValue, SetString, Activate, SetContextState и т.д.
+            # Ищем по стейтам операций (не по дескрипторам) — это надёжнее,
+            # так как стейт существует только для реально активных операций.
             op_state_types = [
-                pm.SetValueOperationState,
-                pm.SetStringOperationState,
-                pm.ActivateOperationState,
-                pm.SetContextStateOperationState,
-                pm.SetMetricStateOperationState,
-                pm.SetAlertStateOperationState,
-                pm.SetComponentStateOperationState
+                pm.SetValueOperationState,         # Установка числового значения
+                pm.SetStringOperationState,        # Установка строкового значения
+                pm.ActivateOperationState,         # Активация команды (без параметров)
+                pm.SetContextStateOperationState,  # Изменение контекста
+                pm.SetMetricStateOperationState,   # Изменение состояния метрики
+                pm.SetAlertStateOperationState,    # Изменение состояния тревоги
+                pm.SetComponentStateOperationState # Изменение состояния компонента
             ]
 
-            op_states = [s for s in self._device.mdib.states.objects if s.NODETYPE in op_state_types]
+            op_states = [s for s in self._device.mdib.states.objects
+                         if s.NODETYPE in op_state_types]
 
             new_ops = []
             for state in op_states:
-                # Find corresponding descriptor to get the Name/Label
-                d = self._device.mdib.descriptions.handle.get_one(state.DescriptorHandle, allow_none=True)
+                d = self._device.mdib.descriptions.handle.get_one(
+                    state.DescriptorHandle, allow_none=True
+                )
                 if not d:
-                    continue
+                    continue  # Дескриптор исчез (например, при динамическом обновлении MDIB)
 
-                op_name = d.Handle
-                # Try to get a human-readable name from ConceptDescription or Code
+                op_name = d.Handle  # Fallback: используем handle как имя
+
+                # Ищем человекочитаемое имя в Type.ConceptDescription или Type.Code
                 if d.Type:
                     txt = None
                     if hasattr(d.Type, 'ConceptDescription') and d.Type.ConceptDescription:
-                         txt = d.Type.ConceptDescription[0].text
-
+                        txt = d.Type.ConceptDescription[0].text  # Предпочтительный вариант
                     if not txt and hasattr(d.Type, 'Code'):
-                        txt = d.Type.Code
-
+                        txt = d.Type.Code  # Технический код как запасной вариант
                     if txt:
                         op_name = txt
 
-                # Check Operating Mode (Enabled/Disabled) from the State directly
+                # OperatingMode: Enabled / Disabled / NA — доступна ли операция сейчас
                 mode = "Enabled"
                 if state.OperatingMode:
                     mode = str(state.OperatingMode)
 
                 new_ops.append({
-                    "name": op_name,
-                    "handle": d.Handle,
-                    "mode": mode,
-                    "type": str(d.NODETYPE.localname)
+                    "name":   op_name,                    # Человекочитаемое имя операции
+                    "handle": d.Handle,                   # Handle для вызова операции
+                    "mode":   mode,                       # Доступность: Enabled/Disabled
+                    "type":   str(d.NODETYPE.localname)   # Тип: SetValueOperation и т.д.
                 })
 
             self._operations = new_ops
             self.operationsChanged.emit()
 
-            # 5. Determine Main Page Value (Alarm Priority)
-            # Logic: If alarm, show the first alarming metric. Else, show the last metric in the list.
+            # ------------------------------------------------------------------
+            # 7. ГЛАВНОЕ ОТОБРАЖАЕМОЕ ЗНАЧЕНИЕ (deviceValue)
+            # ------------------------------------------------------------------
+            # Логика выбора:
+            #   Если есть тревожная метрика → показываем первую (наиболее критичную)
+            #   Иначе → показываем последнюю метрику в списке (самую "свежую")
             display_val = "---"
 
-            # Find first alarming metric
-            alarming_metric = next((m for m in new_metrics_list if m["alarm"] == "On"), None)
+            alarming_metric = next(
+                (m for m in new_metrics_list if m["alarm"] == "On"), None
+            )
 
             if alarming_metric:
                 display_val = f"{alarming_metric['metricname']}: {alarming_metric['value']}"
             elif new_metrics_list:
-                # No alarm, show last metric in the list as requested
                 last_mt = new_metrics_list[-1]
                 display_val = f"{last_mt['metricname']}: {last_mt['value']}"
 
@@ -286,54 +479,81 @@ class QtDeviceHandler(QObject):
         except Exception as e:
             print(f"Error reading data: {e}")
         finally:
+            # ОБЯЗАТЕЛЬНО освобождаем лок, даже если возникло исключение.
+            # Без этого рабочий поток навсегда заблокируется при следующей попытке
+            # взять data_lock (дедлок).
             if hasattr(self._device, 'data_lock'):
                 self._device.data_lock.release()
 
-        """
-        self.value_to_show = "10"
-        self.alert = "None"
-        self.priority = "3"
+    # =========================================================================
+    # Qt Properties — свойства, доступные из QML
+    # =========================================================================
+    # Синтаксис: @Property(тип, notify=сигнал)
+    # notify= указывает QML-движку, какой сигнал означает "значение изменилось".
+    # QML автоматически перерисует все binding'и при получении этого сигнала.
 
-        self._alerts_descriptors = [a for a in device.mdib.descriptions.objects if a.NODETYPE == pm.AlertSystemDescriptor]
-        self._alerts_states = [a for a in device.mdib.states.objects if a.NODETYPE == pm.AlertSystemState]
-        self._metrics_descriptors = [m for m in device.mdib.descriptions.objects if m.NODETYPE == pm.NumericMetricDescriptor]
-        self._metrics_states = [m for m in device.mdib.states.objects if m.NODETYPE == pm.NumericMetricState]
-        #self.operations = [o for o in device.mdib.descriptions.objects if o.NODETYPE == pm.OperationDescriptor]
-
-        """
     @Property(str, notify=patientNameChanged)
     def patientName(self):
+        """Имя пациента: '{Givenname} {Familyname}' или 'Unknown'."""
         return self._patientName
 
     @Property(str, notify=patientRoomChanged)
     def patientRoom(self):
+        """Комната/палата пациента из LocationContextState."""
         return self._patientRoom
 
     @Property(str, notify=eprChanged)
     def epr(self):
-        # Expose the unique ID (EPR) so QML knows which device this is
+        """
+        EPR (Endpoint Reference) — уникальный UUID устройства в сети.
+        Используется QML как уникальный ключ для идентификации устройства в списке.
+        """
         return self._device.epr if self._device else ""
 
-    @Property(str, notify=deviceNameChanged) # RESTORED: Property getter
+    @Property(str, notify=deviceNameChanged)
     def deviceName(self):
+        """Название устройства (DPWS FriendlyName → ModelName → Type → 'SDC Device')."""
         return self._deviceName
 
     @Property(str, notify=deviceValueChanged)
     def deviceValue(self):
+        """
+        Главное значение для отображения на карточке устройства.
+        Формат: 'handle: value'. Приоритет — первая тревожная метрика.
+        """
         return self._deviceValue
 
     @Property(list, notify=metricsChanged)
     def metrics(self):
+        """
+        Список метрик устройства.
+        Каждый элемент: dict {descriptor, state, metricname, value, samples, alarm}.
+        QML может итерировать этот список для отображения таблицы метрик.
+        """
         return self._metrics
 
     @Property(str, notify=alarmStatusChanged)
     def alarmStatus(self):
+        """
+        Глобальный статус тревоги устройства.
+        Возможные значения: 'Off', 'On', 'Ack', 'Latch', 'COMM_FAILURE'.
+        QML использует это для цветовой индикации карточки устройства.
+        """
         return self._alarmStatus
 
     @Property(str, notify=priorityChanged)
     def priority(self):
+        """
+        Приоритет устройства в списке (число в виде строки, '1' = высший).
+        Сейчас всегда '3' — резерв для будущей сортировки.
+        """
         return self._priority
 
     @Property(list, notify=operationsChanged)
     def operations(self):
+        """
+        Список доступных операций на устройстве.
+        Каждый элемент: dict {name, handle, mode, type}.
+        QML отображает их как кнопки управления.
+        """
         return self._operations
