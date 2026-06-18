@@ -9,7 +9,7 @@
                     <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_ctx_desc" />
                     <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="wf_ctx_desc" />
                 </pm:SystemContext>
-                <pm:Clock Handle="clock_micro">
+                <pm:Clock Handle="clock_decs">
                     <pm:TimeProtocol Code="532225">
                         <pm:ConceptDescription Lang="en-us">NTPv4</pm:ConceptDescription>
                     </pm:TimeProtocol>
@@ -74,6 +74,10 @@
             </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
+            <pm:State xsi:type="pm:ClockState" DescriptorHandle="clock_decs" RemoteSync="true">
+                <pm:ActiveSyncProtocol Code="">
+                </pm:ActiveSyncProtocol>
+            </pm:State>
             <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="pat_ctx_desc" Handle="pat_ctx_state">
                 <pm:CoreData>
                     <pm:Givenname>Neurosurgery</pm:Givenname>

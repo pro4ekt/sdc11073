@@ -146,6 +146,15 @@ class DeviceHandler(threading.Thread):
         # Заглушка для будущего OPC UA сервера (сейчас не используется)
         self.opcua_server = None
 
+        # Последняя известная версия MDIB — для детекции пропущенных SOAP-репортов
+        # (SDPi-A R1030/R1031: проверка монотонности ReportSequence/MessageNumber).
+        # None означает «ещё не инициализировано».
+        self._last_mdib_version = None
+
+        # Флаг: True означает штатное завершение (DEV-49).
+        # Используется в _graceful_shutdown() чтобы отличать плановый stop от аварийного.
+        self._intentional_shutdown = False
+
     # =========================================================================
     # Точка входа потока (вызывается threading.Thread при start())
     # =========================================================================
@@ -220,6 +229,17 @@ class DeviceHandler(threading.Thread):
             with self.data_lock:
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
+                # Запоминаем стартовую версию для последующей проверки пропусков (Task 4)
+                self._last_mdib_version = self.mdib.mdib_version
+
+            # ------------------------------------------------------------------
+            # ШАГ 2b: Подписка на изменения MdibVersion (SDPi-A R1030/R1031)
+            # ------------------------------------------------------------------
+            # Каждый входящий SOAP-репорт увеличивает mdib_version на 1.
+            # Если версия прыгнула сразу на N > 1 — значит N-1 репортов были потеряны
+            # (сетевой сбой без разрыва TCP). Это могло привести к пропуску критических тревог.
+            # Callback вызывается из потока обработки уведомлений sdc11073 (не из asyncio loop).
+            observableproperties.bind(self.mdib, mdib_version=self._on_mdib_version_changed)
 
             # ------------------------------------------------------------------
             # ШАГ 3: Подписка на push-уведомления через observableproperties
@@ -283,13 +303,16 @@ class DeviceHandler(threading.Thread):
 
                 # Активный пинг: пытаемся сделать лёгкий сетевой запрос.
                 # get_context_states() — один из самых лёгких запросов к устройству.
-                # Если устройство зависло (но TCP ещё жив), этот вызов упадёт с таймаутом,
-                # и мы это обнаружим через счётчик missed_heartbeats.
+                # ВАЖНО: get_context_states() — синхронный блокирующий SOAP-вызов.
+                # asyncio.to_thread() выполняет его в пуле потоков, освобождая event loop.
+                # Это гарантирует, что входящие WS-Eventing уведомления (тревоги, метрики)
+                # продолжают обрабатываться, даже если устройство отвечает с задержкой.
                 try:
                     if self.consumer and self.consumer.is_connected:
                         if self.consumer.context_service_client:
-                            # context_service_client — это свойство (property), не метод
-                            self.consumer.context_service_client.get_context_states()
+                            await asyncio.to_thread(
+                                self.consumer.context_service_client.get_context_states
+                            )
                         # Если ContextService недоступен (редкий случай) — пропускаем пинг.
                         # В этом случае missed_heartbeats не сбрасывается, что правильно.
                     missed_heartbeats = 0  # Пинг успешен — сбрасываем счётчик
@@ -312,14 +335,22 @@ class DeviceHandler(threading.Thread):
             print(f"[Worker {self.epr}] Critical Error: {e}")
             self.error_occurred = True
         finally:
-            # Гарантированная остановка Consumer при любом исходе.
-            # stop_all() отписывается от сервисов и закрывает HTTP-сервер.
+            # DEV-49: Штатное завершение сессии мониторинга.
+            # _graceful_shutdown() отправляет Unsubscribe на все активные подписки
+            # с таймаутом 5 секунд, что позволяет прикроватному монитору понять:
+            # Оркестратор завершает работу штатно, а не аварийно.
+            # Без этого шага устройство может активировать fallback-тревогу (60 dBA).
             if self.consumer:
-                print(f"[Worker {self.epr}] Stopping consumer resources...")
+                print(f"[Worker {self.epr}] Stopping consumer resources (DEV-49 graceful)...")
                 try:
-                    self.consumer.stop_all()
-                except Exception:
-                    pass  # Игнорируем ошибки при завершении — поток всё равно умирает
+                    await self._graceful_shutdown()
+                except Exception as e:
+                    # Крайний случай: форсируем закрытие синхронно
+                    print(f"[Worker {self.epr}] Graceful shutdown failed ({e}), forcing stop.")
+                    try:
+                        self.consumer.stop_all()
+                    except Exception:
+                        pass
 
     # =========================================================================
     # Запись данных пациента (из FHIR) в PatientContext устройства
@@ -805,6 +836,97 @@ class DeviceHandler(threading.Thread):
             print(f"[Worker {self.epr}] Alarm '{alert_signal_handle}' acknowledged successfully.")
         except Exception as e:
             print(f"[Worker {self.epr}] Failed to acknowledge alarm: {e}")
+
+    # =========================================================================
+    # DEV-49: Штатное завершение сессии мониторинга
+    # =========================================================================
+    async def _graceful_shutdown(self):
+        """
+        Реализует транзакцию DEV-49 (IHE SDPi) — штатное завершение мониторинга.
+
+        Логика:
+          1. Отправляем WS-Eventing Unsubscribe на все активные подписки.
+          2. Ждём подтверждения (timeout 5 секунд).
+          3. Если устройство не отвечает — принудительно закрываем соединение.
+
+        Почему это важно:
+          Если TCP-сокет закрыть без Unsubscribe, прикроватный монитор расценит это
+          как аварийный разрыв и запустит акустическую fallback-тревогу (60 dBA).
+          При штатном Unsubscribe устройство понимает, что наблюдатель ушёл сам,
+          и возвращает ответственность за управление тревогами себе.
+
+        asyncio.to_thread() нужен, т.к. stop_all() — синхронный блокирующий вызов:
+          он выполняется в пуле потоков, не блокируя event loop.
+        """
+        self._intentional_shutdown = True
+        try:
+            # Даём stop_all() до 5 секунд на отправку Unsubscribe и получение ответа.
+            await asyncio.wait_for(
+                asyncio.to_thread(self.consumer.stop_all),
+                timeout=5.0
+            )
+            print(f"[Worker {self.epr}] DEV-49: Unsubscribe completed — device notified.")
+        except asyncio.TimeoutError:
+            # Устройство не ответило — закрываем принудительно.
+            # Это лучше, чем висеть бесконечно при завершении приложения.
+            print(f"[Worker {self.epr}] DEV-49: Unsubscribe timed out (5s). Forcing close.")
+        except Exception as e:
+            print(f"[Worker {self.epr}] DEV-49: Error during graceful shutdown: {e}")
+
+    # =========================================================================
+    # SDPi-A R1030/R1031: Детекция пропущенных SOAP-репортов
+    # =========================================================================
+    def _on_mdib_version_changed(self, mdib_version: int):
+        """
+        Callback для observableproperties: вызывается при изменении MdibVersion.
+
+        Каждый SOAP EpisodicReport (метрики, тревоги, контексты) атомарно увеличивает
+        mdib_version на 1. Прыжок версии на N > 1 означает, что N-1 репортов потеряны
+        — TCP-стек не успел сообщить о сбое, но данные уже рассинхронизированы.
+
+        ОПАСНОСТЬ: пропущенный AlertReport может означать, что критическая тревога
+        (например, SpO2 < 70%) никогда не будет отображена на дашборде.
+
+        Стратегия обработки:
+          - Малый пропуск (2–5 репортов): логируем предупреждение, продолжаем.
+            sdc11073 попытается догнать через следующий Periodic Report.
+          - Большой пропуск (> 5 репортов): принудительное переподключение.
+            DeviceHandler завершится, Manager создаст новый и вызовет init_mdib() заново,
+            получая гарантированно актуальное состояние всех тревог и метрик.
+
+        THREAD SAFETY: этот метод вызывается из потока уведомлений sdc11073,
+        а не из asyncio loop. Запись в self.running и self.error_occurred безопасна
+        благодаря GIL Python для атомарных присваиваний bool/int.
+        """
+        if self._last_mdib_version is None:
+            self._last_mdib_version = mdib_version
+            return
+
+        gap = mdib_version - self._last_mdib_version
+
+        if gap > 1:
+            missed = gap - 1
+            print(f"[Worker {self.epr}] WARNING SDPi-A R1030: MDIB version gap! "
+                  f"Expected {self._last_mdib_version + 1}, got {mdib_version}. "
+                  f"Missed {missed} report(s) — possible lost alert/metric data.")
+
+            if gap > 5:
+                # Слишком большой пропуск — безопаснее переподключиться и получить
+                # свежий MDIB через GetMdib, чем работать с устаревшей базой тревог.
+                print(f"[Worker {self.epr}] Gap {gap} exceeds threshold (5). "
+                      f"Forcing reconnect to resync MDIB.")
+                self.error_occurred = True
+                self.running = False  # Выход из цикла при следующей итерации
+
+        elif gap < 0:
+            # SequenceId изменился (устройство перезапустилось или сбросило сессию)
+            print(f"[Worker {self.epr}] WARNING: MdibVersion went backwards "
+                  f"({self._last_mdib_version} → {mdib_version}). "
+                  f"Device may have restarted — forcing reconnect.")
+            self.error_occurred = True
+            self.running = False
+
+        self._last_mdib_version = mdib_version
 
     # =========================================================================
     # Сигнал остановки

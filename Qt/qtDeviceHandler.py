@@ -145,9 +145,10 @@ class QtDeviceHandler(QObject):
           3. Имя устройства  → deviceName
           4. Матрица тревог  → alarmStatus (On > Ack > Latch > Off)
           5. SelfCheckPeriod → COMM_FAILURE если AlertSystem молчит слишком долго
-          6. Метрики         → metrics (с округлением по StepWidth)
-          7. Операции        → operations
-          8. Главное значение → deviceValue (первая тревожная метрика или последняя)
+          6. EpochSupport    → clock_offset_sec из ClockState для коррекции таймстемпов
+          7. Метрики         → metrics (с округлением по StepWidth, с timestamp_ms)
+          8. Операции        → operations
+          9. Главное значение → deviceValue (первая тревожная метрика или последняя)
         """
         if not self._device:
             return
@@ -327,6 +328,47 @@ class QtDeviceHandler(QObject):
             # --- ALARM LOGIC END ---
 
             # ------------------------------------------------------------------
+            # EpochSupport: поправка на расхождение часов устройства (Task 3)
+            # ------------------------------------------------------------------
+            # В MDIB устройств (например, нейрохирургического микроскопа) присутствует:
+            #   <pm:Clock Handle="clock_decs"> — дескриптор часов с TimeProtocol NTPv4
+            #   <pm:ClockState DescriptorHandle="clock_decs" RemoteSync="true"> — стейт
+            #
+            # RemoteSync="true" означает NTP-синхронизацию — часы точны.
+            # DateAndTime ОТСУТСТВУЕТ в статическом GetMdib-снимке — он появляется
+            # только в EpisodicComponentReport (push-уведомление при изменении).
+            # Поэтому при первых кадрах offset=0, затем заполняется автоматически.
+            #
+            # clock_offset_sec = device_time - time.time():
+            #   > 0 → часы устройства спешат (таймстемпы нужно уменьшить)
+            #   < 0 → часы устройства отстают (таймстемпы нужно увеличить)
+            clock_offset_sec = 0.0
+            try:
+                clock_states_list = [s for s in self._device.mdib.states.objects
+                                     if s.NODETYPE == pm.ClockState]
+                if clock_states_list:
+                    clock_state = clock_states_list[0]
+
+                    # RemoteSync=False означает NTP не работает — часы могут дрейфовать.
+                    # Поправка в этом случае ненадёжна, но всё равно лучше, чем ничего.
+                    remote_sync = getattr(clock_state, 'RemoteSync', True)
+                    if not remote_sync:
+                        print(f"[QtHandler {self._device.epr}] WARNING: Device clock "
+                              f"NOT NTP-synced (RemoteSync=False). "
+                              f"Timestamp correction may be inaccurate.")
+
+                    device_time = getattr(clock_state, 'DateAndTime', None)
+                    if device_time is not None:
+                        clock_offset_sec = float(device_time) - time.time()
+                        # Расхождение > 60с — NTP, вероятно, настроен неверно или сбоит.
+                        if abs(clock_offset_sec) > 60.0:
+                            print(f"[QtHandler {self._device.epr}] WARNING: Large clock "
+                                  f"offset detected ({clock_offset_sec:+.1f}s). "
+                                  f"Device NTP may be misconfigured.")
+            except Exception:
+                pass  # ClockState недоступен — offset=0, работаем без поправки
+
+            # ------------------------------------------------------------------
             # 5. СПИСОК МЕТРИК (Metrics)
             # ------------------------------------------------------------------
             # Собираем все NumericMetricState, StringMetricState, RealTimeSampleArrayMetricState.
@@ -349,6 +391,9 @@ class QtDeviceHandler(QObject):
                 metric_name    = descriptor.Handle
                 metric_value   = "---"   # Значение по умолчанию (нет данных)
                 metric_samples = []      # Для waveform-метрик: список float-значений
+                # Таймстемп последнего батча данных, скорректированный на clock_offset_sec.
+                # None — если DeterminationTime отсутствует в MetricValue.
+                metric_timestamp_ms = None
 
                 # Проверяем, является ли эта метрика источником активной тревоги
                 metric_alarm = "On" if descriptor.Handle in active_alert_handles else "Off"
@@ -360,6 +405,12 @@ class QtDeviceHandler(QObject):
                         if state.MetricValue and state.MetricValue.Samples:
                             # Samples — список Decimal → конвертируем в float для QML
                             metric_samples = [float(x) for x in state.MetricValue.Samples]
+                        # EpochSupport: корректируем DeterminationTime батча на смещение часов.
+                        # DeterminationTime — таймстемп последнего sample в секундах (Unix).
+                        if state.MetricValue:
+                            det_time = getattr(state.MetricValue, 'DeterminationTime', None)
+                            if det_time is not None:
+                                metric_timestamp_ms = (float(det_time) + clock_offset_sec) * 1000
 
                     elif state.MetricValue:
                         # NumericMetric и StringMetric имеют поле Value
@@ -383,17 +434,22 @@ class QtDeviceHandler(QObject):
                             except Exception:
                                 pass  # Если округление не удалось — используем исходное значение
                             metric_value = str(val)
+                        # EpochSupport: применяем поправку и к скалярным метрикам
+                        det_time = getattr(state.MetricValue, 'DeterminationTime', None)
+                        if det_time is not None:
+                            metric_timestamp_ms = (float(det_time) + clock_offset_sec) * 1000
 
                 except Exception:
                     pass  # Ошибка конверсии — оставляем "---"
 
                 new_metrics_list.append({
-                    "descriptor": descriptor,    # Сырой объект дескриптора (для доп. обработки в QML)
-                    "state":      state,         # Сырой объект стейта
-                    "metricname": metric_name,   # Строка: handle метрики (для отображения)
-                    "value":      metric_value,  # Строка: текущее значение (или "---"/"Waveform")
-                    "samples":    metric_samples, # list[float]: для графика waveform
-                    "alarm":      metric_alarm   # "On" / "Off": есть ли тревога по этой метрике
+                    "descriptor":    descriptor,         # Сырой объект дескриптора (для доп. обработки в QML)
+                    "state":         state,              # Сырой объект стейта
+                    "metricname":    metric_name,        # Строка: handle метрики (для отображения)
+                    "value":         metric_value,       # Строка: текущее значение (или "---"/"Waveform")
+                    "samples":       metric_samples,     # list[float]: для графика waveform
+                    "alarm":         metric_alarm,       # "On" / "Off": есть ли тревога по этой метрике
+                    "timestamp_ms":  metric_timestamp_ms # float | None: скорректированный таймстемп (мс)
                 })
 
             self._metrics = new_metrics_list
@@ -527,8 +583,11 @@ class QtDeviceHandler(QObject):
     def metrics(self):
         """
         Список метрик устройства.
-        Каждый элемент: dict {descriptor, state, metricname, value, samples, alarm}.
-        QML может итерировать этот список для отображения таблицы метрик.
+        Каждый элемент: dict {descriptor, state, metricname, value, samples, alarm, timestamp_ms}.
+          timestamp_ms — таймстемп последнего батча в миллисекундах, скорректированный
+                         на смещение часов устройства (EpochSupport).
+                         None если MetricValue.DeterminationTime отсутствует.
+        QML может итерировать этот список для отображения таблицы метрик и графиков.
         """
         return self._metrics
 
