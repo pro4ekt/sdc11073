@@ -19,6 +19,7 @@ deviceHandler.py — «Рабочий поток» (Worker) для одного 
 
 import threading
 import asyncio
+import time
 from decimal import Decimal
 
 # Импортируем Qt-обёртку — она создаётся для каждого устройства и живёт в UI-потоке
@@ -153,14 +154,15 @@ class DeviceHandler(threading.Thread):
         # Заглушка для будущего OPC UA сервера (сейчас не используется)
         self.opcua_server = None
 
-        # Последняя известная версия MDIB — для детекции пропущенных SOAP-репортов
-        # (SDPi-A R1030/R1031: проверка монотонности ReportSequence/MessageNumber).
-        # None означает «ещё не инициализировано».
-        self._last_mdib_version = None
-
         # Флаг: True означает штатное завершение (DEV-49).
         # Используется в _graceful_shutdown() чтобы отличать плановый stop от аварийного.
         self._intentional_shutdown = False
+
+        # Таймстемп последнего вызова scheduleUpdate() (monotonic, seconds).
+        # Используется в on_metric_update / on_alert_update для rate-limiting:
+        # не более 1 обновления UI в секунду при высокочастотных waveform-данных.
+        self._last_ui_update_ts: float = 0.0
+
 
     # =========================================================================
     # Точка входа потока (вызывается threading.Thread при start())
@@ -236,11 +238,9 @@ class DeviceHandler(threading.Thread):
             with self.data_lock:
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
-                # Запоминаем стартовую версию для последующей проверки пропусков (Task 4)
-                self._last_mdib_version = self.mdib.mdib_version
 
             # ------------------------------------------------------------------
-            # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция пропусков репортов)
+            # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция смены сессии)
             # ------------------------------------------------------------------
             # ЧТО ТАКОЕ ObservableProperty (механизм sdc11073):
             # ─────────────────────────────────────────────────────────────────
@@ -291,18 +291,23 @@ class DeviceHandler(threading.Thread):
             #   ✗ mdib_version  — просто int, обновляется внутри при каждом репорте,
             #                     но НЕ через ObservableProperty → нельзя подписаться.
             #
-            # Именно поэтому мы используем два механизма ниже:
             # ─────────────────────────────────────────────────────────────────
+            # ПОЧЕМУ НЕТ ПЕРИОДИЧЕСКОЙ ПРОВЕРКИ mdib_version (R1030/R1031):
+            # ─────────────────────────────────────────────────────────────────
+            # SDC работает поверх TCP. TCP гарантирует доставку и порядок байт —
+            # потеря отдельного SOAP-репорта на транспортном уровне невозможна.
+            # sdc11073 дополнительно валидирует MdibVersion внутри диспетчера
+            # входящих сообщений (ConsumerMdib._on_episodic_report).
             #
-            # Механизм 1: sequence_or_instance_id_changed_event (ObservableProperty ✓)
-            #   Срабатывает когда устройство изменяет SequenceId или InstanceId —
-            #   это признак перезапуска или сброса сессии на стороне устройства.
-            #   Callback (_on_sequence_id_changed) вызывается из потока уведомлений sdc11073.
+            # Периодическое сравнение mdib_version раз в 5 секунд (polling) является
+            # архитектурно неверным подходом для R1030/R1031: за один интервал
+            # легитимно приходит N репортов → gap = N → ложная тревога.
             #
-            # Механизм 2: Проверка gap'а в основном цикле мониторинга (ниже).
-            #   После каждого успешного пинга сравниваем self.mdib.mdib_version
-            #   (обычный int) с self._last_mdib_version напрямую.
-            #   Если разница > 1 → между пингами потеряны репорты.
+            # Правильный детектор смены сессии — event-driven через
+            # sequence_or_instance_id_changed_event, что и подключается ниже.
+            # Полноценная поимплементация R1030 per-report требует перехвата
+            # заголовков SOAP (MdibVersion из SOAP Header) — за рамками текущей
+            # архитектуры, sdc11073 не предоставляет эти данные в публичном API.
             observableproperties.bind(
                 self.mdib,
                 sequence_or_instance_id_changed_event=self._on_sequence_id_changed
@@ -401,28 +406,6 @@ class DeviceHandler(threading.Thread):
                         # В этом случае missed_heartbeats не сбрасывается, что правильно.
                     missed_heartbeats = 0  # Пинг успешен — сбрасываем счётчик
 
-                    # ----------------------------------------------------------
-                    # SDPi-A R1030/R1031: проверка пропуска SOAP-репортов
-                    # ----------------------------------------------------------
-                    # mdib_version увеличивается на 1 при каждом EpisodicReport.
-                    # Проверяем это здесь (не через bind), т.к. mdib_version —
-                    # обычное свойство (не ObservableProperty) в ConsumerMdib.
-                    current_version = self.mdib.mdib_version
-                    if self._last_mdib_version is not None and current_version is not None:
-                        gap = current_version - self._last_mdib_version
-                        if gap > 1:
-                            missed = gap - 1
-                            print(f"[Worker {self.epr}] WARNING SDPi-A R1030: MDIB version gap! "
-                                  f"Expected {self._last_mdib_version + 1}, got {current_version}. "
-                                  f"Missed {missed} report(s) — possible lost alert/metric data.")
-                            #Сдесь должно быть 5 но для тестов оставил 100
-                            if gap > 100:
-                                # Слишком большой пропуск — переподключаемся для свежего GetMdib
-                                print(f"[Worker {self.epr}] Gap {gap} exceeds threshold. "
-                                      f"Forcing reconnect to resync MDIB.")
-                                self.error_occurred = True
-                                break
-                    self._last_mdib_version = current_version
 
                 except Exception as e:
                     missed_heartbeats += 1
@@ -827,72 +810,44 @@ class DeviceHandler(threading.Thread):
             print(f"[Worker {self.epr}] Failed to apply contexts in batch: {e}")
 
     # =========================================================================
-    # Callback для обновлений метрик (OPC UA — отключён)
+    # Callback для обновлений метрик
     # =========================================================================
     def on_metric_update(self, metrics_by_handle):
         """
-        Вызывается библиотекой sdc11073 при получении EpisodicMetricReport от устройства.
-        metrics_by_handle: dict { handle: AbstractMetricState }
+        Вызывается sdc11073 из потока уведомлений при получении EpisodicMetricReport.
 
-        Сейчас отключён (return сразу) — код OPC UA закомментирован.
-        При включении: извлекает числовые/строковые значения и передаёт
-        их в OPC UA Gateway через asyncio.run_coroutine_threadsafe().
+        Вместо немедленной работы с данными — триггерим обновление UI через scheduleUpdate().
+        Rate-limiting: не чаще 1 раза в секунду, чтобы не перегружать UI-поток
+        при высокочастотных waveform-данных (200 Hz и выше).
+
+        scheduleUpdate() потокобезопасен: он только испускает Qt Signal, который
+        Qt автоматически маршалирует в главный поток через queued connection.
         """
-        return  # OPC UA Updates disabled
-        # if not self.manager.opcua_gateway or not hasattr(self.manager, 'manager_loop'):
-        #     return
-        # 
-        # updates = {}
-        # for handle, state in metrics_by_handle.items():
-        #     if state.NODETYPE == pm.NumericMetricState:
-        #         val = getattr(state.MetricValue, 'Value', None)
-        #         if val is not None:
-        #             try:
-        #                 updates[handle] = float(val)
-        #             except ValueError:
-        #                 pass
-        #     elif state.NODETYPE in [pm.StringMetricState, pm.EnumStringMetricState]:
-        #         val = getattr(state.MetricValue, 'Value', None)
-        #         if val is not None:
-        #             updates[handle] = str(val)
-        # 
-        # if updates:
-        #     # Передаем обновление в асинхронный цикл менеджера для безопасной записи в OPC
-        #     asyncio.run_coroutine_threadsafe(
-        #         self.manager.opcua_gateway.update_values(self.epr, updates),
-        #         self.manager.manager_loop
-        #     )
+        if self.mode != "icu" or not self.qtDeviceHandler:
+            return
+
+        now = time.monotonic()
+        if now - self._last_ui_update_ts >= 1.0:
+            self._last_ui_update_ts = now
+            self.qtDeviceHandler.scheduleUpdate()
 
     # =========================================================================
-    # Callback для обновлений тревог (OPC UA — отключён)
+    # Callback для обновлений тревог
     # =========================================================================
     def on_alert_update(self, alert_by_handle):
         """
-        Вызывается библиотекой sdc11073 при получении EpisodicAlertReport от устройства.
-        alert_by_handle: dict { handle: AbstractAlertState }
+        Вызывается sdc11073 из потока уведомлений при получении EpisodicAlertReport.
 
-        Сейчас отключён (return сразу) — код OPC UA закомментирован.
-        При включении: извлекает Presence-флаги тревог и передаёт их в OPC UA Gateway.
+        Тревоги критичны — триггерим UI-обновление немедленно (без rate-limit),
+        но только если не было обновления в последние 0.2 секунды (антиспам).
         """
-        return  # OPC UA Updates disabled
-        # if not self.manager.opcua_gateway or not hasattr(self.manager, 'manager_loop'):
-        #     return
-        # 
-        # updates = {}
-        # for handle, state in alert_by_handle.items():
-        #     if state.NODETYPE in [pm.AlertConditionState, pm.LimitAlertConditionState]:
-        #         presence = getattr(state, 'Presence', False)
-        #         updates[f"Condition_{handle}_Presence"] = presence
-        #     elif state.NODETYPE == pm.AlertSignalState:
-        #         signal_presence = str(getattr(state, 'Presence', 'Unknown'))
-        #         updates[f"Signal_{handle}"] = signal_presence
-        # 
-        # if updates:
-        #     # Передаем обновление в асинхронный цикл менеджера для безопасной записи в OPC
-        #     asyncio.run_coroutine_threadsafe(
-        #         self.manager.opcua_gateway.update_values(self.epr, updates),
-        #         self.manager.manager_loop
-        #     )
+        if self.mode != "icu" or not self.qtDeviceHandler:
+            return
+
+        now = time.monotonic()
+        if now - self._last_ui_update_ts >= 0.2:
+            self._last_ui_update_ts = now
+            self.qtDeviceHandler.scheduleUpdate()
 
     # =========================================================================
     # DEV-31: Удалённое квитирование (acknowledgement) тревоги
@@ -1010,9 +965,6 @@ class DeviceHandler(threading.Thread):
         Единственное корректное действие — разорвать соединение и переподключиться,
         выполнив GetMdib заново для получения актуального состояния всех тревог.
 
-        NOTE: _last_mdib_version сбрасываем в None, чтобы цикл мониторинга
-        не ложно детектировал "gap" при следующем сравнении версий.
-
         THREAD SAFETY: вызывается из потока уведомлений sdc11073 (не asyncio loop).
         Запись bool в self.running/self.error_occurred атомарна благодаря GIL Python.
         """
@@ -1021,7 +973,6 @@ class DeviceHandler(threading.Thread):
 
         print(f"[Worker {self.epr}] WARNING SDPi-A: SequenceId/InstanceId changed! "
               f"Device may have restarted — forcing reconnect to resync MDIB.")
-        self._last_mdib_version = None  # Сбрасываем — иначе ложный gap после переподключения
         self.error_occurred = True
         self.running = False  # Выход из цикла при следующей итерации
 
