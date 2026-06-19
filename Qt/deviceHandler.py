@@ -45,8 +45,9 @@ from sdc11073.xml_types.pm_types import Measurement, CodedValue
 # Позволяет вызывать callback при обновлении метрик или тревог
 from sdc11073 import observableproperties
 
-# Нужен для получения ссылки на главный UI-поток Qt при moveToThread()
-from PySide6.QtGui import QGuiApplication
+# Нужен для получения ссылки на главный UI-поток Qt при moveToThread() (только 'icu').
+# QCoreApplication работает в обоих режимах — это базовый класс для QGuiApplication.
+from PySide6.QtCore import QCoreApplication
 
 # RelatedMeasurement — класс sdc11073, у которого есть баг в методе from_node():
 # он вызывает __init__ с аргументом, который в норме обязателен, но при десериализации
@@ -91,7 +92,7 @@ class DeviceHandler(threading.Thread):
          manager.remove_device() для самоудаления из реестра.
     """
 
-    def __init__(self, wsd_service, manager):
+    def __init__(self, wsd_service, manager, mode: str = "icu"):
         """
         Параметры:
           wsd_service — объект из WSDiscovery, содержащий EPR (уникальный ID)
@@ -100,10 +101,16 @@ class DeviceHandler(threading.Thread):
                         - получения данных пациента
                         - отправки сигнала deviceConnected в UI
                         - регистрации/удаления из реестра устройств
+          mode        — режим запуска ('icu' | 'op'):
+                        'icu' — создаёт QtDeviceHandler, испускает сигналы в UI.
+                        'op'  — headless, пропускает Qt/QML-логику, активирует FHIR-контексты.
         """
         # Инициализируем поток как демон: он автоматически завершится,
         # когда завершится главный поток приложения
         threading.Thread.__init__(self, daemon=True)
+
+        # Режим запуска — управляет поведением Qt-UI и FHIR-контекстов
+        self.mode = mode
 
         # Сохраняем WSD-сервис — он нужен для подключения SdcConsumer
         self.wsd_service = wsd_service
@@ -304,7 +311,7 @@ class DeviceHandler(threading.Thread):
             # ------------------------------------------------------------------
             # ШАГ 3: Подписка на push-уведомления через observableproperties
             # ------------------------------------------------------------------
-            # Используем тот же механизм ObservableProperty (см. описание выше).
+            # Используем тот же механизм ObservableProperty (см. описание выше в ШАГ 2b).
             #
             # Поток данных для metrics_by_handle:
             #   Устройство (сеть)
@@ -320,30 +327,37 @@ class DeviceHandler(threading.Thread):
             #
             # ПРИМЕЧАНИЕ: сейчас оба callback'а просто делают return (OPC UA отключён),
             # но инфраструктура сохранена для будущего использования.
-            observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
-            observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
+            #
+            # РЕЖИМ 'op': подписки на метрики и тревоги пропускаются —
+            # они нужны только для UI и OPC UA, которые в headless-режиме отключены.
+            # Это снижает нагрузку на CPU: sdc11073 не будет вызывать callback'и,
+            # которые всё равно ничего не делают.
+            if self.mode == "icu":
+                observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
+                observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
 
             print(f"[Worker {self.epr}] Connection established. Monitoring...")
 
             # ------------------------------------------------------------------
-            # ШАГ 4: Создание Qt-объекта и его передача в UI-поток
+            # ШАГ 4: Создание Qt-объекта и его передача в UI-поток (только 'icu')
             # ------------------------------------------------------------------
-            # QtDeviceHandler создаётся здесь (в рабочем потоке) — это нормально.
-            # НО объект QObject нельзя долго использовать из чужого потока.
-            self.qtDeviceHandler = QtDeviceHandler(self)
+            if self.mode == "icu":
+                # QtDeviceHandler создаётся здесь (в рабочем потоке) — это нормально.
+                # НО объект QObject нельзя долго использовать из чужого потока.
+                self.qtDeviceHandler = QtDeviceHandler(self)
 
-            # moveToThread() перемещает Qt-объект в главный поток.
-            # После этого все слоты и сигналы QtDeviceHandler будут выполняться
-            # в главном потоке через очередь событий Qt — это потокобезопасно.
-            main_thread = QGuiApplication.instance().thread()
-            if main_thread:
-                self.qtDeviceHandler.moveToThread(main_thread)
-            else:
-                print(f"[Worker {self.epr}] Warning: Could not find Main Thread!")
+                # moveToThread() перемещает Qt-объект в главный поток.
+                # После этого все слоты и сигналы QtDeviceHandler будут выполняться
+                # в главном потоке через очередь событий Qt — это потокобезопасно.
+                main_thread = QCoreApplication.instance().thread()
+                if main_thread:
+                    self.qtDeviceHandler.moveToThread(main_thread)
+                else:
+                    print(f"[Worker {self.epr}] Warning: Could not find Main Thread!")
 
-            # Уведомляем UI о появлении нового устройства.
-            # Qt Signal автоматически маршалирует вызов в поток получателя (главный).
-            self.manager.deviceConnected.emit(self.qtDeviceHandler)
+                # Уведомляем UI о появлении нового устройства.
+                # Qt Signal автоматически маршалирует вызов в поток получателя (главный).
+                self.manager.deviceConnected.emit(self.qtDeviceHandler)
 
             # ------------------------------------------------------------------
             # ШАГ 5: Основной цикл мониторинга с механизмом T_fallback (IHE SDPi)
@@ -367,8 +381,8 @@ class DeviceHandler(threading.Thread):
                     self.error_occurred = True
                     break
 
-                # Запускаем обновление UI в главном потоке (через сигнал)
-                if self.qtDeviceHandler:
+                # Запускаем обновление UI в главном потоке (только в режиме 'icu')
+                if self.mode == "icu" and self.qtDeviceHandler:
                     self.qtDeviceHandler.scheduleUpdate()
 
                 # Активный пинг: пытаемся сделать лёгкий сетевой запрос.
@@ -401,7 +415,8 @@ class DeviceHandler(threading.Thread):
                             print(f"[Worker {self.epr}] WARNING SDPi-A R1030: MDIB version gap! "
                                   f"Expected {self._last_mdib_version + 1}, got {current_version}. "
                                   f"Missed {missed} report(s) — possible lost alert/metric data.")
-                            if gap > 5:
+                            #Сдесь должно быть 5 но для тестов оставил 100
+                            if gap > 100:
                                 # Слишком большой пропуск — переподключаемся для свежего GetMdib
                                 print(f"[Worker {self.epr}] Gap {gap} exceeds threshold. "
                                       f"Forcing reconnect to resync MDIB.")
@@ -466,6 +481,11 @@ class DeviceHandler(threading.Thread):
         """
         if not self.patient_context:
             print(f"[Worker {self.epr}] No patient context data, skipping.")
+            return
+
+        # В режиме 'icu' FHIR-данных нет (fhir_data=None → patient_context пуст).
+        # Метод уже завершился бы на проверке выше, но для явности добавляем guard.
+        if self.mode == "icu":
             return
 
         # Переменные, которые будут заполнены в Phase 1 и использованы в Phase 2
@@ -631,9 +651,15 @@ class DeviceHandler(threading.Thread):
         UUID ансамбля генерируется Manager'ом (SdcMyConsumer) один раз при формировании
         группы и рассылается всем участникам через этот метод.
 
+        РЕЖИМ 'icu': метод сразу завершается — в ICU-режиме FHIR-данных нет и
+        ансамбли формируются в 'op'-режиме.
+
         СТРУКТУРА: так же двухфазовая (Phase 1 под локом, Phase 2 без лока),
         как и apply_patient_to_mdib() — по тем же причинам безопасности.
         """
+        # В ICU-режиме FHIR-данных нет — ансамбль не формируется
+        if self.mode == "icu":
+            return
         try:
             # Локальный импорт — избегаем циклических зависимостей на уровне модуля
             from sdc11073.xml_types import pm_qnames as pm

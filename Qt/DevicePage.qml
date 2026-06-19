@@ -23,6 +23,7 @@ Item {
 
     // Setup function now expects the QtDeviceHandler object
     function setDevice(deviceObj) {
+        var isNewDevice = (currentDevice !== deviceObj)
         currentDevice = deviceObj
 
         // Pass the device object to the Operation Page too, so it can bind to signals
@@ -37,7 +38,11 @@ Item {
         value = deviceObj.deviceValue
         alarm = deviceObj.alarmStatus
         priority = parseInt(deviceObj.priority) || 0
-        timeout = 0
+        // Reset timeout only when switching to a DIFFERENT device —
+        // preserves the local bell-silence state when re-entering the same device page.
+        if (isNewDevice) {
+            timeout = 0
+        }
 
         // Force refresh the list of metrics
         refreshMetrics()
@@ -155,33 +160,37 @@ Item {
         }
         */
 
-        Image {
-            id: imageInstance
+        // ---- Bell icon with Ack (yellow) colour support ----
+        Item {
             width: parent.width * 0.1
             height: parent.height
 
-            source: alarm === "On" && timeout === 1
-                    ? "img/noSound.png"
-                    : (alarm === "On" && timeout === 0
-                        ? "img/bellOn.png"
-                        : "img/bellOff.png")
+            Image {
+                id: imageInstance
+                anchors.fill: parent
 
-            fillMode: Image.PreserveAspectCrop
-            layer.enabled: true
-            /*
-            layer.effect: OpacityMask {
-                maskSource: Rectangle {
-                    width: imageInstance.width
-                    height: imageInstance.height
-                    radius: imageInstance.radius
-                }
+                source: (alarm === "On" && timeout === 1) || alarm === "Ack"
+                        ? "img/noSound.png"
+                        : ((alarm === "On" && timeout === 0)
+                            ? "img/bellOn.png"
+                            : "img/bellOff.png")
+
+                fillMode: Image.PreserveAspectCrop
+                layer.enabled: true
             }
-            */
+
+            // Yellow tint overlay — visible only in Ack state
+            Rectangle {
+                anchors.fill: parent
+                color: "#FFD700"
+                opacity: 0.38
+                visible: alarm === "Ack"
+            }
 
             MouseArea {
                 anchors.fill: parent
                 onPressed: {
-                    if (alarm === "On") {
+                    if (alarm === "On" || alarm === "Ack") {
                         timeout = timeout === 0 ? 1 : 0
                     }
                 }

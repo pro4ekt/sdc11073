@@ -396,7 +396,13 @@ class QtDeviceHandler(QObject):
                 metric_timestamp_ms = None
 
                 # Проверяем, является ли эта метрика источником активной тревоги
-                metric_alarm = "On" if descriptor.Handle in active_alert_handles else "Off"
+                if descriptor.Handle in active_alert_handles:
+                    # Передаем актуальный статус сигнала (On, Ack или Latch) вместо жесткого "On".
+                    # Если глобальный статус COMM_FAILURE или Off, всё равно ставим "On",
+                    # так как физиологическое условие (Condition) нарушено.
+                    metric_alarm = new_alarm_status if new_alarm_status in ["On", "Ack", "Latch"] else "On"
+                else:
+                    metric_alarm = "Off"
 
                 try:
                     if state.NODETYPE == pm.RealTimeSampleArrayMetricState:

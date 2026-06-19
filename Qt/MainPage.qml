@@ -78,12 +78,21 @@ Item {
         }
 
         items.sort((a, b) => {
-            // Sort Logic: Alarm 'On' > Alarm 'Off' > Priority High to Low
-            let alarmA = (a.alarm === "On");
-            let alarmB = (b.alarm === "On");
+            // Priority levels for alarm status
+            let getAlarmRank = (status) => {
+                if (status === "COMM_FAILURE") return 4;
+                if (status === "On") return 3;
+                if (status === "Ack") return 2;
+                if (status === "Latch") return 1;
+                return 0; // "Off" or other
+            };
 
-            if (alarmA && !alarmB) return -1;
-            if (!alarmA && alarmB) return 1;
+            let rankA = getAlarmRank(a.alarm);
+            let rankB = getAlarmRank(b.alarm);
+
+            if (rankA !== rankB) {
+                return rankB - rankA; // Higher severity alarm first
+            }
 
             return parseInt(b.priority) - parseInt(a.priority);
         });
@@ -292,29 +301,45 @@ Item {
                         height: 80 // Reverted to a smaller/standard size or use: width * 0.15 if you had relative
                         radius: 20
 
-                        // Fix: use model.alarm from the ListModel
-                        color: model.alarm === "On" ? "transparent" : "#5e6ea5"
+                        // Fix: use model.alarm from the ListModel (transparent for active / muted / failed alarms to show gradient)
+                        color: (model.alarm === "On" || model.alarm === "Ack" || model.alarm === "COMM_FAILURE") ? "transparent" : "#5e6ea5"
 
-                        // Выбираем градиент в зависимости от Alarm
-                        gradient: model.alarm === "On" ? gradOn : gradOff
+                        // Выбираем градиент в зависимости от Alarm (On -> red, Ack -> yellow, COMM_FAILURE -> gray/red, Off -> blue)
+                        gradient: model.alarm === "On" ? gradOn
+                                  : (model.alarm === "Ack" ? gradAck
+                                  : (model.alarm === "COMM_FAILURE" ? gradComm : gradOff))
 
-                        //Градиент для Alarm On
+                        //Градиент для Alarm On (Мигающая красная тревога)
                         Gradient {
                             id: gradOn
                             GradientStop { position: 0.0; color: "#8c2f2f" }
                             GradientStop { position: 1.0; color: "#af3c3c" }
                         }
 
-                        //Градиент для Alarm Off
+                        //Градиент для Alarm Ack (Замученная/квитированная желтая тревога)
+                        Gradient {
+                            id: gradAck
+                            GradientStop { position: 0.0; color: "#bfa11f" }
+                            GradientStop { position: 1.0; color: "#ebd234" }
+                        }
+
+                        //Градиент для COMM_FAILURE (Ошибка коммуникации - серый и темно-красный)
+                        Gradient {
+                            id: gradComm
+                            GradientStop { position: 0.0; color: "#555555" }
+                            GradientStop { position: 1.0; color: "#aa3333" }
+                        }
+
+                        //Градиент для Alarm Off (Состояние нормы)
                         Gradient {
                             id: gradOff
                             GradientStop { position: 0.0; color: "#5e6ea5" }
                             GradientStop { position: 1.0; color: "#7487c4" }
                         }
 
-                        // Мигаем только если Alarm On
+                        // Мигаем если Alarm On, Ack (квитирована) или COMM_FAILURE
                         SequentialAnimation on opacity {
-                            running: model.alarm === "On"
+                            running: model.alarm === "On" || model.alarm === "Ack" || model.alarm === "COMM_FAILURE"
                             loops: Animation.Infinite
 
                             NumberAnimation { to: 0.5; duration: 500; easing.type: Easing.InOutQuad }

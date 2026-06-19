@@ -101,7 +101,10 @@ Item {
     }
 
     function setMetric(data) {
-        metricname = data.metricname || "Unknown"
+        var newMetricname = data.metricname || "Unknown"
+        var isNewMetric = (metricname !== newMetricname)
+
+        metricname = newMetricname
 
         // Handle initial value display exception for Waveform
         if (data.value === "Waveform") {
@@ -111,8 +114,11 @@ Item {
         }
 
         alarm = data.alarm || "Off"
-        // Ensure timeout is handled if present, else 0
-        timeout = data.timeout ? data.timeout : 0
+        // Reset timeout only when opening a DIFFERENT metric —
+        // preserves the local bell-silence state when re-entering the same metric page.
+        if (isNewMetric) {
+            timeout = 0
+        }
 
         // Очищаем историю графика при входе в новую метрику
         graphPoints = []
@@ -155,33 +161,37 @@ Item {
         }
         */
 
-        Image {
-            id: imageInstance
+        // ---- Bell icon with Ack (yellow) colour support ----
+        Item {
             width: parent.width * 0.1
             height: parent.height
 
-            source: alarm === "On" && timeout === 1
-                    ? "img/noSound.png"
-                    : (alarm === "On" && timeout === 0
-                        ? "img/bellOn.png"
-                        : "img/bellOff.png")
+            Image {
+                id: imageInstance
+                anchors.fill: parent
 
-            fillMode: Image.PreserveAspectCrop
-            layer.enabled: true
-            /*
-            layer.effect: OpacityMask {
-                maskSource: Rectangle {
-                    width: imageInstance.width
-                    height: imageInstance.height
-                    radius: imageInstance.radius
-                }
+                source: (alarm === "On" && timeout === 1) || alarm === "Ack"
+                        ? "img/noSound.png"
+                        : ((alarm === "On" && timeout === 0)
+                            ? "img/bellOn.png"
+                            : "img/bellOff.png")
+
+                fillMode: Image.PreserveAspectCrop
+                layer.enabled: true
             }
-            */
+
+            // Yellow tint overlay — visible only in Ack state
+            Rectangle {
+                anchors.fill: parent
+                color: "#FFD700"
+                opacity: 0.38
+                visible: alarm === "Ack"
+            }
 
             MouseArea {
                 anchors.fill: parent
                 onPressed: {
-                    if (alarm === "On") {
+                    if (alarm === "On" || alarm === "Ack") {
                         timeout = timeout === 0 ? 1 : 0
                     }
                 }

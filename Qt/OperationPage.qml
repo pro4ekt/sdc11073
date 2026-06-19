@@ -70,9 +70,9 @@ Item {
             width: parent.width * 0.1
             height: parent.height
 
-            source: alarm === "On" && timeout === 1
+            source: (alarm === "On" && timeout === 1) || alarm === "Ack"
                     ? "img/noSound.png"
-                    : (alarm === "On" && timeout === 0
+                    : ((alarm === "On" && timeout === 0)
                         ? "img/bellOn.png"
                         : "img/bellOff.png")
 
@@ -91,7 +91,7 @@ Item {
             MouseArea {
                 anchors.fill: parent
                 onPressed: {
-                    if (alarm === "On") {
+                    if (alarm === "On" || alarm === "Ack") {
                         timeout = timeout === 0 ? 1 : 0
                     }
                 }

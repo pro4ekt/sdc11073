@@ -1,29 +1,28 @@
 """
-main.py — Точка входа приложения SDC-консьюмера с Qt/QML интерфейсом.
+main.py — Точка входа приложения SDC-консьюмера.
 
-ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПУСКА:
-  1. Пользователь вводит Patient ID (FHIR ID)
-  2. Загружаются данные пациента из FHIR-сервера (имя, диагнозы, рост, вес)
-  3. Создаётся SdcMyConsumer (Manager) с данными пациента
-  4. Manager запускает фоновый поток сканирования сети (WSDiscovery)
-  5. Создаётся Qt-приложение и QML-движок
-  6. Manager и FHIRData регистрируются в QML-контексте (доступны в .qml файлах)
-  7. Загружается Main.qml — точка входа UI
-  8. Запускается Qt event loop (app.exec()) — блокирует поток до закрытия окна
+РЕЖИМЫ ЗАПУСКА (--mode):
+  --mode=icu  Silent ICU:  полный Qt/QML стек, обработка тревог (DEV-31), БЕЗ FHIR.
+  --mode=op   Operating Room: Headless QCoreApplication, загрузка FHIR,
+              формирование BICEPS EnsembleContext/WorkflowContext.
 
-ПОТОКИ ПОСЛЕ ЗАПУСКА:
-  - Главный поток: Qt event loop (обрабатывает UI, сигналы, слоты)
-  - discovery_thread: asyncio loop для WSDiscovery и управления воркерами
-  - DeviceHandler потоки: по одному на каждое найденное SDC-устройство
+ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПУСКА (ICU):
+  1. QGuiApplication + QML-движок
+  2. SdcMyConsumer(fhir_data=None, mode='icu') → WSDiscovery
+  3. QML-контекст регистрируется → Qt event loop
+
+ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПУСКА (OP):
+  1. QCoreApplication (headless)
+  2. FHIRPatientData.fetch(patient_id)
+  3. SdcMyConsumer(fhir_data=fhir, mode='op') → WSDiscovery
+  4. Qt event loop (без UI)
 """
 
 from __future__ import annotations
 
 import sys
 import os
-
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtQml import QQmlApplicationEngine
+import argparse
 
 # Manager — координатор сети SDC-устройств
 from sdcMyConsumer import SdcMyConsumer
@@ -31,96 +30,88 @@ from sdcMyConsumer import SdcMyConsumer
 # FHIRPatientData — обёртка для работы с FHIR R4 REST API
 from fhirData import FHIRPatientData
 
-# --- Закомментированные импорты (старый монолитный код, заменён модульной архитектурой) ---
-"""
-import sdc11073
-import asyncio
-import socket
-import threading
-import time
-from PySide6.QtCore import QObject, Signal, Slot, Property
-from GateWay import sdc_opc_gateway
-from sdc11073.consumer import SdcConsumer
-from sdc11073.mdib import ConsumerMdib
-from sdc11073.xml_types.actions import periodic_actions
-from sdc11073.mdib.statecontainers import LocationContextStateContainer
-from sdc11073.wsdiscovery import WSDiscovery
-from sdc11073.xml_types import pm_qnames as pm
-from sdc11073.xml_types.pm_qnames import LocationContextState
-from sdc11073 import observableproperties
-from sdc11073.xml_types.pm_types import AlertSignalPresence, AlertActivation
-"""
-
 if __name__ == "__main__":
 
     # ------------------------------------------------------------------
-    # ШАГ 1: Загрузка данных пациента из FHIR
+    # ШАГ 0: Парсинг аргументов командной строки
     # ------------------------------------------------------------------
-    # Пользователь вводит FHIR Patient ID (например, "12345" или UUID).
-    # В реальном приложении этот ID может приходить из ЭМК/HIS системы.
-    patient_id = input("Введите ID пациента и нажмите Enter: ").strip()
-
-    fhir = FHIRPatientData()
-    try:
-        # fetch() делает HTTP-запросы к FHIR-серверу:
-        #   GET /Patient/{id}
-        #   GET /Condition?patient={id}
-        #   GET /Observation?patient={id}
-        fhir.fetch(patient_id)
-        fhir.print_summary()  # Выводит краткую сводку в консоль для проверки
-    except Exception as e:
-        print(f"Ошибка загрузки данных пациента: {e}")
-        # Не выходим из программы — приложение может работать и без FHIR-данных
-
-    # ------------------------------------------------------------------
-    # ШАГ 2: Создание Manager'а и запуск сканирования сети
-    # ------------------------------------------------------------------
-    # Manager создаётся ДО QGuiApplication — он не требует Qt event loop для старта.
-    # Передаём fhir-данные: Manager передаст их каждому DeviceHandler при создании.
-    manager = SdcMyConsumer(fhir_data=fhir)
-    manager.start()  # Запускает discovery_thread (WSDiscovery + asyncio loop)
+    parser = argparse.ArgumentParser(
+        description="SDC Consumer — многорежимный оркестратор медицинских устройств"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["icu", "op"],
+        default="icu",
+        help=(
+            "Режим запуска: "
+            "'icu' — Silent ICU (Qt/QML UI, без FHIR); "
+            "'op'  — Operating Room (Headless, с FHIR-контекстами)."
+        ),
+    )
+    # parse_known_args позволяет Qt-аргументам (-platform, -style) не вызывать ошибку
+    args, qt_argv = parser.parse_known_args()
+    mode = args.mode
+    print(f"[Main] Starting in mode: '{mode}'")
 
     # ------------------------------------------------------------------
-    # ШАГ 3: Инициализация Qt-приложения
+    # ШАГ 1: Инициализация Qt-приложения (ДО загрузки FHIR и Manager'а)
     # ------------------------------------------------------------------
-    # QGuiApplication — базовый класс для GUI-приложений без виджетов (только QML).
-    # sys.argv передаёт аргументы командной строки (Qt обрабатывает -platform, -style и т.д.)
-    app = QGuiApplication(sys.argv)
+    # QGuiApplication/QCoreApplication должны быть созданы ДО любого QObject.
+    # qt_argv — аргументы без --mode (Qt их не знает).
+    effective_argv = [sys.argv[0]] + qt_argv
 
-    # QQmlApplicationEngine — загружает и исполняет QML-файлы
-    engine = QQmlApplicationEngine()
-
-    # ------------------------------------------------------------------
-    # ШАГ 4: Регистрация Python-объектов в QML-контексте
-    # ------------------------------------------------------------------
-    # setContextProperty() делает Python-объект доступным в QML по имени.
-    # QML может обращаться к методам, свойствам и сигналам этих объектов.
-
-    # sdcManager — доступ к Manager'у: сигналы deviceConnected/deviceDisconnected,
-    #              список устройств, состояние сети
-    engine.rootContext().setContextProperty("sdcManager", manager)
-
-    # fhirData — доступ к данным пациента: имя, диагнозы, наблюдения
-    # QML может отображать эти данные в панели пациента
-    engine.rootContext().setContextProperty("fhirData", fhir)
+    if mode == "icu":
+        from PySide6.QtGui import QGuiApplication
+        app = QGuiApplication(effective_argv)
+    else:  # op
+        from PySide6.QtCore import QCoreApplication
+        app = QCoreApplication(effective_argv)
 
     # ------------------------------------------------------------------
-    # ШАГ 5: Загрузка главного QML-файла
+    # ШАГ 2: Загрузка данных пациента из FHIR (только в режиме 'op')
     # ------------------------------------------------------------------
-    # os.path.dirname(__file__) + "Main.qml" — путь относительно этого файла,
-    # что позволяет запускать из любой директории.
-    qml_file = os.path.join(os.path.dirname(__file__), "Main.qml")
-    engine.load(qml_file)
+    fhir = None
+    if mode == "op":
+        patient_id = input("Введите ID пациента и нажмите Enter: ").strip()
+        fhir = FHIRPatientData()
+        try:
+            fhir.fetch(patient_id)
+            fhir.print_summary()
+        except Exception as e:
+            print(f"Ошибка загрузки данных пациента: {e}")
+            # Продолжаем без FHIR — приложение справится с пустым контекстом
 
-    # Проверяем успешность загрузки QML
-    if not engine.rootObjects():
-        # rootObjects() пуст если QML-файл не найден или содержит синтаксические ошибки
-        sys.exit(-1)
+    # ------------------------------------------------------------------
+    # ШАГ 3: Создание Manager'а и запуск сканирования сети
+    # ------------------------------------------------------------------
+    # В режиме 'icu': fhir_data=None (FHIR не нужен, UI работает без него).
+    # В режиме 'op':  fhir_data=fhir (контексты будут записаны в каждое устройство).
+    manager = SdcMyConsumer(fhir_data=fhir, mode=mode)
+    manager.start()
 
     # ------------------------------------------------------------------
-    # ШАГ 6: Запуск Qt event loop
+    # ШАГ 4: QML-движок (только в режиме 'icu')
     # ------------------------------------------------------------------
-    # app.exec() блокирует этот поток до закрытия последнего окна.
-    # Все Qt-сигналы, слоты и таймеры обрабатываются здесь.
-    # При выходе sys.exit() завершает процесс с кодом возврата из exec().
+    if mode == "icu":
+        from PySide6.QtQml import QQmlApplicationEngine
+
+        engine = QQmlApplicationEngine()
+
+        # Регистрируем Python-объекты в QML-контексте
+        engine.rootContext().setContextProperty("sdcManager", manager)
+        # fhirData в ICU-режиме не используется, но регистрируем None-заглушку
+        # чтобы QML-код не падал при обращении к fhirData
+        engine.rootContext().setContextProperty("fhirData", None)
+
+        qml_file = os.path.join(os.path.dirname(__file__), "Main.qml")
+        engine.load(qml_file)
+
+        if not engine.rootObjects():
+            sys.exit(-1)
+
+    # ------------------------------------------------------------------
+    # ШАГ 5: Запуск Qt event loop
+    # ------------------------------------------------------------------
+    # В 'icu': обрабатывает UI, сигналы, слоты.
+    # В 'op':  обрабатывает только Qt-сигналы (headless).
     sys.exit(app.exec())

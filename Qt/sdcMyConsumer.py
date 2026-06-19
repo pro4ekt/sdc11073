@@ -86,14 +86,20 @@ class SdcMyConsumer(QObject):
     # Передаёт EPR (UUID-строку) — QML удалит соответствующий элемент из списка.
     deviceDisconnected = Signal(str, arguments=['epr'])
 
-    def __init__(self, fhir_data: FHIRPatientData = None):
+    def __init__(self, fhir_data: FHIRPatientData = None, mode: str = "icu"):
         """
         Параметры:
           fhir_data — данные пациента из FHIR (имя, рост, вес, диагнозы).
                       Передаются каждому DeviceHandler при создании для записи
                       в PatientContext устройства.
+                      В режиме 'icu' передаётся None (FHIR не загружается).
+          mode      — режим запуска: 'icu' (Qt/QML) или 'op' (headless + FHIR).
+                      Влияет на испускание сигналов в UI и поведение воркеров.
         """
         super().__init__()
+
+        # Режим запуска ('icu' | 'op') — прокидывается в каждый DeviceHandler
+        self.mode = mode
 
         # Данные пациента из FHIR — используются при создании каждого нового воркера
         self.fhir_data = fhir_data
@@ -211,11 +217,16 @@ class SdcMyConsumer(QObject):
         asyncio.run(self._discovery_loop())
 
     # =========================================================================
-    # Асинхронная задача формирования ансамбля
+    # Асинхронная задача формирования ансамбля (только режим 'op')
     # =========================================================================
     async def _ensemble_formation_task(self):
         """
         Запускается параллельно с _discovery_loop() через create_task().
+        Работает ТОЛЬКО в режиме 'op' (Operating Room).
+
+        В режиме 'icu' эта задача не запускается — там нет FHIR-данных,
+        а ансамблевые контексты (EnsembleContext/WorkflowContext) не используются.
+
         Ждёт 10 секунд после старта (чтобы все устройства успели подключиться),
         затем проводит интерактивный процесс формирования ансамбля.
 
@@ -354,7 +365,9 @@ class SdcMyConsumer(QObject):
 
         # Запускаем задачу формирования ансамбля параллельно с основным циклом.
         # create_task() запускает корутину "в фоне" в том же event loop.
-        self.manager_loop.create_task(self._ensemble_formation_task())
+        # ТОЛЬКО в режиме 'op': в 'icu' нет FHIR-данных и ансамбли не нужны.
+        if self.mode == "op":
+            self.manager_loop.create_task(self._ensemble_formation_task())
 
         while self.running:
             try:
@@ -378,7 +391,7 @@ class SdcMyConsumer(QObject):
                             # Создаём воркер только для НЕЗНАКОМЫХ устройств
                             if epr not in self.devices:
                                 print(f"[Manager] Found NEW device: {epr}. Spawning Worker.")
-                                device = DeviceHandler(service, self)
+                                device = DeviceHandler(service, self, mode=self.mode)
                                 self.devices[epr] = device
                                 device.start()  # Запускает threading.Thread.start()
 
@@ -417,8 +430,9 @@ class SdcMyConsumer(QObject):
             if epr in self.devices:
                 print(f"[Manager] Removing handler for {epr} from registry.")
                 del self.devices[epr]
-                # Уведомляем QML: это устройство нужно убрать из списка
-                self.deviceDisconnected.emit(epr)
+                # Уведомляем QML только в режиме 'icu' (в 'op' UI-потока нет)
+                if self.mode == "icu":
+                    self.deviceDisconnected.emit(epr)
 
             # ------------------------------------------------------------------
             # Очистка кэша WSDiscovery (антизомби-защита)
