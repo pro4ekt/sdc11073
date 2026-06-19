@@ -179,12 +179,12 @@ Item {
                 layer.enabled: true
             }
 
-            // Yellow tint overlay — visible only in Ack state
+            // Yellow tint overlay — visible when Ack (from backend) OR locally silenced (timeout=1)
             Rectangle {
                 anchors.fill: parent
                 color: "#FFD700"
                 opacity: 0.38
-                visible: alarm === "Ack"
+                visible: alarm === "Ack" || (alarm === "On" && timeout === 1)
             }
 
             MouseArea {
