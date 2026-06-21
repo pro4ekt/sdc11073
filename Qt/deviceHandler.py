@@ -208,7 +208,7 @@ class DeviceHandler(threading.Thread):
           2. Инициализация локальной копии MDIB
           3. Подписка на обновления метрик и тревог
           4. Создание Qt-объекта и его перемещение в главный поток
-          5. Основной цикл мониторинга с T_fallback (IHE SDPi)
+          5. Основной цикл мониторинга с механизмом T_fallback (IHE SDPi)
         """
         print(f"[Worker {self.epr}] Connecting...")
         try:
@@ -330,18 +330,32 @@ class DeviceHandler(threading.Thread):
             #
             # Аналогично для alert_by_handle — только триггером служит EpisodicAlertReport.
             #
-            # ПРИМЕЧАНИЕ: сейчас оба callback'а просто делают return (OPC UA отключён),
-            # но инфраструктура сохранена для будущего использования.
-            #
-            # РЕЖИМ 'op': подписки на метрики и тревоги пропускаются —
-            # они нужны только для UI и OPC UA, которые в headless-режиме отключены.
-            # Это снижает нагрузку на CPU: sdc11073 не будет вызывать callback'и,
-            # которые всё равно ничего не делают.
-            if self.mode == "icu":
-                observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
-                observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
+            # Оба callback'а активны в ОБОИХ режимах:
+            #   'icu' — вызывают scheduleUpdate() для обновления Qt/QML UI (rate-limited)
+            #   'op'  — пишут события в OperationLogger (тревоги сразу, метрики с троттлингом)
+            observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
+            observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
 
             print(f"[Worker {self.epr}] Connection established. Monitoring...")
+
+            # ------------------------------------------------------------------
+            # ШАГ 3b: Запись PatientContext в устройство [только 'op']
+            # ------------------------------------------------------------------
+            # В 'op'-режиме FHIR-данные уже загружены в self.patient_context при
+            # создании воркера (DeviceHandler.__init__ → manager.get_patient_context_data()).
+            # Отправляем их немедленно после init_mdib(), не дожидаясь формирования ансамбля.
+            #
+            # Зачем это нужно, если apply_ensemble_context() тоже отправит Patient+Workflow?
+            # Потому что ансамбль формируется через ~10 секунд (asyncio.sleep(10) в
+            # _ensemble_formation_task) и требует подтверждения пользователя (y/n).
+            # apply_patient_to_mdib() гарантирует, что данные пациента попадут в устройство
+            # как можно раньше — независимо от того, будет ли ансамбль создан вообще.
+            #
+            # При последующем вызове apply_ensemble_context() данные будут перезаписаны —
+            # это корректно, т.к. SetContextState идемпотентен (повторная запись тех же
+            # данных не создаёт дублирования в MDIB провайдера).
+            if self.mode == "op" and self.patient_context:
+                self.apply_patient_to_mdib()
 
             # ------------------------------------------------------------------
             # ШАГ 4: Создание Qt-объекта и его передача в UI-поток (только 'icu')
@@ -444,39 +458,151 @@ class DeviceHandler(threading.Thread):
                         pass
 
     # =========================================================================
+    # Вспомогательный метод: построение PatientContextState + WorkflowContextState
+    # =========================================================================
+    def _build_patient_workflow_states(self) -> list:
+        """
+        Builds a list of proposed BICEPS context states from self.patient_context.
+
+        Returns: [PatientContextState, WorkflowContextState?]
+          — PatientContextState is always included if PatientContextDescriptor exists.
+          — WorkflowContextState is included only if WorkflowContextDescriptor exists.
+          — Returns [] if patient_context is empty or no descriptors found.
+
+        IMPORTANT: Must be called with self.data_lock HELD and self.mdib ready.
+        Does NOT perform any network calls — only constructs in-memory objects.
+        """
+        ctx = self.patient_context
+        if not ctx:
+            return []
+
+        states = []
+
+        # ── PatientContextState ──────────────────────────────────────────────
+        pat_descriptors = self.mdib.descriptions.NODETYPE.get(pm.PatientContextDescriptor, [])
+        if pat_descriptors:
+            pat_descriptor = pat_descriptors[0]
+            existing_pat = self.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
+            if existing_pat:
+                # "Update" strategy: deep-copy the existing state so the Provider
+                # keeps its own handle/version fields intact and only receives our
+                # changes. mk_copy() is a BICEPS deep-copy — safe to modify freely.
+                proposed_pat = existing_pat[0].mk_copy()
+            else:
+                # "Create" strategy: no state exists yet on the Provider.
+                # mk_proposed_context_object() creates a blank proposed state
+                # with the correct DescriptorHandle pre-filled by the library.
+                proposed_pat = self.consumer.context_service_client.mk_proposed_context_object(
+                    pat_descriptor.Handle
+                )
+
+            # ASSOCIATED = context is active and attached to this patient.
+            # Other values: DISASSOCIATED (released), PRE_ASSOCIATED (pending), NO_ASSOCIATION.
+            proposed_pat.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+            proposed_pat.CoreData.Givenname  = ctx.get('given_name')  or None
+            proposed_pat.CoreData.Familyname = ctx.get('family_name') or None
+
+            # Weight / Height: BICEPS requires Decimal for precise numeric values.
+            # split()[0] strips the unit suffix if the value came as "70.5 kg" (string).
+            weight_num = ctx.get('weight_value')
+            if weight_num is not None:
+                w_str = str(weight_num).split()[0] if isinstance(weight_num, str) else str(weight_num)
+                proposed_pat.CoreData.Weight = Measurement(
+                    Decimal(w_str), CodedValue(ctx.get('weight_unit') or 'kg')
+                )
+            else:
+                proposed_pat.CoreData.Weight = None
+
+            height_num = ctx.get('height_value')
+            if height_num is not None:
+                h_str = str(height_num).split()[0] if isinstance(height_num, str) else str(height_num)
+                proposed_pat.CoreData.Height = Measurement(
+                    Decimal(h_str), CodedValue(ctx.get('height_unit') or 'cm')
+                )
+            else:
+                proposed_pat.CoreData.Height = None
+
+            states.append(proposed_pat)
+
+        # ── WorkflowContextState ─────────────────────────────────────────────
+        # WorkflowContextDescriptor is optional — not all SDC devices expose it.
+        # If absent, we skip silently (no error) since Patient+Ensemble are enough.
+        wf_descriptors = self.mdib.descriptions.NODETYPE.get(pm.WorkflowContextDescriptor, [])
+        if wf_descriptors:
+            wf_descriptor = wf_descriptors[0]
+            existing_wf = self.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
+            if existing_wf:
+                proposed_wf = existing_wf[0].mk_copy()
+            else:
+                proposed_wf = self.consumer.context_service_client.mk_proposed_context_object(
+                    wf_descriptor.Handle
+                )
+
+            proposed_wf.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+
+            # WorkflowDetail can be None on a freshly created proposed state —
+            # initialise it before accessing its sub-fields.
+            if not hasattr(proposed_wf, 'WorkflowDetail') or proposed_wf.WorkflowDetail is None:
+                proposed_wf.WorkflowDetail = pm_types.WorkflowDetail()
+
+            # FHIR Patient ID → BICEPS InstanceIdentifier.
+            # Root = our system namespace ("Hospital_FHIR"),
+            # Extension = the patient's ID within that namespace.
+            patient_id = ctx.get('patient_id')
+            if patient_id:
+                patient_data = pm_types.PatientDemographicsCoreData()
+                identifier = pm_types.InstanceIdentifier(
+                    root='Hospital_FHIR',
+                    extension_string=str(patient_id)
+                )
+                patient_data.Identification.append(identifier)
+                proposed_wf.WorkflowDetail.Patient = patient_data
+
+            # DangerCode carries active diagnoses as CodedValue entries.
+            # IMPORTANT: clear() before re-filling to prevent duplicates when this
+            # method is called multiple times for the same device (e.g. apply_patient
+            # followed by apply_ensemble both call _build_patient_workflow_states).
+            conditions = ctx.get('conditions', [])
+            if conditions:
+                if not proposed_wf.WorkflowDetail.DangerCode:
+                    proposed_wf.WorkflowDetail.DangerCode = []
+                proposed_wf.WorkflowDetail.DangerCode.clear()
+                for condition in conditions:
+                    proposed_wf.WorkflowDetail.DangerCode.append(pm_types.CodedValue(str(condition)))
+
+            states.append(proposed_wf)
+
+        return states
+
+    # =========================================================================
     # Запись данных пациента (из FHIR) в PatientContext устройства
     # =========================================================================
     def apply_patient_to_mdib(self):
         """
-        Отправляет данные пациента из FHIR в PatientContextState провайдера
-        через сетевой вызов SetContextState (SOAP/HTTP).
+        Sends FHIR patient data into the provider's PatientContextState + WorkflowContextState
+        via a SetContextState SOAP call.
 
-        Дополнительно отправляет WorkflowContextState с ID пациента и диагнозами.
+        Uses _build_patient_workflow_states() to avoid duplicating the state-building logic
+        that is also used in apply_ensemble_context().
 
-        ДВУХФАЗОВАЯ СТРУКТУРА (паттерн для thread-safe сетевых вызовов):
-          Phase 1 (под data_lock):  читаем MDIB, строим proposed states.
-          Phase 2 (без лока):       выполняем сетевой запрос SetContextState.
+        TWO-PHASE PATTERN (thread-safe network call):
+          Phase 1 (under data_lock):  read MDIB, build proposed states.
+          Phase 2 (lock released):    send SetContextState over the network.
 
-        Почему так? Сетевой запрос может занять сотни миллисекунд.
-        Держать data_lock на это время означало бы блокировку UI-потока
-        (который пытается прочитать MDIB через update_data()).
-        Поэтому: собираем данные быстро под локом, затем отпускаем лок и делаем запрос.
+        The operation handle is selected by matching OperationTarget to the
+        PatientContextDescriptor handle — same approach as apply_ensemble_context().
         """
         if not self.patient_context:
-            print(f"[Worker {self.epr}] No patient context data, skipping.")
+            print(f"[Worker {self.epr}] No patient context data, skipping apply_patient_to_mdib.")
             return
-
-        # В режиме 'icu' FHIR-данных нет (fhir_data=None → patient_context пуст).
-        # Метод уже завершился бы на проверке выше, но для явности добавляем guard.
         if self.mode == "icu":
             return
 
-        # Переменные, которые будут заполнены в Phase 1 и использованы в Phase 2
         operation_handle = None
-        states_to_send = []
+        states_to_send   = []
 
         # ------------------------------------------------------------------
-        # PHASE 1: Чтение MDIB под локом и построение proposed states
+        # Phase 1: Build states under data_lock
         # ------------------------------------------------------------------
         try:
             with self.data_lock:
@@ -484,131 +610,52 @@ class DeviceHandler(threading.Thread):
                     print(f"[Worker {self.epr}] MDIB not ready, skipping apply_patient_to_mdib.")
                     return
 
-                # Находим PatientContextDescriptor — он описывает структуру контекста пациента.
-                # В MDIB он должен быть ровно один (или ни одного, если устройство не поддерживает).
+                # Find PatientContextDescriptor to locate the correct operation
                 pat_descriptors = self.mdib.descriptions.NODETYPE.get(pm.PatientContextDescriptor, [])
                 if not pat_descriptors:
-                    print(f"[Worker {self.epr}] No PatientContextDescriptor found in provider MDIB.")
+                    print(f"[Worker {self.epr}] No PatientContextDescriptor found.")
                     return
-                descriptor = pat_descriptors[0]
+                pat_descriptor = pat_descriptors[0]
 
-                # Находим операцию SetContextState — это handle операции, которую нужно вызвать.
-                # Операция — это "точка входа" на стороне Provider'а для изменения контекстов.
+                # Find SetContextState operation whose OperationTarget = PatientContextDescriptor.
+                #
+                # WHY filter by OperationTarget instead of taking set_ctx_ops[0]?
+                # A device may expose multiple SetContextState operations, each targeting
+                # a different context type (Patient, Ensemble, Location…).  Using the wrong
+                # handle would cause the Provider to reject the request with OperationNotAllowed.
+                # Filtering by OperationTarget == PatientContextDescriptor.Handle guarantees
+                # we call the correct entry point.
                 set_ctx_ops = self.mdib.descriptions.NODETYPE.get(pm.SetContextStateOperationDescriptor, [])
-                if not set_ctx_ops:
-                    print(f"[Worker {self.epr}] No SetContextStateOperationDescriptor found in provider MDIB.")
+                for op in set_ctx_ops:
+                    if op.OperationTarget == pat_descriptor.Handle:
+                        operation_handle = op.Handle
+                        break
+                # Fallback: some minimal SDC implementations expose only ONE generic
+                # SetContextState operation without OperationTarget specificity.
+                # Accept it rather than silently failing.
+                if not operation_handle and set_ctx_ops:
+                    operation_handle = set_ctx_ops[0].Handle
+
+                if not operation_handle:
+                    print(f"[Worker {self.epr}] No SetContextStateOperation found.")
                     return
-                operation_handle = set_ctx_ops[0].Handle  # Handle — строковый ID операции
 
-                # Стратегия "update or create":
-                # Если PatientContextState уже существует → берём копию и модифицируем её.
-                # Если нет → просим ContextServiceClient создать новый proposed state.
-                # mk_copy() создаёт глубокую копию, безопасную для изменений без влияния на MDIB.
-                existing_states = self.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
-                if existing_states:
-                    proposed_state = existing_states[0].mk_copy()
-                else:
-                    proposed_state = self.consumer.context_service_client.mk_proposed_context_object(descriptor.Handle)
-
-                # ASSOCIATED — означает, что этот контекст активен и привязан к пациенту
-                proposed_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
-
-                # Заполняем CoreData данными из FHIR
-                ctx = self.patient_context
-                proposed_state.CoreData.Givenname = ctx.get('given_name') or None
-                proposed_state.CoreData.Familyname = ctx.get('family_name') or None
-
-                # Вес: преобразуем в Decimal (требование BICEPS — точная арифметика).
-                # split()[0] нужен на случай если строка содержит единицу ("70.5 kg").
-                weight_num = ctx.get('weight_value')
-                if weight_num is not None:
-                    weight_val_str = str(weight_num).split()[0] if isinstance(weight_num, str) else str(weight_num)
-                    proposed_state.CoreData.Weight = Measurement(
-                        Decimal(weight_val_str),
-                        CodedValue(ctx.get('weight_unit') or 'kg')
-                    )
-                else:
-                    proposed_state.CoreData.Weight = None
-
-                # Рост — аналогично весу
-                height_num = ctx.get('height_value')
-                if height_num is not None:
-                    height_val_str = str(height_num).split()[0] if isinstance(height_num, str) else str(height_num)
-                    proposed_state.CoreData.Height = Measurement(
-                        Decimal(height_val_str),
-                        CodedValue(ctx.get('height_unit') or 'cm')
-                    )
-                else:
-                    proposed_state.CoreData.Height = None
-
-                # Начинаем список стейтов для отправки с PatientContextState
-                states_to_send = [proposed_state]
-
-                # ------------------------------------------------------------------
-                # WorkflowContextState — дополнительный контекст для рабочего процесса.
-                # Содержит: ID пациента (из FHIR), коды заболеваний (DiagnosisCodes).
-                # Проверяем наличие WorkflowContextDescriptor — не все устройства его имеют.
-                # ------------------------------------------------------------------
-                wf_descriptors = self.mdib.descriptions.NODETYPE.get(pm.WorkflowContextDescriptor, [])
-                if wf_descriptors:
-                    wf_descriptor = wf_descriptors[0]
-
-                    # Аналогичная стратегия update or create для WorkflowContextState
-                    existing_wf_states = self.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
-                    if existing_wf_states:
-                        proposed_wf_state = existing_wf_states[0].mk_copy()
-                    else:
-                        proposed_wf_state = self.consumer.context_service_client.mk_proposed_context_object(wf_descriptor.Handle)
-
-                    proposed_wf_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
-
-                    # WorkflowDetail может быть None у нового стейта — инициализируем
-                    if not hasattr(proposed_wf_state, 'WorkflowDetail') or proposed_wf_state.WorkflowDetail is None:
-                        proposed_wf_state.WorkflowDetail = pm_types.WorkflowDetail()
-
-                    # Привязываем FHIR Patient ID через InstanceIdentifier.
-                    # Root — это пространство имён идентификатора (наша "система" = FHIR).
-                    # Extension — сам ID пациента в этой системе.
-                    patient_id = ctx.get('patient_id')
-                    if patient_id:
-                        patient_data = pm_types.PatientDemographicsCoreData()
-                        identifier = pm_types.InstanceIdentifier(
-                            root="Hospital_FHIR",
-                            extension_string=str(patient_id)
-                        )
-                        patient_data.Identification.append(identifier)
-                        proposed_wf_state.WorkflowDetail.Patient = patient_data
-
-                    # Диагнозы пациента — каждое заболевание как отдельный CodedValue в DangerCode.
-                    # Сначала очищаем старые значения, чтобы не дублировать при повторных вызовах.
-                    conditions = ctx.get('conditions', [])
-                    if conditions:
-                        if not proposed_wf_state.WorkflowDetail.DangerCode:
-                            proposed_wf_state.WorkflowDetail.DangerCode = []
-                        proposed_wf_state.WorkflowDetail.DangerCode.clear()
-                        for condition in conditions:
-                            danger_code_obj = pm_types.CodedValue(str(condition))
-                            proposed_wf_state.WorkflowDetail.DangerCode.append(danger_code_obj)
-
-                    states_to_send.append(proposed_wf_state)
+                states_to_send = self._build_patient_workflow_states()
 
         except Exception as e:
             print(f"[Worker {self.epr}] Failed to build patient context states: {e}")
-            return  # Не продолжаем — нечего отправлять
+            return
+
+        if not states_to_send:
+            print(f"[Worker {self.epr}] No states to send (no descriptors on device).")
+            return
 
         # ------------------------------------------------------------------
-        # PHASE 2: Сетевой запрос SetContextState (БЕЗ data_lock)
+        # Phase 2: Send SetContextState (lock released)
         # ------------------------------------------------------------------
-        # Все proposed states готовы. Теперь отправляем их одним запросом.
-        # Лок уже отпущен — UI-поток может свободно читать MDIB во время ожидания ответа.
         try:
             if self.consumer.context_service_client:
-                if not operation_handle:
-                    # operation_handle пуст — такого быть не должно, но защищаемся
-                    print(f"[Worker {self.epr}] operation_handle is empty, cannot send SetContextState.")
-                    return
-                print(f"[Worker {self.epr}] Sending SetContextState with operation '{operation_handle}'")
-                # Отправляем все стейты единым SOAP-запросом
+                print(f"[Worker {self.epr}] Sending PatientContext+Workflow (op='{operation_handle}')...")
                 self.consumer.context_service_client.set_context_state(
                     operation_handle=operation_handle,
                     proposed_context_states=states_to_send
@@ -616,6 +663,10 @@ class DeviceHandler(threading.Thread):
                 ctx = self.patient_context
                 print(f"[Worker {self.epr}] PatientContext applied: "
                       f"{ctx.get('given_name')} {ctx.get('family_name')}")
+                # Log to operation report if logger is active
+                logger = getattr(self.manager, 'operation_logger', None)
+                if logger:
+                    logger.log_context_applied(self.epr, 'PatientContext + WorkflowContext')
             else:
                 print(f"[Worker {self.epr}] No context_service_client available.")
         except Exception as e:
@@ -626,228 +677,187 @@ class DeviceHandler(threading.Thread):
     # =========================================================================
     def apply_ensemble_context(self, ensemble_uuid: str):
         """
-        Отправляет EnsembleContext с UUID ансамбля на устройство.
-        Одновременно отправляет PatientContextState и WorkflowContextState —
-        всё в одном SetContextState запросе для атомарности.
+        Sends EnsembleContextState (with the ensemble UUID) plus PatientContextState
+        and WorkflowContextState — all in a single atomic SetContextState request.
 
-        Ансамбль — это логическая группа SDC-устройств в одной операционной.
-        UUID ансамбля генерируется Manager'ом (SdcMyConsumer) один раз при формировании
-        группы и рассылается всем участникам через этот метод.
+        Patient/Workflow states are built via _build_patient_workflow_states() to
+        avoid duplicating the ~60-line construction logic from apply_patient_to_mdib().
 
-        РЕЖИМ 'icu': метод сразу завершается — в ICU-режиме FHIR-данных нет и
-        ансамбли формируются в 'op'-режиме.
+        MODE 'icu': returns immediately — no FHIR data, no ensemble in ICU mode.
 
-        СТРУКТУРА: так же двухфазовая (Phase 1 под локом, Phase 2 без лока),
-        как и apply_patient_to_mdib() — по тем же причинам безопасности.
+        TWO-PHASE PATTERN: same as apply_patient_to_mdib() — Phase 1 under lock,
+        Phase 2 (network call) with lock released.
         """
-        # В ICU-режиме FHIR-данных нет — ансамбль не формируется
         if self.mode == "icu":
             return
         try:
-            # Локальный импорт — избегаем циклических зависимостей на уровне модуля
+            # pm and pm_types are already imported at module level, but we re-import
+            # locally here so the names shadow the module-level ones cleanly within
+            # this method's scope.  This also makes the dependency explicit if this
+            # method is ever extracted or tested in isolation.
             from sdc11073.xml_types import pm_qnames as pm
             from sdc11073.xml_types import pm_types
 
+            operation_handle = None
+            states_to_send   = []
+
+            # ------------------------------------------------------------------
+            # Phase 1: Build all context states under data_lock
+            # ------------------------------------------------------------------
             with self.data_lock:
                 if not self.mdib:
-                    return  # MDIB ещё не инициализирован
+                    return
 
-                # ------------------------------------------------------------------
-                # Шаг 1: Находим EnsembleContextDescriptor
-                # Ансамбль описывается своим дескриптором в MDIB.
-                # Если дескриптора нет — устройство не поддерживает ансамбли.
-                # ------------------------------------------------------------------
+                # Step 1: EnsembleContextDescriptor
+                # Presence of EnsembleContextDescriptor indicates the device supports
+                # BICEPS ensemble membership.  If absent, skip silently.
                 ens_descriptors = self.mdib.descriptions.NODETYPE.get(pm.EnsembleContextDescriptor, [])
                 if not ens_descriptors:
                     print(f"[Worker {self.epr}] No EnsembleContextDescriptor found.")
                     return
                 descriptor = ens_descriptors[0]
 
-                # ------------------------------------------------------------------
-                # Шаг 2: Находим операцию SetContextState для EnsembleContext.
-                # ВАЖНО: нельзя использовать первую попавшуюся операцию — нужна та,
-                # у которой OperationTarget указывает именно на наш EnsembleContextDescriptor.
-                # ------------------------------------------------------------------
-                operation_handle = None
+                # Step 2: Operation targeting EnsembleContextDescriptor.
+                # Same OperationTarget-based filter as apply_patient_to_mdib() —
+                # see that method for the detailed rationale.
                 set_ctx_ops = self.mdib.descriptions.NODETYPE.get(pm.SetContextStateOperationDescriptor, [])
                 for op in set_ctx_ops:
                     if op.OperationTarget == descriptor.Handle:
                         operation_handle = op.Handle
                         break
-
                 if not operation_handle:
-                    print(f"[Worker {self.epr}] No SetContext operation found for EnsembleContext.")
+                    print(f"[Worker {self.epr}] No SetContextState operation for EnsembleContext.")
                     return
 
-                # ------------------------------------------------------------------
-                # Шаг 3: Создаём/обновляем EnsembleContextState
-                # ------------------------------------------------------------------
-                existing_states = self.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
-                if existing_states:
-                    proposed_state = existing_states[0].mk_copy()
-                    # Очищаем старые идентификаторы, чтобы не накапливать дубликаты
-                    if hasattr(proposed_state, 'Identification') and proposed_state.Identification is not None:
-                        proposed_state.Identification.clear()
+                # Step 3: EnsembleContextState — update or create
+                existing_ens = self.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+                if existing_ens:
+                    proposed_ens = existing_ens[0].mk_copy()
+                    # Clear stale identifiers to avoid accumulating duplicate UUIDs
+                    # if apply_ensemble_context() is called more than once per session.
+                    if hasattr(proposed_ens, 'Identification') and proposed_ens.Identification is not None:
+                        proposed_ens.Identification.clear()
                 else:
-                    proposed_state = self.consumer.context_service_client.mk_proposed_context_object(descriptor.Handle)
+                    proposed_ens = self.consumer.context_service_client.mk_proposed_context_object(
+                        descriptor.Handle
+                    )
 
-                proposed_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+                proposed_ens.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
 
-                # Создаём идентификатор ансамбля:
-                # root    = фиксированный UUID нашей системы (не меняется между сессиями)
-                # extension = уникальный UUID конкретного ансамбля (генерируется при формировании)
+                # Ensemble InstanceIdentifier structure:
+                #   root      = fixed UUID of our Orchestrator system (stable across sessions).
+                #               Any SDC participant can use this to identify our system as the
+                #               ensemble coordinator.
+                #   extension = session-specific ensemble UUID (generated once per OR session).
+                #               Allows matching devices to a particular surgical session.
                 identifier = pm_types.InstanceIdentifier(
-                    root="bce837e3-0c46-4e52-af32-15bb36cfd746",
+                    root='bce837e3-0c46-4e52-af32-15bb36cfd746',
                     extension_string=ensemble_uuid
                 )
-                # IdentifierName — человекочитаемое имя для отображения на устройстве
+                # IdentifierName: human-readable label shown on the device's own display
+                # (e.g. on a Dräger screen, if the device renders EnsembleContext names).
                 identifier.IdentifierName = [pm_types.LocalizedText(ensemble_uuid)]
+                if not hasattr(proposed_ens, 'Identification') or proposed_ens.Identification is None:
+                    proposed_ens.Identification = []
+                proposed_ens.Identification.append(identifier)
 
-                # Убеждаемся, что список Identification инициализирован
-                if not hasattr(proposed_state, 'Identification') or proposed_state.Identification is None:
-                    proposed_state.Identification = []
-                proposed_state.Identification.append(identifier)
+                states_to_send = [proposed_ens]
 
-                # Список стейтов для единого запроса: начинаем с EnsembleContextState
-                states_to_send = [proposed_state]
-
-                # ------------------------------------------------------------------
-                # Шаг 4: Добавляем PatientContext и WorkflowContext в тот же батч.
-                # Отправка всех трёх контекстов одним запросом — атомарная операция:
-                # устройство либо применит все три, либо не применит ни одного.
-                # ------------------------------------------------------------------
+                # Step 4: Append Patient + Workflow states — same batch, atomic delivery.
+                # Sending all three context types in ONE SetContextState request means the
+                # Provider applies them atomically: either all succeed or all fail.
+                # This prevents a race condition where Ensemble is written but PatientContext
+                # is not yet present (which would happen with two separate requests).
+                # _build_patient_workflow_states() is the shared builder — it keeps the
+                # state construction logic in exactly one place.
                 if self.patient_context:
-                    ctx = self.patient_context
-
-                    # PatientContextState — имя, рост, вес
-                    pat_descriptors = self.mdib.descriptions.NODETYPE.get(pm.PatientContextDescriptor, [])
-                    if pat_descriptors:
-                        pat_descriptor = pat_descriptors[0]
-                        existing_pat_states = self.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
-                        if existing_pat_states:
-                            proposed_pat_state = existing_pat_states[0].mk_copy()
-                        else:
-                            proposed_pat_state = self.consumer.context_service_client.mk_proposed_context_object(pat_descriptor.Handle)
-
-                        proposed_pat_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
-                        proposed_pat_state.CoreData.Givenname = ctx.get('given_name') or None
-                        proposed_pat_state.CoreData.Familyname = ctx.get('family_name') or None
-
-                        weight_num = ctx.get('weight_value')
-                        if weight_num is not None:
-                            weight_val_str = str(weight_num).split()[0] if isinstance(weight_num, str) else str(weight_num)
-                            proposed_pat_state.CoreData.Weight = Measurement(
-                                Decimal(weight_val_str),
-                                CodedValue(ctx.get('weight_unit') or 'kg')
-                            )
-                        else:
-                            proposed_pat_state.CoreData.Weight = None
-
-                        height_num = ctx.get('height_value')
-                        if height_num is not None:
-                            height_val_str = str(height_num).split()[0] if isinstance(height_num, str) else str(height_num)
-                            proposed_pat_state.CoreData.Height = Measurement(
-                                Decimal(height_val_str),
-                                CodedValue(ctx.get('height_unit') or 'cm')
-                            )
-                        else:
-                            proposed_pat_state.CoreData.Height = None
-
-                        states_to_send.append(proposed_pat_state)
-
-                    # WorkflowContextState — ID пациента, диагнозы
-                    wf_descriptors = self.mdib.descriptions.NODETYPE.get(pm.WorkflowContextDescriptor, [])
-                    if wf_descriptors:
-                        wf_descriptor = wf_descriptors[0]
-                        existing_wf_states = self.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
-                        if existing_wf_states:
-                            proposed_wf_state = existing_wf_states[0].mk_copy()
-                        else:
-                            proposed_wf_state = self.consumer.context_service_client.mk_proposed_context_object(wf_descriptor.Handle)
-
-                        proposed_wf_state.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
-
-                        if not hasattr(proposed_wf_state, 'WorkflowDetail') or proposed_wf_state.WorkflowDetail is None:
-                            proposed_wf_state.WorkflowDetail = pm_types.WorkflowDetail()
-
-                        # Привязка FHIR Patient ID через InstanceIdentifier
-                        patient_id = ctx.get('patient_id')
-                        if patient_id:
-                            patient_data = pm_types.PatientDemographicsCoreData()
-                            patient_identifier = pm_types.InstanceIdentifier(
-                                root="Hospital_FHIR",
-                                extension_string=str(patient_id)
-                            )
-                            patient_data.Identification.append(patient_identifier)
-                            proposed_wf_state.WorkflowDetail.Patient = patient_data
-
-                        # Коды заболеваний — каждый диагноз как отдельный CodedValue
-                        conditions = ctx.get('conditions', [])
-                        if conditions:
-                            if not proposed_wf_state.WorkflowDetail.DangerCode:
-                                proposed_wf_state.WorkflowDetail.DangerCode = []
-                            proposed_wf_state.WorkflowDetail.DangerCode.clear()
-                            for condition in conditions:
-                                danger_code_obj = pm_types.CodedValue(str(condition))
-                                proposed_wf_state.WorkflowDetail.DangerCode.append(danger_code_obj)
-
-                        states_to_send.append(proposed_wf_state)
+                    states_to_send.extend(self._build_patient_workflow_states())
 
             # ------------------------------------------------------------------
-            # Phase 2: Единый сетевой запрос (лок уже отпущен)
+            # Phase 2: Single atomic network request (lock released)
             # ------------------------------------------------------------------
             if self.consumer.context_service_client:
-                print(f"[Worker {self.epr}] Sending EnsembleContext + Patient + Workflow in one batch...")
+                count = len(states_to_send)
+                print(f"[Worker {self.epr}] Sending {count} context states "
+                      f"(Ensemble+Patient+Workflow) in one batch...")
                 self.consumer.context_service_client.set_context_state(
                     operation_handle=operation_handle,
                     proposed_context_states=states_to_send
                 )
-                print(f"[Worker {self.epr}] All Contexts applied successfully in one batch!")
+                print(f"[Worker {self.epr}] All contexts applied successfully.")
+                # Log to operation report
+                logger = getattr(self.manager, 'operation_logger', None)
+                if logger:
+                    logger.log_context_applied(self.epr, 'EnsembleContext + Patient + Workflow')
             else:
                 print(f"[Worker {self.epr}] No context_service_client available.")
 
         except Exception as e:
-            print(f"[Worker {self.epr}] Failed to apply contexts in batch: {e}")
+            print(f"[Worker {self.epr}] Failed to apply ensemble contexts: {e}")
 
     # =========================================================================
     # Callback для обновлений метрик
     # =========================================================================
     def on_metric_update(self, metrics_by_handle):
         """
-        Вызывается sdc11073 из потока уведомлений при получении EpisodicMetricReport.
+        Called by sdc11073 from its notification thread on EpisodicMetricReport.
 
-        Вместо немедленной работы с данными — триггерим обновление UI через scheduleUpdate().
-        Rate-limiting: не чаще 1 раза в секунду, чтобы не перегружать UI-поток
-        при высокочастотных waveform-данных (200 Hz и выше).
+        'icu' mode: triggers scheduleUpdate() for Qt/QML refresh (rate-limited to 1 Hz
+                    to avoid flooding the UI thread with waveform data).
 
-        scheduleUpdate() потокобезопасен: он только испускает Qt Signal, который
-        Qt автоматически маршалирует в главный поток через queued connection.
+        'op' mode:  writes metric snapshots to OperationLogger (throttled to once per
+                    5 seconds per device to keep the log readable).
         """
-        if self.mode != "icu" or not self.qtDeviceHandler:
-            return
+        if self.mode == "icu":
+            if not self.qtDeviceHandler:
+                return
+            now = time.monotonic()
+            if now - self._last_ui_update_ts >= 1.0:
+                self._last_ui_update_ts = now
+                self.qtDeviceHandler.scheduleUpdate()
 
-        now = time.monotonic()
-        if now - self._last_ui_update_ts >= 1.0:
+        elif self.mode == "op":
+            logger = getattr(self.manager, 'operation_logger', None)
+            if not logger:
+                return
+            now = time.monotonic()
+            # Throttle: write one snapshot per 5 seconds per device
+            if now - self._last_ui_update_ts < 5.0:
+                return
             self._last_ui_update_ts = now
-            self.qtDeviceHandler.scheduleUpdate()
+            for handle, state in metrics_by_handle.items():
+                val = getattr(state.MetricValue, 'Value', None) if state.MetricValue else None
+                if val is not None:
+                    logger.log_metric(self.epr, handle, str(val))
 
     # =========================================================================
     # Callback для обновлений тревог
     # =========================================================================
     def on_alert_update(self, alert_by_handle):
         """
-        Вызывается sdc11073 из потока уведомлений при получении EpisodicAlertReport.
+        Called by sdc11073 from its notification thread on EpisodicAlertReport.
 
-        Тревоги критичны — триггерим UI-обновление немедленно (без rate-limit),
-        но только если не было обновления в последние 0.2 секунды (антиспам).
+        'icu' mode: triggers scheduleUpdate() immediately (0.2 s anti-spam cooldown)
+                    because alarm state changes must reach UI without noticeable delay.
+
+        'op' mode:  logs every alarm state transition to OperationLogger immediately
+                    (no throttle — alarms are clinically significant events).
         """
-        if self.mode != "icu" or not self.qtDeviceHandler:
-            return
+        if self.mode == "icu":
+            if not self.qtDeviceHandler:
+                return
+            now = time.monotonic()
+            if now - self._last_ui_update_ts >= 0.2:
+                self._last_ui_update_ts = now
+                self.qtDeviceHandler.scheduleUpdate()
 
-        now = time.monotonic()
-        if now - self._last_ui_update_ts >= 0.2:
-            self._last_ui_update_ts = now
-            self.qtDeviceHandler.scheduleUpdate()
+        elif self.mode == "op":
+            logger = getattr(self.manager, 'operation_logger', None)
+            if not logger:
+                return
+            for handle, state in alert_by_handle.items():
+                presence = str(getattr(state, 'Presence', 'Unknown'))
+                logger.log_alarm(self.epr, handle, presence)
 
     # =========================================================================
     # DEV-31: Удалённое квитирование (acknowledgement) тревоги

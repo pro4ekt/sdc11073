@@ -131,3 +131,31 @@ dmypy.json
 
 # Intellij IDEA / PyCharm
 .idea/
+
+# AI agent instructions
+AGENTS.md
+AGENT.md
+CLAUDE.md
+.cursorrules
+.windsurfrules
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+gateway_latency.db
+
+# Reports & generated data
+*.csv
+latency_report.csv
+pytest.log
+
+# UML / diagrams
+*.puml
+*.plantuml
+Qt/uml/
+
+# Pickle / binary cache
+*.pickle
+asyncua/binary_address_space.pickle
+

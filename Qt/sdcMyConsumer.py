@@ -32,17 +32,12 @@ import uuid
 
 from typing import TYPE_CHECKING
 
-# Импорты Qt-объектов для работы как QObject (нужны сигналы deviceConnected/deviceDisconnected)
 from qtDeviceHandler import QtDeviceHandler
 from deviceHandler import DeviceHandler
 from PySide6.QtCore import QObject, Signal, Slot, Property
-
-# WSDiscovery — реализация WS-Discovery (стандарт обнаружения сервисов в локальной сети)
-# Рассылает Probe-сообщения по multicast и собирает Hello/ProbeMatch ответы от устройств
 from sdc11073.wsdiscovery import WSDiscovery
-
-# Класс для работы с данными пациента из FHIR (используется для type hints)
 from fhirData import FHIRPatientData
+from operationLogger import OperationLogger
 
 
 def get_local_ip() -> str:
@@ -94,7 +89,7 @@ class SdcMyConsumer(QObject):
                       в PatientContext устройства.
                       В режиме 'icu' передаётся None (FHIR не загружается).
           mode      — режим запуска: 'icu' (Qt/QML) или 'op' (headless + FHIR).
-                      Влияет на испускание сигналов в UI и поведение воркеров.
+                      Влияет на испускание сигналов в UI и поведение воркеры.
         """
         super().__init__()
 
@@ -128,6 +123,20 @@ class SdcMyConsumer(QObject):
 
         # Заглушка для будущего OPC UA Gateway (сейчас не используется)
         self.opcua_gateway = None
+
+        # Active operation session logger (op mode only).
+        # Created in _ensemble_formation_task() AFTER the user confirms ensemble formation
+        # and an ensemble UUID is generated.  Before that moment it is None.
+        #
+        # DeviceHandlers access it via:
+        #   logger = getattr(self.manager, 'operation_logger', None)
+        # This getattr pattern is intentionally safe: if the logger hasn't been created
+        # yet (ensemble not formed, or icu mode), the callback simply skips logging
+        # without raising AttributeError.
+        #
+        # Thread safety: OperationLogger.log() is protected by its own internal Lock,
+        # so multiple DeviceHandler threads can call it concurrently without corruption.
+        self.operation_logger: OperationLogger | None = None
 
         # Поток обнаружения устройств — запускается в start()
         # daemon=True: завершится вместе с главным потоком
@@ -328,12 +337,29 @@ class SdcMyConsumer(QObject):
             ensemble_uuid = str(uuid.uuid4())
             print(f"\n[Ensemble Manager] Creating Ensemble with UUID: {ensemble_uuid}")
 
-            # Сохраняем в память: epr → uuid (для будущего использования)
+            # Create the OperationLogger before calling apply_ensemble_context().
+            # This ensures that when DeviceHandlers receive the context callback
+            # (logger.log_context_applied inside apply_ensemble_context) the logger
+            # is already assigned to self.operation_logger and ready for writes.
+            self.operation_logger = OperationLogger(
+                patient_ctx=self.get_patient_context_data(),
+                ensemble_uuid=ensemble_uuid,
+                output_dir='.'
+            )
+            self.operation_logger.log_ensemble(
+                f"Ensemble formed with {len(devices_snapshot)} device(s)"
+            )
+
+            # Register each device in ensemble_devices and log it.
+            # This is done in a separate loop BEFORE apply_ensemble_context() so that
+            # the ensemble table is fully populated before any SOAP calls go out.
             for dev in devices_snapshot:
                 self.ensemble_devices[dev.epr] = ensemble_uuid
+                self.operation_logger.log_device_event(dev.epr, 'Joined ensemble')
 
-            # Отправляем UUID на все устройства ансамбля
-            # apply_ensemble_context() вызывает SetContextState на каждом устройстве
+            # Send Ensemble + Patient + Workflow context to each device atomically.
+            # Each call may take hundreds of ms (network round-trip) — that is fine
+            # here since we are in an asyncio Task, not blocking the main UI thread.
             for dev in devices_snapshot:
                 dev.apply_ensemble_context(ensemble_uuid)
         else:
@@ -352,7 +378,7 @@ class SdcMyConsumer(QObject):
           3. Для каждого нового EPR: создаём DeviceHandler и запускаем его
           4. Параллельно: запускаем _ensemble_formation_task()
         """
-        # Сохраняем ссылку на running event loop — нужна воркерам для run_coroutine_threadsafe()
+        # Сохраняем ссылку на running event loop — нужна воркеры для run_coroutine_threadsafe()
         self.manager_loop = asyncio.get_running_loop()
 
         local_ip = get_local_ip()
@@ -407,6 +433,17 @@ class SdcMyConsumer(QObject):
 
         # Цикл завершён (self.running = False) — останавливаем WSDiscovery
         self.discovery.stop()
+
+        # Write the session footer and flush the log file.
+        # This is reached when SdcMyConsumer.stop() sets self.running = False
+        # and the discovery loop exits cleanly.
+        # NOTE: if the process is force-killed (SIGKILL / Windows task-kill),
+        # finalize() will NOT be called and the log will lack a footer — but all
+        # previously written lines are already safely on disk (open/write/close
+        # per event in OperationLogger.log()).
+        if self.operation_logger:
+            path = self.operation_logger.finalize()
+            print(f"[Manager] Operation log saved: {path}")
 
     # =========================================================================
     # Удаление воркера из реестра (вызывается воркером при завершении)

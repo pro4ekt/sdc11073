@@ -41,7 +41,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         choices=["icu", "op"],
-        default="icu",
+        default="op",
         help=(
             "Режим запуска: "
             "'icu' — Silent ICU (Qt/QML UI, без FHIR); "
