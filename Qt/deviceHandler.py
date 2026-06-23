@@ -93,7 +93,8 @@ class DeviceHandler(threading.Thread):
          manager.remove_device() для самоудаления из реестра.
     """
 
-    def __init__(self, wsd_service, manager, mode: str = "icu"):
+    def __init__(self, wsd_service, manager, mode: str = "icu",
+                 target_room: str | None = None):
         """
         Параметры:
           wsd_service — объект из WSDiscovery, содержащий EPR (уникальный ID)
@@ -105,6 +106,10 @@ class DeviceHandler(threading.Thread):
           mode        — режим запуска ('icu' | 'op'):
                         'icu' — создаёт QtDeviceHandler, испускает сигналы в UI.
                         'op'  — headless, пропускает Qt/QML-логику, активирует FHIR-контексты.
+          target_room — фильтр по LocationContext.Room (строка или None).
+                        Если задан, воркер проверяет комнату устройства ПОСЛЕ init_mdib()
+                        и немедленно завершается без ошибки, если комната не совпадает.
+                        None = фильтрация отключена.
         """
         # Инициализируем поток как демон: он автоматически завершится,
         # когда завершится главный поток приложения
@@ -112,6 +117,12 @@ class DeviceHandler(threading.Thread):
 
         # Режим запуска — управляет поведением Qt-UI и FHIR-контекстов
         self.mode = mode
+
+        # Фильтр по LocationContext.Room.
+        # Проверяется в _worker_logic() сразу после init_mdib().
+        # Если не None и комната устройства не совпадает → воркер завершается без ошибки
+        # (не очищается кэш WSDiscovery, не испускается deviceDisconnected).
+        self.target_room: str | None = target_room
 
         # Сохраняем WSD-сервис — он нужен для подключения SdcConsumer
         self.wsd_service = wsd_service
@@ -138,8 +149,18 @@ class DeviceHandler(threading.Thread):
         # Автоматически обновляется при получении уведомлений от устройства.
         self.mdib = None
 
+        # Таймстемп последнего вызова scheduleUpdate() (monotonic, seconds).
+        # Используется в on_metric_update / on_alert_update для rate-limiting:
+        # не более 1 обновления UI в секунду при высокочастотных waveform-данных.
+        self._last_ui_update_ts: float = 0.0
+
         # Qt-обёртка, через которую QML читает данные этого устройства
         self.qtDeviceHandler = None
+
+        # Флаг: True означает что deviceConnected.emit() уже был отправлен.
+        # Используется в Manager.remove_device() чтобы решать, нужно ли emit deviceDisconnected.
+        # Устройства, отфильтрованные по target_room до emit(), остаются False.
+        self._ui_connected: bool = False
 
         # Флаг: завершился ли поток из-за ошибки (в отличие от штатной остановки).
         # Если True — Manager сбросит кэш WSDiscovery для этого EPR.
@@ -154,14 +175,17 @@ class DeviceHandler(threading.Thread):
         # Заглушка для будущего OPC UA сервера (сейчас не используется)
         self.opcua_server = None
 
+        # Флаг: True означает что воркер завершился из-за фильтрации по LocationContext.
+        # Устанавливается в _worker_logic() при несовпадении target_room.
+        # Используется в run() для передачи в manager.remove_device(location_filtered=True),
+        # что добавляет EPR в сессионный ban-list → _discovery_loop больше не создаёт
+        # DeviceHandler для этого устройства до рестарта оркестратора.
+        self._location_filtered: bool = False
+
         # Флаг: True означает штатное завершение (DEV-49).
         # Используется в _graceful_shutdown() чтобы отличать плановый stop от аварийного.
         self._intentional_shutdown = False
 
-        # Таймстемп последнего вызова scheduleUpdate() (monotonic, seconds).
-        # Используется в on_metric_update / on_alert_update для rate-limiting:
-        # не более 1 обновления UI в секунду при высокочастотных waveform-данных.
-        self._last_ui_update_ts: float = 0.0
 
 
     # =========================================================================
@@ -191,9 +215,14 @@ class DeviceHandler(threading.Thread):
                 pass
 
             # САМОУДАЛЕНИЕ из реестра Manager'а.
-            # Передаём флаг error_occurred: если True, Manager сбросит WSDiscovery-кэш,
-            # предотвращая бесконечный цикл повторных подключений к неисправному устройству.
-            self.manager.remove_device(self.epr, self.error_occurred)
+            # Передаём error_occurred: если True → Manager сбросит WSDiscovery-кэш.
+            # Передаём location_filtered: если True → Manager добавит EPR в ban-list,
+            # предотвращая повторное создание DeviceHandler для этого устройства.
+            self.manager.remove_device(
+                self.epr,
+                self.error_occurred,
+                location_filtered=self._location_filtered,
+            )
             print(f"[Worker {self.epr}] Thread Exiting (Dead).")
 
     # =========================================================================
@@ -238,6 +267,45 @@ class DeviceHandler(threading.Thread):
             with self.data_lock:
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
+
+            # ------------------------------------------------------------------
+            # ШАГ 2b: Фильтрация по LocationContext (если задан target_room)
+            # ------------------------------------------------------------------
+            # WSDiscovery обнаруживает все SDC Provider'ы в сети вне зависимости
+            # от их местоположения. LocationContext становится доступен только
+            # ПОСЛЕ init_mdib() — он хранится в context_states MDIB.
+            #
+            # Если target_room задан и комната устройства не совпадает →
+            # возвращаемся из _worker_logic() чистым путём (return, не исключение).
+            # Это означает:
+            #   - error_occurred = False → кэш WSDiscovery НЕ очищается
+            #     (устройство здорово, просто в другой комнате — оно может снова
+            #     прийти из WSDiscovery, и это нормально)
+            #   - _ui_connected = False → Manager не шлёт deviceDisconnected
+            #     (в QML ничего не было добавлено → нечего удалять)
+            #   - consumer.stop_all() НЕ вызывается: WS-Eventing подписки ещё
+            #     не оформлены (start_all() выполнен, но Subscribe ещё не нужен
+            #     т.к. мы не намерены слушать события). На практике sdc11073
+            #     уже отправил Subscribe в start_all — поэтому вызываем stop_all()
+            #     в блоке finally через _graceful_shutdown() для чистоты.
+            #
+            # NOTE: если устройство НЕ публикует LocationContext (поле отсутствует
+            # или пустое), фильтр пропускает его с предупреждением. Это позволяет
+            # подключаться к устройствам, которые ещё не установили локацию
+            # (например, только что включились).
+            if self.target_room:
+                device_room = self._get_device_room()
+                if device_room == "":
+                    # Нет LocationContext → предупреждение, но пропускаем (не фильтруем)
+                    print(f"[Worker {self.epr}] WARNING: No LocationContext found in MDIB. "
+                          f"Room filter (target='{self.target_room}') skipped — accepting device.")
+                elif device_room != self.target_room:
+                    print(f"[Worker {self.epr}] Location filter: device room '{device_room}' "
+                          f"!= target '{self.target_room}'. Disconnecting (not an error).")
+                    self._location_filtered = True   # → ban-list в Manager'е
+                    return  # Выходим чисто — finally вызовет stop_all() через _graceful_shutdown
+                else:
+                    print(f"[Worker {self.epr}] Location filter: room '{device_room}' matches. Accepting.")
 
             # ------------------------------------------------------------------
             # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция смены сессии)
@@ -376,6 +444,9 @@ class DeviceHandler(threading.Thread):
 
                 # Уведомляем UI о появлении нового устройства.
                 # Qt Signal автоматически маршалирует вызов в поток получателя (главный).
+                # Помечаем _ui_connected ПЕРЕД emit() — это атомарный флаг для Manager'а:
+                # он знает, что deviceDisconnected нужно послать при отключении.
+                self._ui_connected = True
                 self.manager.deviceConnected.emit(self.qtDeviceHandler)
 
             # ------------------------------------------------------------------
@@ -456,6 +527,37 @@ class DeviceHandler(threading.Thread):
                         self.consumer.stop_all()
                     except Exception:
                         pass
+
+    # =========================================================================
+    # Вспомогательный метод: чтение комнаты из LocationContext MDIB
+    # =========================================================================
+    def _get_device_room(self) -> str:
+        """
+        Reads the device's room identifier from its MDIB LocationContextState.
+
+        Returns:
+            The Room string from LocationDetail (e.g. "ICU-3", "OR-1").
+            Empty string "" if no LocationContextState is present, or if
+            LocationDetail / Room is None.
+
+        Thread safety: MUST be called WITHOUT data_lock held — this method
+        acquires data_lock internally for the read and releases it immediately.
+        The lock is needed because _worker_logic() may run concurrently with
+        sdc11073 notification threads that update context_states.
+        """
+        try:
+            with self.data_lock:
+                if not self.mdib:
+                    return ""
+                loc_states = [
+                    s for s in self.mdib.context_states.objects
+                    if s.NODETYPE == pm.LocationContextState
+                ]
+                if loc_states and loc_states[0].LocationDetail:
+                    return loc_states[0].LocationDetail.Room or ""
+        except Exception as e:
+            print(f"[Worker {self.epr}] _get_device_room error: {e}")
+        return ""
 
     # =========================================================================
     # Вспомогательный метод: построение PatientContextState + WorkflowContextState

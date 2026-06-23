@@ -6,15 +6,26 @@ main.py — Точка входа приложения SDC-консьюмера.
   --mode=op   Operating Room: Headless QCoreApplication, загрузка FHIR,
               формирование BICEPS EnsembleContext/WorkflowContext.
 
+ФИЛЬТРАЦИЯ ПО КОМНАТЕ (--room):
+  Опциональный аргумент. Если указан, Consumer подписывается ТОЛЬКО на те
+  SDC Provider'ы, у которых LocationContext.Room совпадает с указанным значением.
+  Устройства из других комнат обнаруживаются WSDiscovery, но после init_mdib()
+  немедленно отключаются без занесения в UI и без ошибки (DEV-49 не вызывается,
+  т.к. подписок WS-Eventing ещё нет).
+
+  Пример запуска:
+    python main.py --mode=icu --room="ICU-3"
+    python main.py --mode=icu            # без фильтра — подключает все устройства
+
 ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПУСКА (ICU):
   1. QGuiApplication + QML-движок
-  2. SdcMyConsumer(fhir_data=None, mode='icu') → WSDiscovery
+  2. SdcMyConsumer(fhir_data=None, mode='icu', target_room=args.room) → WSDiscovery
   3. QML-контекст регистрируется → Qt event loop
 
 ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПУСКА (OP):
   1. QCoreApplication (headless)
   2. FHIRPatientData.fetch(patient_id)
-  3. SdcMyConsumer(fhir_data=fhir, mode='op') → WSDiscovery
+  3. SdcMyConsumer(fhir_data=fhir, mode='op', target_room=args.room) → WSDiscovery
   4. Qt event loop (без UI)
 """
 
@@ -41,17 +52,30 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         choices=["icu", "op"],
-        default="op",
+        default="icu",
         help=(
             "Режим запуска: "
             "'icu' — Silent ICU (Qt/QML UI, без FHIR); "
             "'op'  — Operating Room (Headless, с FHIR-контекстами)."
         ),
     )
+    parser.add_argument(
+        "--room",
+        default="OR-2",
+        metavar="ROOM_ID",
+        help=(
+            "Фильтр по комнате (LocationContext.Room). "
+            "Если указан, Consumer подключается ТОЛЬКО к устройствам из этой комнаты. "
+            "Пример: --room=\"ICU-3\" или --room=\"OR-1\". "
+            "По умолчанию: None (фильтрация отключена, все устройства принимаются)."
+        ),
+    )
     # parse_known_args позволяет Qt-аргументам (-platform, -style) не вызывать ошибку
     args, qt_argv = parser.parse_known_args()
     mode = args.mode
-    print(f"[Main] Starting in mode: '{mode}'")
+    target_room: str | None = args.room
+    print(f"[Main] Starting in mode: '{mode}'"
+          + (f", room filter: '{target_room}'" if target_room else " (no room filter)"))
 
     # ------------------------------------------------------------------
     # ШАГ 1: Инициализация Qt-приложения (ДО загрузки FHIR и Manager'а)
@@ -86,7 +110,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # В режиме 'icu': fhir_data=None (FHIR не нужен, UI работает без него).
     # В режиме 'op':  fhir_data=fhir (контексты будут записаны в каждое устройство).
-    manager = SdcMyConsumer(fhir_data=fhir, mode=mode)
+    manager = SdcMyConsumer(fhir_data=fhir, mode=mode, target_room=target_room)
     manager.start()
 
     # ------------------------------------------------------------------

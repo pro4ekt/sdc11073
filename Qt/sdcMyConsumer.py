@@ -81,20 +81,30 @@ class SdcMyConsumer(QObject):
     # Передаёт EPR (UUID-строку) — QML удалит соответствующий элемент из списка.
     deviceDisconnected = Signal(str, arguments=['epr'])
 
-    def __init__(self, fhir_data: FHIRPatientData = None, mode: str = "icu"):
+    def __init__(self, fhir_data: FHIRPatientData = None, mode: str = "icu",
+                 target_room: str | None = None):
         """
         Параметры:
           fhir_data — данные пациента из FHIR (имя, рост, вес, диагнозы).
                       Передаются каждому DeviceHandler при создании для записи
                       в PatientContext устройства.
                       В режиме 'icu' передаётся None (FHIR не загружается).
-          mode      — режим запуска: 'icu' (Qt/QML) или 'op' (headless + FHIR).
-                      Влияет на испускание сигналов в UI и поведение воркеры.
+          mode        — режим запуска: 'icu' (Qt/QML) или 'op' (headless + FHIR).
+                        Влияет на испускание сигналов в UI и поведение воркеры.
+          target_room — фильтр по комнате (LocationContext.LocationDetail.Room).
+                        Если задан, DeviceHandler отключается сразу после init_mdib(),
+                        если LocationContext.Room устройства не совпадает с этим значением.
+                        None (по умолчанию) — фильтрация отключена, принимаются все.
+                        Работает в ОБОИХ режимах (icu и op).
         """
         super().__init__()
 
         # Режим запуска ('icu' | 'op') — прокидывается в каждый DeviceHandler
         self.mode = mode
+
+        # Room filter: если не None, воркер отклоняет устройства из других комнат
+        # сразу после init_mdib(), до создания Qt-объекта и до emit deviceConnected.
+        self.target_room: str | None = target_room
 
         # Данные пациента из FHIR — используются при создании каждого нового воркера
         self.fhir_data = fhir_data
@@ -137,6 +147,19 @@ class SdcMyConsumer(QObject):
         # Thread safety: OperationLogger.log() is protected by its own internal Lock,
         # so multiple DeviceHandler threads can call it concurrently without corruption.
         self.operation_logger: OperationLogger | None = None
+
+        # Сессионный ban-list для устройств, отфильтрованных по LocationContext.
+        # EPR попадает сюда однажды (когда DeviceHandler обнаруживает несовпадение комнаты)
+        # и не покидает множество до рестарта процесса.
+        # _discovery_loop проверяет этот set ДО создания DeviceHandler — устройство
+        # просто пропускается без TCP-подключения и без сетевых запросов.
+        #
+        # Почему сессионный, а не постоянный:
+        #   Устройство могло быть перемещено в нужную комнату — после рестарта
+        #   оркестратора оно снова пройдёт проверку LocationContext.
+        #   Для автоматического обновления без рестарта потребовался бы периодический
+        #   re-check (например, раз в 5 минут) — это усложнение за рамками текущей версии.
+        self._location_rejected: set[str] = set()
 
         # Поток обнаружения устройств — запускается в start()
         # daemon=True: завершится вместе с главным потоком
@@ -407,6 +430,13 @@ class SdcMyConsumer(QObject):
                         # Нормализуем EPR: strip() убирает случайные пробелы
                         epr = str(service.epr).strip()
 
+                        # Быстрая проверка ban-list ДО захвата лока и ДО создания воркера.
+                        # Устройства в _location_rejected уже прошли полный цикл подключения
+                        # и были отвергнуты по LocationContext — повторное подключение
+                        # бессмысленно и создаёт лишнюю сетевую нагрузку на монитор.
+                        if epr in self._location_rejected:
+                            continue  # Пропускаем без лога (иначе будет спам каждые 2 сек)
+
                         with self.lock:
                             # Проверяем "мёртвые" воркеры: поток завершился, но запись осталась.
                             # Это может случиться при гонке между remove_device() и следующим Probe.
@@ -417,7 +447,11 @@ class SdcMyConsumer(QObject):
                             # Создаём воркер только для НЕЗНАКОМЫХ устройств
                             if epr not in self.devices:
                                 print(f"[Manager] Found NEW device: {epr}. Spawning Worker.")
-                                device = DeviceHandler(service, self, mode=self.mode)
+                                device = DeviceHandler(
+                                    service, self,
+                                    mode=self.mode,
+                                    target_room=self.target_room,
+                                )
                                 self.devices[epr] = device
                                 device.start()  # Запускает threading.Thread.start()
 
@@ -448,14 +482,19 @@ class SdcMyConsumer(QObject):
     # =========================================================================
     # Удаление воркера из реестра (вызывается воркером при завершении)
     # =========================================================================
-    def remove_device(self, epr: str, error_occurred: bool = False):
+    def remove_device(self, epr: str, error_occurred: bool = False,
+                      location_filtered: bool = False):
         """
         Callback для самоудаления DeviceHandler'а из реестра Manager'а.
         Вызывается из потока DeviceHandler при его завершении (штатном или аварийном).
 
         Параметры:
-          epr            — UUID устройства (строка)
-          error_occurred — True если воркер завершился из-за ошибки/разрыва соединения
+          epr               — UUID устройства (строка)
+          error_occurred    — True если воркер завершился из-за ошибки/разрыва соединения
+          location_filtered — True если воркер завершился из-за несовпадения target_room.
+                              В этом случае EPR добавляется в сессионный ban-list
+                              _location_rejected, и _discovery_loop больше не создаёт
+                              DeviceHandler для этого устройства.
 
         АНТИЗОМБИ-ЗАЩИТА:
         Если error_occurred=True, принудительно удаляем EPR из кэша WSDiscovery.
@@ -463,12 +502,26 @@ class SdcMyConsumer(QObject):
         новый воркер пытается подключиться → падает → повторяется.
         """
         epr = str(epr).strip()  # Нормализуем на случай разных представлений
+
+        # Location-filtered devices go to the ban-list BEFORE acquiring self.lock,
+        # so that the discovery loop (which also runs without self.lock when checking
+        # _location_rejected) sees the entry as soon as possible.
+        if location_filtered:
+            self._location_rejected.add(epr)
+            print(f"[Manager] Device {epr} added to location-reject list "
+                  f"(target room: '{self.target_room}'). Will not reconnect this session.")
+
         with self.lock:
             if epr in self.devices:
+                handler = self.devices[epr]
                 print(f"[Manager] Removing handler for {epr} from registry.")
                 del self.devices[epr]
-                # Уведомляем QML только в режиме 'icu' (в 'op' UI-потока нет)
-                if self.mode == "icu":
+                # Уведомляем QML только в режиме 'icu' И только если устройство
+                # реально появилось в UI (deviceConnected был отправлен).
+                # Устройства, отфильтрованные по LocationContext до emit(), не имеют
+                # записи в QML-модели — emit deviceDisconnected был бы холостым,
+                # но это порождает лишние сигналы и может сбивать сортировку.
+                if self.mode == "icu" and getattr(handler, '_ui_connected', False):
                     self.deviceDisconnected.emit(epr)
 
             # ------------------------------------------------------------------
