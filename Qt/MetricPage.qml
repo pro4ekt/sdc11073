@@ -191,7 +191,13 @@ Item {
             MouseArea {
                 anchors.fill: parent
                 onPressed: {
-                    if (alarm === "On" || alarm === "Ack") {
+                    if (alarm === "On") {
+                        // Send Ack to the provider via SetAlertState
+                        if (devicePage && devicePage.currentDevice) {
+                            devicePage.currentDevice.silenceAlarm()
+                        }
+                        timeout = timeout === 0 ? 1 : 0
+                    } else if (alarm === "Ack") {
                         timeout = timeout === 0 ? 1 : 0
                     }
                 }

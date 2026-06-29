@@ -127,6 +127,53 @@ class QtDeviceHandler(QObject):
         """
         self.update_data()
 
+    @Slot()
+    def silenceAlarm(self):
+        """
+        Вызывается из QML при нажатии кнопки Bell (Silence).
+        Автоматически находит SetAlertStateOperation и AlertSignalState handles в MDIB
+        и вызывает acknowledge_alarm() на DeviceHandler, который отправляет
+        SetAlertState(Presence=Ack) провайдеру.
+        """
+        if not self._device:
+            return
+        try:
+            with self._device.data_lock:
+                if not self._device.mdib:
+                    return
+
+                # Находим операцию SetAlertState
+                op_handle = None
+                op_states = [s for s in self._device.mdib.states.objects
+                             if s.NODETYPE == pm.SetAlertStateOperationState]
+                if op_states:
+                    op_handle = op_states[0].DescriptorHandle
+
+                # Находим активный AlertSignalState (Presence == On)
+                signal_handle = None
+                alert_signals = [s for s in self._device.mdib.states.objects
+                                 if s.NODETYPE == pm.AlertSignalState]
+                for sig in alert_signals:
+                    if str(sig.Presence) == str(pm_types.AlertSignalPresence.ON):
+                        signal_handle = sig.DescriptorHandle
+                        break
+                # Fallback: берём первый сигнал если нет активного
+                if not signal_handle and alert_signals:
+                    signal_handle = alert_signals[0].DescriptorHandle
+
+            if op_handle and signal_handle:
+                self._device.logger.info(
+                    f'silenceAlarm: op={op_handle}  signal={signal_handle}'
+                )
+                self._device.acknowledge_alarm(op_handle, signal_handle)
+            else:
+                self._device.logger.warning(
+                    f'silenceAlarm: could not find handles '
+                    f'(op={op_handle}, signal={signal_handle})'
+                )
+        except Exception as e:
+            self._device.logger.error(f'silenceAlarm error: {e}', exc_info=True)
+
     # =========================================================================
     # Основной метод чтения MDIB и обновления свойств
     # =========================================================================

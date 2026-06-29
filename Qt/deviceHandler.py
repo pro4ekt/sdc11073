@@ -345,25 +345,46 @@ class DeviceHandler(threading.Thread):
             # Используется и при явном https://, и при TLS-fallback для http://.
             # ------------------------------------------------------------------
             def _build_ssl_container():
-                # ── Кандидаты на клиентский сертификат ──────────────────────
-                # Пробуем по порядку; первая успешная загрузка побеждает.
-                _base = pathlib.Path(__file__).parent.parent
+                _qt_dir = pathlib.Path(__file__).parent        # Master/Qt/
+                _base   = _qt_dir.parent                       # Master/
                 _cert_candidates = [
-                    # IHE PAT test PKI (pat/certs/)
+                    # ① certs_out/ внутри Qt/ — наши сгенерированные сертификаты
+                    (_qt_dir / 'certs_out' / 'consumer.pem',
+                     _qt_dir / 'certs_out' / 'consumer.key',
+                     _qt_dir / 'certs_out' / 'ca1.pem',
+                     [None]),
+                    (_qt_dir / 'certs_out' / 'consumer.pem',
+                     _qt_dir / 'certs_out' / 'consumer.key',
+                     _qt_dir / 'certs_out' / 'ca.pem',
+                     [None]),
+                    # ② pat/certs/ — наши сертификаты скопированные туда
+                    (_base / 'pat' / 'certs' / 'consumer.pem',
+                     _base / 'pat' / 'certs' / 'consumer.key',
+                     _base / 'pat' / 'certs' / 'ca1.pem',
+                     [None]),
+                    # ③ IHE PAT test PKI (pat/certs/) — только если наших нет
                     (_base / 'pat' / 'certs' / 'user_certificate_root_signed.pem',
                      _base / 'pat' / 'certs' / 'user_private_key_encrypted.pem',
                      _base / 'pat' / 'certs' / 'root_certificate.pem',
                      ['dummypassword', 'password', 'sdcX', '12345']),
-                    # sdc11073 unit-test PKI (tests/certificates/)
+                    # ④ sdc11073 unit-test PKI (tests/certificates/)
                     (_base / 'tests' / 'certificates' / 'test_certificate.pem',
                      _base / 'tests' / 'certificates' / 'test_private_key.pem',
                      None,
                      ['password', 'dummypassword']),
                 ]
 
-                _ssl_ctx = ssl.create_default_context()
-                _ssl_ctx.check_hostname = False
-                _ssl_ctx.verify_mode = ssl.CERT_NONE
+                # ── CLIENT context: consumer → provider (стандартный SSL-клиент) ──
+                _client_ctx = ssl.create_default_context()
+                _client_ctx.check_hostname = False
+                _client_ctx.verify_mode = ssl.CERT_NONE
+
+                # ── SERVER context: provider → consumer (приём уведомлений WS-Eventing) ──
+                # Важно: нужен PROTOCOL_TLS_SERVER, иначе Python не умеет принимать
+                # входящие TLS-соединения от провайдера (create_default_context даёт CLIENT ctx).
+                _server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                _server_ctx.check_hostname = False
+                _server_ctx.verify_mode = ssl.CERT_NONE
 
                 _loaded = False
                 for _cert_file, _key_file, _ca_file, _passwords in _cert_candidates:
@@ -371,13 +392,14 @@ class DeviceHandler(threading.Thread):
                         continue
                     for _pwd in _passwords:
                         try:
-                            _ssl_ctx.load_cert_chain(
-                                certfile=str(_cert_file),
-                                keyfile=str(_key_file),
-                                password=_pwd or None,
-                            )
+                            _kw = dict(certfile=str(_cert_file),
+                                       keyfile=str(_key_file),
+                                       password=_pwd or None)
+                            _client_ctx.load_cert_chain(**_kw)
+                            _server_ctx.load_cert_chain(**_kw)
                             if _ca_file and _ca_file.exists():
-                                _ssl_ctx.load_verify_locations(cafile=str(_ca_file))
+                                _client_ctx.load_verify_locations(cafile=str(_ca_file))
+                                _server_ctx.load_verify_locations(cafile=str(_ca_file))
                             self.logger.info(
                                 f"mTLS: cert loaded from {_cert_file.parent} "
                                 f"(password={'<empty>' if not _pwd else repr(_pwd)})"
@@ -398,8 +420,8 @@ class DeviceHandler(threading.Thread):
                 try:
                     from sdc11073 import certloader
                     return certloader.SSLContextContainer(
-                        client_context=_ssl_ctx,
-                        server_context=_ssl_ctx,
+                        client_context=_client_ctx,
+                        server_context=_server_ctx,
                     )
                 except Exception as ssl_err:
                     self.logger.warning(
@@ -409,35 +431,26 @@ class DeviceHandler(threading.Thread):
                     return _ssl_ctx  # type: ignore[return-value]
 
             # ------------------------------------------------------------------
-            # Стратегия подключения: HTTP → TLS-fallback
-            #
-            # sdcX C++ по умолчанию использует TLS, но может анонсировать http:// в
-            # WS-Discovery x_addrs (известная особенность sdcX). Если plain-HTTP
-            # соединение падает с ConnectionResetError(10054) — провайдер ждёт
-            # TLS ClientHello. Повторяем попытку с SSL.
+            # Стратегия подключения: автодетект https:// → TLS сразу.
+            # Если sdcX анонсирует http:// но фактически требует TLS
+            # (ConnectionResetError 10054) — повторяем с SSL (TLS-fallback).
+            # Fallback теперь безопасен: провайдер собран с TLSConfig.
             # ------------------------------------------------------------------
             ssl_container = None
             if x_addrs and any(str(addr).startswith('https://') for addr in x_addrs):
-                # Явный https:// — сразу строим SSL
                 self.logger.info("HTTPS detected — building mTLS SSL context...")
                 ssl_container = _build_ssl_container()
             else:
-                self.logger.info('HTTP (no TLS) — connecting without SSL context.')
+                self.logger.info('HTTP announced — connecting without SSL (will retry if reset).')
 
             self.consumer = SdcConsumer.from_wsd_service(
                 wsd_service=self.wsd_service,
                 ssl_context_container=ssl_container,
             )
 
-            # start_all() запускает HTTP-сервер для получения уведомлений от устройства
-            # и подписывается на все доступные сервисы, кроме указанных в not_subscribed_actions.
-            # periodic_actions — это отчёты, которые устройство шлёт само по таймеру;
-            # их подписывать не нужно, они приходят автоматически.
             try:
                 self.consumer.start_all(not_subscribed_actions=periodic_actions)
             except Exception as _connect_err:
-                # ConnectionResetError(10054) — сигнатура sdcX: слушает на TLS,
-                # но анонсирует http:// в WSD x_addrs. Повторяем с SSL.
                 _cause = _connect_err.__cause__ or _connect_err
                 _is_reset = (
                     isinstance(_cause, ConnectionResetError)
@@ -445,12 +458,19 @@ class DeviceHandler(threading.Thread):
                     or 'NotConnected' in type(_connect_err).__name__
                 )
                 if _is_reset and ssl_container is None:
+                    # Провайдер анонсировал http:// но требует TLS — повторяем с SSL
                     self.logger.warning(
-                        f"HTTP connection reset ({_connect_err.__class__.__name__}). "
-                        f"If the provider requires TLS, set ssl_context_container manually. "
-                        f"Not retrying automatically to avoid crashing TLS-null providers."
+                        'HTTP connection reset — provider likely requires TLS. '
+                        'Retrying with mTLS SSL context...'
                     )
-                raise
+                    ssl_container = _build_ssl_container()
+                    self.consumer = SdcConsumer.from_wsd_service(
+                        wsd_service=self.wsd_service,
+                        ssl_context_container=ssl_container,
+                    )
+                    self.consumer.start_all(not_subscribed_actions=periodic_actions)
+                else:
+                    raise
 
             # ------------------------------------------------------------------
             # ШАГ 2: Инициализация MDIB (под локом!)
