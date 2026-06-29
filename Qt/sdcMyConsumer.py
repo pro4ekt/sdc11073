@@ -85,7 +85,7 @@ class SdcMyConsumer(QObject):
     deviceDisconnected = Signal(str, arguments=['epr'])
 
     def __init__(self, fhir_data: FHIRPatientData = None, mode: str = "icu",
-                 target_room: str | None = None):
+                 target_room: str | None = None, override_ip: str | None = None):
         """
         Параметры:
           fhir_data — данные пациента из FHIR (имя, рост, вес, диагнозы).
@@ -114,6 +114,9 @@ class SdcMyConsumer(QObject):
 
         # Флаг работы — False останавливает _discovery_loop
         self.running = True
+
+        # Если задан явный IP — используем его вместо автоопределения
+        self.override_ip: str | None = override_ip
 
         # Реестр активных воркеры: { EPR (str): DeviceHandler }
         # Доступ к словарю ВСЕГДА должен быть под self.lock
@@ -418,7 +421,7 @@ class SdcMyConsumer(QObject):
         # Сохраняем ссылку на running event loop — нужна воркеры для run_coroutine_threadsafe()
         self.manager_loop = asyncio.get_running_loop()
 
-        local_ip = get_local_ip()
+        local_ip = self.override_ip if self.override_ip else get_local_ip()
         print(f"[Manager] Network Scan on IP: {local_ip}")
 
         # Инициализируем WS-Discovery на нашем IP.

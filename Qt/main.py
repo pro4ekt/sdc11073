@@ -37,6 +37,8 @@ import argparse
 import logging
 import datetime
 
+from sdc11073.loghelper import basic_logging_setup
+
 # Manager — координатор сети SDC-устройств
 from sdcMyConsumer import SdcMyConsumer
 
@@ -76,10 +78,33 @@ if __name__ == "__main__":
             "По умолчанию: None (фильтрация отключена, все устройства принимаются)."
         ),
     )
+    parser.add_argument(
+        "--ip",
+        default=None,
+        metavar="IP_ADDRESS",
+        help=(
+            "IP-адрес сетевого адаптера для WSDiscovery. "
+            "Используй если устройства находятся в другом VMware/сетевом сегменте. "
+            "Пример: --ip=192.168.242.100. "
+            "По умолчанию: автоопределение через маршрут к 8.8.8.8."
+        ),
+    )
     # parse_known_args позволяет Qt-аргументам (-platform, -style) не вызывать ошибку
     args, qt_argv = parser.parse_known_args()
     mode = args.mode
     target_room: str | None = args.room
+    override_ip: str | None = args.ip
+
+    # ------------------------------------------------------------------
+    # ШАГ 0b: Настройка логирования sdc11073 (как в tutorial/consumer/consumer.py)
+    # ------------------------------------------------------------------
+    # basic_logging_setup настраивает ВСЁ дерево логгеров sdc11073.*
+    # Без этого все внутренние предупреждения/ошибки библиотеки тихо исчезают,
+    # т.к. корневой логгер не имеет обработчиков.
+    # DEBUG — максимальная детализация: SOAP-сообщения, WS-Discovery, подписки.
+    # Для продакшена можно поставить logging.INFO или logging.WARNING.
+    basic_logging_setup(level=logging.WARNING)
+
 
     # ── Разделитель сессии в лог-файле ───────────────────────────────────────
     _ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -122,7 +147,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # В режиме 'icu': fhir_data=None (FHIR не нужен, UI работает без него).
     # В режиме 'op':  fhir_data=fhir (контексты будут записаны в каждое устройство).
-    manager = SdcMyConsumer(fhir_data=fhir, mode=mode, target_room=target_room)
+    manager = SdcMyConsumer(fhir_data=fhir, mode=mode, target_room=target_room, override_ip=override_ip)
     manager.start()
 
     # ------------------------------------------------------------------

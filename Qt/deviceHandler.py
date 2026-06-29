@@ -33,6 +33,27 @@ from decimal import Decimal
 _LOG_DIR = pathlib.Path(__file__).parent / 'logs'
 _LOG_DIR.mkdir(exist_ok=True)
 
+class _SuppressGetContextStates400(logging.Filter):
+    """
+    Suppress the repetitive 'GetContextStates HTTP 400' ERROR spam from sdc11073's
+    soap client / mdib logger. sdcX returns HTTP 400 for GetContextStates when the
+    consumer is not authorized (no mTLS). We already handle this in the ping loop
+    and log a one-time warning — the sdc11073 internal ERROR is redundant and noisy.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.ERROR:
+            return True
+        msg = record.getMessage()
+        # Drop "GetContextStates: POST … HTTP response=400" from sdc.client.soap
+        if 'GetContextStates' in msg and '400' in msg:
+            return False
+        # Drop the traceback from sdc.client.mdib that follows the soap error
+        # (it contains HTTPReturnCodeError and _get_context_states in the traceback)
+        if 'HTTPReturnCodeError' in msg or '_get_context_states' in msg:
+            return False
+        return True
+
+
 def _setup_module_logger() -> logging.Logger:
     """
     Настраивает корневой логгер модуля deviceHandler.
@@ -56,11 +77,6 @@ def _setup_module_logger() -> logging.Logger:
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 
-    # ── Консоль ──────────────────────────────────────────────────────────────
-    _console = logging.StreamHandler()
-    _console.setLevel(logging.INFO)
-    _console.setFormatter(_fmt)
-    logger.addHandler(_console)
 
     # ── Файл (ротация) ────────────────────────────────────────────────────────
     _file_handler = logging.handlers.RotatingFileHandler(
@@ -80,6 +96,13 @@ def _setup_module_logger() -> logging.Logger:
 
 # Модульный логгер — используется для сообщений вне класса DeviceHandler
 _module_log = _setup_module_logger()
+
+# Suppress repetitive GetContextStates HTTP 400 ERROR spam from sdc11073 internals.
+# sdcX blocks context queries from unauthorized participants — this is expected when
+# running without mTLS. We handle it in the ping loop already; the sdc11073 internal
+# ERROR is noise. Apply filter once at import time.
+logging.getLogger('sdc.client.soap').addFilter(_SuppressGetContextStates400())
+logging.getLogger('sdc.client.mdib').addFilter(_SuppressGetContextStates400())
 
 # Импортируем Qt-обёртку — она создаётся для каждого устройства и живёт в UI-потоке
 from qtDeviceHandler import QtDeviceHandler
@@ -313,58 +336,68 @@ class DeviceHandler(threading.Thread):
             # from_wsd_service() создаёт SdcConsumer по данным из WSDiscovery —
             # это не требует ручного указания IP/порта.
             # ssl_context_container=None означает работу без TLS (нешифрованное соединение).
-            """
-             x_addrs = getattr(self.wsd_service, 'x_addrs', 'unknown')
+            x_addrs = getattr(self.wsd_service, 'x_addrs', 'unknown')
             self.logger.debug(f"Transport addresses (x_addrs): {x_addrs}")
 
             # ------------------------------------------------------------------
-            # Автоопределение TLS: если провайдер анонсировал https:// адрес,
-            # создаём SSL-контекст с отключённой проверкой сертификата.
+            # _build_ssl_container() — вспомогательная функция: строит SSLContextContainer
+            # с клиентским сертификатом из pat/certs/ (IHE test PKI).
+            # Используется и при явном https://, и при TLS-fallback для http://.
             # ------------------------------------------------------------------
-            ssl_container = None
-            if x_addrs and any(str(addr).startswith('https://') for addr in x_addrs):
-                self.logger.info("HTTPS detected — building mTLS SSL context...")
+            def _build_ssl_container():
+                # ── Кандидаты на клиентский сертификат ──────────────────────
+                # Пробуем по порядку; первая успешная загрузка побеждает.
+                _base = pathlib.Path(__file__).parent.parent
+                _cert_candidates = [
+                    # IHE PAT test PKI (pat/certs/)
+                    (_base / 'pat' / 'certs' / 'user_certificate_root_signed.pem',
+                     _base / 'pat' / 'certs' / 'user_private_key_encrypted.pem',
+                     _base / 'pat' / 'certs' / 'root_certificate.pem',
+                     ['dummypassword', 'password', 'sdcX', '12345']),
+                    # sdc11073 unit-test PKI (tests/certificates/)
+                    (_base / 'tests' / 'certificates' / 'test_certificate.pem',
+                     _base / 'tests' / 'certificates' / 'test_private_key.pem',
+                     None,
+                     ['password', 'dummypassword']),
+                ]
 
-                import pathlib
-                # Locate certs relative to this file: ../pat/certs/
-                _certs_dir = pathlib.Path(__file__).parent.parent / 'pat' / 'certs'
-                _cert_file = _certs_dir / 'user_certificate_root_signed.pem'
-                _key_file  = _certs_dir / 'user_private_key_encrypted.pem'
-                _ca_file   = _certs_dir / 'root_certificate.pem'
-
-                # Build client SSL context:
-                #   - skip server cert verification (self-signed devices)
-                #   - load our client cert+key for mTLS (TLSV13_ALERT_CERTIFICATE_REQUIRED)
                 _ssl_ctx = ssl.create_default_context()
                 _ssl_ctx.check_hostname = False
                 _ssl_ctx.verify_mode = ssl.CERT_NONE
 
-                if _cert_file.exists() and _key_file.exists():
-                    # Common passphrase used in sdc11073 IHE test PKI
-                    _KEY_PASS = 'dummypassword'
-                    try:
-                        _ssl_ctx.load_cert_chain(
-                            certfile=str(_cert_file),
-                            keyfile=str(_key_file),
-                            password=_KEY_PASS,
-                        )
-                        # Optionally load CA so server cert can be verified later
-                        if _ca_file.exists():
-                            _ssl_ctx.load_verify_locations(cafile=str(_ca_file))
-                        self.logger.info(f"mTLS: client cert loaded from {_certs_dir}")
-                    except Exception as cert_err:
-                        self.logger.warning(
-                            f"Could not load client cert ({cert_err}). "
-                            f"Proceeding without client cert — mTLS may fail."
-                        )
-                else:
+                _loaded = False
+                for _cert_file, _key_file, _ca_file, _passwords in _cert_candidates:
+                    if not (_cert_file.exists() and _key_file.exists()):
+                        continue
+                    for _pwd in _passwords:
+                        try:
+                            _ssl_ctx.load_cert_chain(
+                                certfile=str(_cert_file),
+                                keyfile=str(_key_file),
+                                password=_pwd or None,
+                            )
+                            if _ca_file and _ca_file.exists():
+                                _ssl_ctx.load_verify_locations(cafile=str(_ca_file))
+                            self.logger.info(
+                                f"mTLS: cert loaded from {_cert_file.parent} "
+                                f"(password={'<empty>' if not _pwd else repr(_pwd)})"
+                            )
+                            _loaded = True
+                            break
+                        except Exception:
+                            continue
+                    if _loaded:
+                        break
+
+                if not _loaded:
                     self.logger.warning(
-                        f"No client cert found at {_certs_dir}. mTLS handshake will likely fail."
+                        "Could not load any client cert. "
+                        "Attempting TLS without client certificate (mTLS will fail if required)."
                     )
 
                 try:
                     from sdc11073 import certloader
-                    ssl_container = certloader.SSLContextContainer(
+                    return certloader.SSLContextContainer(
                         client_context=_ssl_ctx,
                         server_context=_ssl_ctx,
                     )
@@ -373,18 +406,51 @@ class DeviceHandler(threading.Thread):
                         f"Could not build SSLContextContainer ({ssl_err}). "
                         f"Using raw ssl_context as fallback."
                     )
-                    ssl_container = _ssl_ctx  # type: ignore[assignment]
+                    return _ssl_ctx  # type: ignore[return-value]
 
-            """
+            # ------------------------------------------------------------------
+            # Стратегия подключения: HTTP → TLS-fallback
+            #
+            # sdcX C++ по умолчанию использует TLS, но может анонсировать http:// в
+            # WS-Discovery x_addrs (известная особенность sdcX). Если plain-HTTP
+            # соединение падает с ConnectionResetError(10054) — провайдер ждёт
+            # TLS ClientHello. Повторяем попытку с SSL.
+            # ------------------------------------------------------------------
+            ssl_container = None
+            if x_addrs and any(str(addr).startswith('https://') for addr in x_addrs):
+                # Явный https:// — сразу строим SSL
+                self.logger.info("HTTPS detected — building mTLS SSL context...")
+                ssl_container = _build_ssl_container()
+            else:
+                self.logger.info('HTTP (no TLS) — connecting without SSL context.')
+
             self.consumer = SdcConsumer.from_wsd_service(
                 wsd_service=self.wsd_service,
-                ssl_context_container=None,
+                ssl_context_container=ssl_container,
             )
+
             # start_all() запускает HTTP-сервер для получения уведомлений от устройства
             # и подписывается на все доступные сервисы, кроме указанных в not_subscribed_actions.
             # periodic_actions — это отчёты, которые устройство шлёт само по таймеру;
             # их подписывать не нужно, они приходят автоматически.
-            self.consumer.start_all(not_subscribed_actions=periodic_actions)
+            try:
+                self.consumer.start_all(not_subscribed_actions=periodic_actions)
+            except Exception as _connect_err:
+                # ConnectionResetError(10054) — сигнатура sdcX: слушает на TLS,
+                # но анонсирует http:// в WSD x_addrs. Повторяем с SSL.
+                _cause = _connect_err.__cause__ or _connect_err
+                _is_reset = (
+                    isinstance(_cause, ConnectionResetError)
+                    or (isinstance(_cause, OSError) and getattr(_cause, 'winerror', None) == 10054)
+                    or 'NotConnected' in type(_connect_err).__name__
+                )
+                if _is_reset and ssl_container is None:
+                    self.logger.warning(
+                        f"HTTP connection reset ({_connect_err.__class__.__name__}). "
+                        f"If the provider requires TLS, set ssl_context_container manually. "
+                        f"Not retrying automatically to avoid crashing TLS-null providers."
+                    )
+                raise
 
             # ------------------------------------------------------------------
             # ШАГ 2: Инициализация MDIB (под локом!)
@@ -397,31 +463,57 @@ class DeviceHandler(threading.Thread):
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
 
-            # ------------------------------------------------------------------
-            # ШАГ 2b: Фильтрация по LocationContext (если задан target_room)
-            # ------------------------------------------------------------------
-            # WSDiscovery обнаруживает все SDC Provider'ы в сети вне зависимости
-            # от их местоположения. LocationContext становится доступен только
-            # ПОСЛЕ init_mdib() — он хранится в context_states MDIB.
-            #
-            # Если target_room задан и комната устройства не совпадает →
-            # возвращаемся из _worker_logic() чистым путём (return, не исключение).
-            # Это означает:
-            #   - error_occurred = False → кэш WSDiscovery НЕ очищается
-            #     (устройство здорово, просто в другой комнате — оно может снова
-            #     прийти из WSDiscovery, и это нормально)
-            #   - _ui_connected = False → Manager не шлёт deviceDisconnected
-            #     (в QML ничего не было добавлено → нечего удалять)
-            #   - consumer.stop_all() НЕ вызывается: WS-Eventing подписки ещё
-            #     не оформлены (start_all() выполнен, но Subscribe ещё не нужен
-            #     т.к. мы не намерены слушать события). На практике sdc11073
-            #     уже отправил Subscribe в start_all — поэтому вызываем stop_all()
-            #     в блоке finally через _graceful_shutdown() для чистоты.
-            #
-            # NOTE: если устройство НЕ публикует LocationContext (поле отсутствует
-            # или пустое), фильтр пропускает его с предупреждением. Это позволяет
-            # подключаться к устройствам, которые ещё не установили локацию
-            # (например, только что включились).
+                # ------------------------------------------------------------------
+                # ДИАГНОСТИКА: что пришло в GetMdib и есть ли ContextService
+                # ------------------------------------------------------------------
+                _ctx_states = list(self.mdib.context_states.objects)
+                _n_ctx = len(_ctx_states)
+                if _n_ctx > 0:
+                    self.logger.info(
+                        f'[DIAG] GetMdib returned {_n_ctx} context state(s) — '
+                        f'GetContextStates call NOT needed.'
+                    )
+                    for _s in _ctx_states:
+                        self.logger.debug(
+                            f'[DIAG]   context_state: type={_s.NODETYPE.localname}, '
+                            f'handle={_s.Handle}, descriptor={_s.DescriptorHandle}'
+                        )
+                else:
+                    self.logger.warning(
+                        f'[DIAG] GetMdib returned 0 context states — '
+                        f'device may require GetContextStates separately.'
+                    )
+
+                _has_ctx_svc = self.consumer.context_service_client is not None
+                self.logger.info(
+                    f'[DIAG] context_service_client available: {_has_ctx_svc}'
+                )
+
+                # ------------------------------------------------------------------
+                # ШАГ 2b: Фильтрация по LocationContext (если задан target_room)
+                # ------------------------------------------------------------------
+                # WSDiscovery обнаруживает все SDC Provider'ы в сети вне зависимости
+                # от их местоположения. LocationContext становится доступен только
+                # ПОСЛЕ init_mdib() — он хранится в context_states MDIB.
+                #
+                # Если target_room задан и комната устройства не совпадает →
+                # возвращаемся из _worker_logic() чистым путём (return, не исключение).
+                # Это означает:
+                #   - error_occurred = False → кэш WSDiscovery НЕ очищается
+                #     (устройство здорово, просто в другой комнате — оно может снова
+                #     прийти из WSDiscovery, и это нормально)
+                #   - _ui_connected = False → Manager не шлёт deviceDisconnected
+                #     (в QML ничего не было добавлено → нечего удалять)
+                #   - consumer.stop_all() НЕ вызывается: WS-Eventing подписки ещё
+                #     не оформлены (start_all() выполнен, но Subscribe ещё не нужен
+                #     т.к. мы не намерены слушать события). На практике sdc11073
+                #     уже отправил Subscribe в start_all — поэтому вызываем stop_all()
+                #     в блоке finally через _graceful_shutdown() для чистоты.
+                #
+                # NOTE: если устройство НЕ публикует LocationContext (поле отсутствует
+                # или пустое), фильтр пропускает его с предупреждением. Это позволяет
+                # подключаться к устройствам, которые ещё не установили локацию
+                # (например, только что включились).
                 if self.target_room:
                     device_room = self._get_device_room()
                     if device_room == "":
@@ -620,8 +712,21 @@ class DeviceHandler(threading.Thread):
                             await asyncio.to_thread(
                                 self.consumer.context_service_client.get_context_states
                             )
-                        # Если ContextService недоступен (редкий случай) — пропускаем пинг.
-                        # В этом случае missed_heartbeats не сбрасывается, что правильно.
+                            # Пинг успешен — контексты доступны
+                            if not getattr(self, '_ctx_ping_ok_logged', False):
+                                self.logger.info(
+                                    '[DIAG] GetContextStates ping: SUCCESS — '
+                                    'device allows context queries without authorization.'
+                                )
+                                self._ctx_ping_ok_logged = True
+                        else:
+                            # ContextService вообще не объявлен устройством
+                            if not getattr(self, '_no_ctx_svc_logged', False):
+                                self.logger.warning(
+                                    '[DIAG] No context_service_client — '
+                                    'device did not advertise ContextService in metadata.'
+                                )
+                                self._no_ctx_svc_logged = True
                     missed_heartbeats = 0  # Пинг успешен — сбрасываем счётчик
 
                 except HTTPReturnCodeError as e:
@@ -632,8 +737,9 @@ class DeviceHandler(threading.Thread):
                     # Логируем один раз, чтобы не засорять вывод.
                     if not getattr(self, '_auth_warn_logged', False):
                         self.logger.warning(
-                            f'Ping: provider returned HTTP {e.status} '
-                            f'({e.reason}) — connection alive, action not authorized. '
+                            f'[DIAG] Ping: provider returned HTTP {e.status} ({e.reason}) — '
+                            f'connection alive but GetContextStates is blocked '
+                            f'(unauthorized). Context data came via GetMdib only. '
                             f'Suppressing further warnings.'
                         )
                         self._auth_warn_logged = True

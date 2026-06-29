@@ -85,7 +85,7 @@ if __name__ == '__main__':
         for one_service in services:
             print("Got service: {}".format(one_service.epr))
             # the EndPointReference is created based on the UUID of the Provider
-            if one_service.epr == device_A_UUID.urn:
+            if True:
                 print("Got a match: {}".format(one_service))
                 # now create a new SDCClient (=Consumer) that can be used
                 # for all interactions with the communication partner

@@ -28,7 +28,6 @@ Item {
                 "value": device.deviceValue,
                 "alarm": device.alarmStatus,
                 "priority": device.priority,
-                "metrics": device.metrics, // Initial metrics
                 "deviceObj": device, // Store the Python Object for live updates via Connections
                 "timeout": "0"
             })
@@ -71,7 +70,6 @@ Item {
                 "value": item.value,
                 "alarm": item.alarm,
                 "priority": item.priority,
-                "metrics": item.metrics,
                 "deviceObj": item.deviceObj, // Keep the connection target alive!
                 "timeout": item.timeout
             });
@@ -285,7 +283,6 @@ Item {
                             function onPatientNameChanged() { model.patientname = target.patientName }
                             function onPatientRoomChanged() { model.room = target.patientRoom }
                             function onDeviceNameChanged() { model.devicename = target.deviceName }
-                            function onMetricsChanged() { model.metrics = target.metrics }
                             // ADDED: Listen for live Alarm and Priority updates AND trigger Sort
                             function onAlarmStatusChanged() {
                                 model.alarm = target.alarmStatus;

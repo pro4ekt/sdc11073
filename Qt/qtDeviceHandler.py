@@ -447,13 +447,11 @@ class QtDeviceHandler(QObject):
                     pass  # Ошибка конверсии — оставляем "---"
 
                 new_metrics_list.append({
-                    "descriptor":    descriptor,         # Сырой объект дескриптора (для доп. обработки в QML)
-                    "state":         state,              # Сырой объект стейта
                     "metricname":    metric_name,        # Строка: handle метрики (для отображения)
                     "value":         metric_value,       # Строка: текущее значение (или "---"/"Waveform")
                     "samples":       metric_samples,     # list[float]: для графика waveform
                     "alarm":         metric_alarm,       # "On" / "Off": есть ли тревога по этой метрике
-                    "timestamp_ms":  metric_timestamp_ms # float | None: скорректированный таймстемп (мс)
+                    "timestamp_ms":  float(metric_timestamp_ms) if metric_timestamp_ms is not None else 0.0,
                 })
 
             self._metrics = new_metrics_list
