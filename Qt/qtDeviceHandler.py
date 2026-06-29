@@ -289,16 +289,58 @@ class QtDeviceHandler(QObject):
                         active_alert_handles.add(source_handle)
 
             # ------------------------------------------------------------------
+            # EpochSupport: поправка на расхождение часов устройства
+            # ------------------------------------------------------------------
+            # Вычисляем ДО SelfCheck — чтобы определить, надёжны ли таймстемпы.
+            clock_offset_sec = 0.0
+            try:
+                clock_states_list = [s for s in self._device.mdib.states.objects
+                                     if s.NODETYPE == pm.ClockState]
+                if clock_states_list:
+                    clock_state = clock_states_list[0]
+
+                    remote_sync = getattr(clock_state, 'RemoteSync', True)
+                    if not remote_sync and not getattr(self, '_clock_nosync_warned', False):
+                        self._clock_nosync_warned = True
+                        self._device.logger.warning(
+                            "Device clock NOT NTP-synced (RemoteSync=False). "
+                            "Timestamp correction may be inaccurate."
+                        )
+
+                    device_time = getattr(clock_state, 'DateAndTime', None)
+                    if device_time is not None:
+                        clock_offset_sec = float(device_time) - time.time()
+                        # Расхождение > 60с — предупреждаем ОДИН РАЗ (подавляем спам)
+                        if abs(clock_offset_sec) > 60.0:
+                            if not getattr(self, '_clock_offset_warned', False):
+                                self._clock_offset_warned = True
+                                self._device.logger.warning(
+                                    f"Large clock offset detected ({clock_offset_sec:+.1f}s). "
+                                    f"Device NTP may be misconfigured. "
+                                    f"SelfCheck validation disabled. Suppressing further warnings."
+                                )
+                            # Если расхождение огромное — не корректируем таймстемпы
+                            if abs(clock_offset_sec) >= 3600.0:
+                                clock_offset_sec = 0.0
+            except Exception:
+                pass  # ClockState недоступен — offset=0, работаем без поправки
+
+            # ------------------------------------------------------------------
             # 4c. SelfCheckPeriod validation (IHE SDPi / BICEPS)
             # ------------------------------------------------------------------
-            # AlertSystemDescriptor.SelfCheckPeriod — ожидаемый интервал самодиагностики
-            # системы тревог в секундах (тип DurationType = float).
-            # AlertSystemState.LastSelfCheck — Unix-timestamp последней самодиагностики.
+            # AlertSystemDescriptor.SelfCheckPeriod — ожидаемый интервал самодиагностики (секунды).
+            # AlertSystemState.LastSelfCheck — Unix-timestamp последней самодиагностики (секунды).
             #
             # Если текущее время превышает LastSelfCheck + SelfCheckPeriod * 1.5 →
             # AlertSystem молчит слишком долго → переводим устройство в COMM_FAILURE.
             # Коэффициент 1.5 даёт допуск на задержки сети (50% сверх нормы).
+            #
+            # ВАЖНО: все сравнения ведём в СЕКУНДАХ (не в миллисекундах).
+            # LastSelfCheck — pm:Timestamp = float (Unix секунды) в sdc11073.
             _SELF_CHECK_MULTIPLIER = 1.5
+            # Если разрыв часов с устройством превышает порог — SelfCheck не валиден
+            # (нельзя доверять таймштемпам устройства; не объявляем COMM_FAILURE зазря).
+            _CLOCK_SKEW_SKIP_THRESHOLD = 3600.0  # 1 час — считаем часы устройства ненадёжными
             alert_system_state_list = [
                 s for s in self._device.mdib.states.objects
                 if s.NODETYPE == pm.AlertSystemState
@@ -307,17 +349,14 @@ class QtDeviceHandler(QObject):
                 als_desc = self._device.mdib.descriptions.handle.get_one(
                     als.DescriptorHandle, allow_none=True
                 )
-                # Проверяем только если оба поля заполнены (не все устройства публикуют SelfCheck)
                 if als_desc and als_desc.SelfCheckPeriod and als.LastSelfCheck:
-                    # Перевод таймаута в миллисекунды (SelfCheckPeriod в секундах)
-                    deadline_ms = als_desc.SelfCheckPeriod * _SELF_CHECK_MULTIPLIER * 1000
-                    # Текущее время также умножаем на 1000, чтобы получить миллисекунды
-                    current_time_ms = time.time() * 1000
-
-                    if current_time_ms - float(als.LastSelfCheck) > deadline_ms:
-                        print(f"[QtHandler {self._device.epr}] COMMUNICATION FAILURE: "
-                              f"AlertSystem '{als.DescriptorHandle}' SelfCheck overdue!")
-                        # Перекрываем любой другой статус — это критическая ошибка коммуникации
+                    # Пропускаем проверку если часы устройства сильно расходятся
+                    if abs(clock_offset_sec) >= _CLOCK_SKEW_SKIP_THRESHOLD:
+                        break
+                    # Сравниваем в секундах (LastSelfCheck уже в секундах Unix)
+                    deadline_s = als_desc.SelfCheckPeriod * _SELF_CHECK_MULTIPLIER
+                    current_time_s = time.time()
+                    if current_time_s - float(als.LastSelfCheck) > deadline_s:
                         new_alarm_status = "COMM_FAILURE"
                         break  # Достаточно одного нарушения
 
@@ -326,47 +365,6 @@ class QtDeviceHandler(QObject):
                 self._alarmStatus = new_alarm_status
                 self.alarmStatusChanged.emit()
             # --- ALARM LOGIC END ---
-
-            # ------------------------------------------------------------------
-            # EpochSupport: поправка на расхождение часов устройства (Task 3)
-            # ------------------------------------------------------------------
-            # В MDIB устройств (например, нейрохирургического микроскопа) присутствует:
-            #   <pm:Clock Handle="clock_decs"> — дескриптор часов с TimeProtocol NTPv4
-            #   <pm:ClockState DescriptorHandle="clock_decs" RemoteSync="true"> — стейт
-            #
-            # RemoteSync="true" означает NTP-синхронизацию — часы точны.
-            # DateAndTime ОТСУТСТВУЕТ в статическом GetMdib-снимке — он появляется
-            # только в EpisodicComponentReport (push-уведомление при изменении).
-            # Поэтому при первых кадрах offset=0, затем заполняется автоматически.
-            #
-            # clock_offset_sec = device_time - time.time():
-            #   > 0 → часы устройства спешат (таймстемпы нужно уменьшить)
-            #   < 0 → часы устройства отстают (таймстемпы нужно увеличить)
-            clock_offset_sec = 0.0
-            try:
-                clock_states_list = [s for s in self._device.mdib.states.objects
-                                     if s.NODETYPE == pm.ClockState]
-                if clock_states_list:
-                    clock_state = clock_states_list[0]
-
-                    # RemoteSync=False означает NTP не работает — часы могут дрейфовать.
-                    # Поправка в этом случае ненадёжна, но всё равно лучше, чем ничего.
-                    remote_sync = getattr(clock_state, 'RemoteSync', True)
-                    if not remote_sync:
-                        print(f"[QtHandler {self._device.epr}] WARNING: Device clock "
-                              f"NOT NTP-synced (RemoteSync=False). "
-                              f"Timestamp correction may be inaccurate.")
-
-                    device_time = getattr(clock_state, 'DateAndTime', None)
-                    if device_time is not None:
-                        clock_offset_sec = float(device_time) - time.time()
-                        # Расхождение > 60с — NTP, вероятно, настроен неверно или сбоит.
-                        if abs(clock_offset_sec) > 60.0:
-                            print(f"[QtHandler {self._device.epr}] WARNING: Large clock "
-                                  f"offset detected ({clock_offset_sec:+.1f}s). "
-                                  f"Device NTP may be misconfigured.")
-            except Exception:
-                pass  # ClockState недоступен — offset=0, работаем без поправки
 
             # ------------------------------------------------------------------
             # 5. СПИСОК МЕТРИК (Metrics)
@@ -539,7 +537,7 @@ class QtDeviceHandler(QObject):
                 self.deviceValueChanged.emit()
 
         except Exception as e:
-            print(f"Error reading data: {e}")
+            self._device.logger.error(f"update_data error: {e}", exc_info=True)
         finally:
             # ОБЯЗАТЕЛЬНО освобождаем лок, даже если возникло исключение.
             # Без этого рабочий поток навсегда заблокируется при следующей попытке

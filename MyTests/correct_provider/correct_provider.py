@@ -20,7 +20,17 @@ from sdc11073.wsdiscovery import WSDiscoverySingleAdapter
 from sdc11073.xml_types.dpws_types import ThisDeviceType
 from sdc11073.xml_types.dpws_types import ThisModelType
 from sdc11073.xml_types.pm_types import AlertSignalPresence
+from sdc11073.location import SdcLocation
 from sdc11073.xml_types.pm_types import Measurement, RelatedMeasurement
+
+# ── Increase subscription error tolerance ────────────────────────────────────
+# By default MAX_NOTIFY_ERRORS=1: after a single failed notification push
+# the subscription is marked invalid and closed within ~1 second.
+# sdcX Consumer's BeastTLSDetector rejects the first push attempts, causing
+# premature subscription closure and a consumer segfault.
+# Raising the limit keeps subscriptions alive for their full expiry period.
+from sdc11073.provider.subscriptionmgr_base import SubscriptionBase
+SubscriptionBase.MAX_NOTIFY_ERRORS = 999
 
 @classmethod
 def _related_measurement_from_node(cls, node):
@@ -42,6 +52,21 @@ class MySdcProvider(SdcProvider):
     def find_string_in_request(self, request, search_string):
         # Dummy implementation
         return False
+
+    def publish(self):
+        """Override to add MDC type scopes required by sdcX CompleteConsumer."""
+        scopes = self._components.scopes_factory(self._mdib)
+        # MDC codes expected by sdcX CompleteConsumer (PulsoximeterProvider types)
+        for code in ('sdc.cdc.type:///130535', 'sdc.cdc.type:///130536', 'sdc.cdc.type:///130736'):
+            if code not in scopes.text:
+                scopes.text.append(code)
+        x_addrs = self.get_xaddrs()
+        self._wsdiscovery.publish_service(
+            self.epr_urn,
+            list(self._mdib.sdc_definitions.MedicalDeviceTypesFilter),
+            scopes,
+            x_addrs,
+        )
 
     def simulate_self_checkout(self, is_successful: bool = True) -> bool:
         vmd_states = self.mdib.states.NODETYPE.get(pm.VmdState, [])
@@ -232,6 +257,16 @@ async def process_metric(provider, metric_name, value, timeout_duration):
     evaluate_alarm(provider, metric_name, value, False)
     return False
 
+def get_consumer_count(provider) -> int:
+    """Count active consumer subscriptions across all subscription managers."""
+    total = 0
+    for mgr in getattr(provider, '_subscriptions_managers', {}).values():
+        subs = getattr(mgr, '_subscriptions', None)
+        if subs is not None:
+            total += len(subs.objects)
+    return total
+
+
 async def main(provider):
     # Create deep copies of the physiological ranges to detect changes later
     share_state_temp = deepcopy(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0])
@@ -243,6 +278,11 @@ async def main(provider):
     counter = 0.0
 
     while True:
+        # ─── Connection status ────────────────────────────────────────────
+        n = get_consumer_count(provider)
+        status = f'✓ {n} consumer(s) connected' if n > 0 else '✗ no consumers connected'
+        print(f'[Provider] {status}', flush=True)
+
         # Log current physiological ranges to console for debugging
         """
          print("Temp Low = " + str(provider.mdib.entities.by_handle("temperature").state.PhysiologicalRange[0].Lower))
@@ -325,11 +365,18 @@ NETWORK_ADAPTER = "Wi-Fi"
 MDIB_FILE = "correct_mdib.xml"
 
 if __name__ == '__main__':
-    # basic_logging_setup()
+    import pathlib
+    import logging
+    from sdc11073.loghelper import basic_logging_setup
+    from sdc11073 import commlog
+    basic_logging_setup(level=logging.INFO)
 
-    # UUID objects (universally unique identifiers) according to RFC 4122
-    base_uuid = uuid.UUID('{cc013678-79f6-403c-998f-3cc0cc050234}')
-    my_uuid = uuid.uuid5(base_uuid, "test_provider_mock")
+    # ── SSL disabled (plain HTTP) ─────────────────────────────────────────
+    # Consumer launched with --no_tls flag → both sides use plain HTTP.
+    ssl_container = None
+
+    # UUID must match what sdcX ReferenceConsumer expects in DEV-24
+    my_uuid = uuid.UUID('ba8ad49f-e25b-43ad-870b-c1bdba91d431')
 
     # getting mdib from xml file and converting it to mdib.py object
     # Construct absolute path to MDIB file relative to this script
@@ -363,7 +410,11 @@ if __name__ == '__main__':
                              this_model=model,
                              this_device=device,
                              device_mdib_container=mdib,
-                             specific_components=components)
+                             specific_components=components,
+                             ssl_context_container=ssl_container)  # HTTPS for sdcX
+
+    # Disable HTTP compression — sdcX C++ Consumer may crash on compressed responses
+    provider.set_used_compression()  # empty = no compression
 
     provider.simulate_self_checkout()
 
@@ -372,6 +423,10 @@ if __name__ == '__main__':
 
     # Starting all Services of provider
     provider.start_all()
+
+    # Set location to match CompleteConsumer's scope filter: DWHL/F05/TKl
+    loc = SdcLocation(fac='DWHL', poc='F05', bed='TKl')
+    provider.set_location(loc)
 
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()

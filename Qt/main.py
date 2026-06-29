@@ -34,6 +34,8 @@ from __future__ import annotations
 import sys
 import os
 import argparse
+import logging
+import datetime
 
 # Manager — координатор сети SDC-устройств
 from sdcMyConsumer import SdcMyConsumer
@@ -42,6 +44,10 @@ from sdcMyConsumer import SdcMyConsumer
 from fhirData import FHIRPatientData
 
 if __name__ == "__main__":
+
+    # Импортируем логгер из deviceHandler (он уже настроен с файловым хэндлером)
+    # Если deviceHandler ещё не импортирован — импортируем здесь.
+    from deviceHandler import _module_log as _log
 
     # ------------------------------------------------------------------
     # ШАГ 0: Парсинг аргументов командной строки
@@ -61,7 +67,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--room",
-        default="OR-2",
+        default=None,
         metavar="ROOM_ID",
         help=(
             "Фильтр по комнате (LocationContext.Room). "
@@ -74,8 +80,15 @@ if __name__ == "__main__":
     args, qt_argv = parser.parse_known_args()
     mode = args.mode
     target_room: str | None = args.room
-    print(f"[Main] Starting in mode: '{mode}'"
-          + (f", room filter: '{target_room}'" if target_room else " (no room filter)"))
+
+    # ── Разделитель сессии в лог-файле ───────────────────────────────────────
+    _ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _sep = '=' * 72
+    _log.info(_sep)
+    _log.info(f'SESSION START  {_ts}')
+    _log.info(f'Mode: {mode}' + (f'  |  Room filter: {target_room}' if target_room else '  |  No room filter'))
+    _log.info(_sep)
+    # ─────────────────────────────────────────────────────────────────────────
 
     # ------------------------------------------------------------------
     # ШАГ 1: Инициализация Qt-приложения (ДО загрузки FHIR и Manager'а)
@@ -102,8 +115,7 @@ if __name__ == "__main__":
             fhir.fetch(patient_id)
             fhir.print_summary()
         except Exception as e:
-            print(f"Ошибка загрузки данных пациента: {e}")
-            # Продолжаем без FHIR — приложение справится с пустым контекстом
+            _log.error(f"Ошибка загрузки данных пациента: {e}")
 
     # ------------------------------------------------------------------
     # ШАГ 3: Создание Manager'а и запуск сканирования сети

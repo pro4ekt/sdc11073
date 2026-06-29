@@ -19,8 +19,67 @@ deviceHandler.py — «Рабочий поток» (Worker) для одного 
 
 import threading
 import asyncio
+import ssl
 import time
+import logging
+import logging.handlers
+import pathlib
 from decimal import Decimal
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+# Log directory: Qt/logs/  (создаётся автоматически если нет)
+_LOG_DIR = pathlib.Path(__file__).parent / 'logs'
+_LOG_DIR.mkdir(exist_ok=True)
+
+def _setup_module_logger() -> logging.Logger:
+    """
+    Настраивает корневой логгер модуля deviceHandler.
+
+    Уровни:
+      - Консоль (StreamHandler): INFO
+      - Файл (RotatingFileHandler): DEBUG
+        Файл: Qt/logs/sdc_consumer.log
+        Ротация: 5 МБ × 5 резервных копий → sdc_consumer.log.1 … .5
+    """
+    logger = logging.getLogger('sdc.consumer')
+
+    # Не добавляем handlers повторно (если модуль импортируется несколько раз)
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.DEBUG)
+
+    _fmt = logging.Formatter(
+        fmt='%(asctime)s [%(levelname)-8s] %(name)s — %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
+
+    # ── Консоль ──────────────────────────────────────────────────────────────
+    _console = logging.StreamHandler()
+    _console.setLevel(logging.INFO)
+    _console.setFormatter(_fmt)
+    logger.addHandler(_console)
+
+    # ── Файл (ротация) ────────────────────────────────────────────────────────
+    _file_handler = logging.handlers.RotatingFileHandler(
+        filename=str(_LOG_DIR / 'sdc_consumer.log'),
+        maxBytes=5 * 1024 * 1024,   # 5 МБ на файл
+        backupCount=5,
+        encoding='utf-8',
+    )
+    _file_handler.setLevel(logging.DEBUG)
+    _file_handler.setFormatter(_fmt)
+    logger.addHandler(_file_handler)
+
+    # Не пробрасываем в корневой логгер (предотвращаем дублирование)
+    logger.propagate = False
+
+    return logger
+
+# Модульный логгер — используется для сообщений вне класса DeviceHandler
+_module_log = _setup_module_logger()
 
 # Импортируем Qt-обёртку — она создаётся для каждого устройства и живёт в UI-потоке
 from qtDeviceHandler import QtDeviceHandler
@@ -28,6 +87,7 @@ from qtDeviceHandler import QtDeviceHandler
 # Основные классы sdc11073 для потребителя (Consumer = клиент SDC-устройства)
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
+from sdc11073.pysoap.soapclient import HTTPReturnCodeError
 
 # periodic_actions — список действий, которые НЕ нужно подписывать через subscriptions.
 # Они приходят периодически и обрабатываются иначе.
@@ -175,6 +235,12 @@ class DeviceHandler(threading.Thread):
         # Заглушка для будущего OPC UA сервера (сейчас не используется)
         self.opcua_server = None
 
+        # ── Логгер этого воркера ──────────────────────────────────────────────
+        # Имя логгера включает укороченный EPR (последние 12 символов UUID),
+        # чтобы в логах сразу было видно, от какого устройства пришло сообщение.
+        _short_epr = self.epr[-12:] if len(self.epr) > 12 else self.epr
+        self.logger = logging.getLogger(f'sdc.consumer.worker.{_short_epr}')
+
         # Флаг: True означает что воркер завершился из-за фильтрации по LocationContext.
         # Устанавливается в _worker_logic() при несовпадении target_room.
         # Используется в run() для передачи в manager.remove_device(location_filtered=True),
@@ -223,7 +289,7 @@ class DeviceHandler(threading.Thread):
                 self.error_occurred,
                 location_filtered=self._location_filtered,
             )
-            print(f"[Worker {self.epr}] Thread Exiting (Dead).")
+            self.logger.info("Thread Exiting (Dead).")
 
     # =========================================================================
     # Основная асинхронная логика подключения и мониторинга
@@ -239,7 +305,7 @@ class DeviceHandler(threading.Thread):
           4. Создание Qt-объекта и его перемещение в главный поток
           5. Основной цикл мониторинга с механизмом T_fallback (IHE SDPi)
         """
-        print(f"[Worker {self.epr}] Connecting...")
+        self.logger.info("Connecting...")
         try:
             # ------------------------------------------------------------------
             # ШАГ 1: Подключение к SDC-устройству
@@ -247,9 +313,72 @@ class DeviceHandler(threading.Thread):
             # from_wsd_service() создаёт SdcConsumer по данным из WSDiscovery —
             # это не требует ручного указания IP/порта.
             # ssl_context_container=None означает работу без TLS (нешифрованное соединение).
+            """
+             x_addrs = getattr(self.wsd_service, 'x_addrs', 'unknown')
+            self.logger.debug(f"Transport addresses (x_addrs): {x_addrs}")
+
+            # ------------------------------------------------------------------
+            # Автоопределение TLS: если провайдер анонсировал https:// адрес,
+            # создаём SSL-контекст с отключённой проверкой сертификата.
+            # ------------------------------------------------------------------
+            ssl_container = None
+            if x_addrs and any(str(addr).startswith('https://') for addr in x_addrs):
+                self.logger.info("HTTPS detected — building mTLS SSL context...")
+
+                import pathlib
+                # Locate certs relative to this file: ../pat/certs/
+                _certs_dir = pathlib.Path(__file__).parent.parent / 'pat' / 'certs'
+                _cert_file = _certs_dir / 'user_certificate_root_signed.pem'
+                _key_file  = _certs_dir / 'user_private_key_encrypted.pem'
+                _ca_file   = _certs_dir / 'root_certificate.pem'
+
+                # Build client SSL context:
+                #   - skip server cert verification (self-signed devices)
+                #   - load our client cert+key for mTLS (TLSV13_ALERT_CERTIFICATE_REQUIRED)
+                _ssl_ctx = ssl.create_default_context()
+                _ssl_ctx.check_hostname = False
+                _ssl_ctx.verify_mode = ssl.CERT_NONE
+
+                if _cert_file.exists() and _key_file.exists():
+                    # Common passphrase used in sdc11073 IHE test PKI
+                    _KEY_PASS = 'dummypassword'
+                    try:
+                        _ssl_ctx.load_cert_chain(
+                            certfile=str(_cert_file),
+                            keyfile=str(_key_file),
+                            password=_KEY_PASS,
+                        )
+                        # Optionally load CA so server cert can be verified later
+                        if _ca_file.exists():
+                            _ssl_ctx.load_verify_locations(cafile=str(_ca_file))
+                        self.logger.info(f"mTLS: client cert loaded from {_certs_dir}")
+                    except Exception as cert_err:
+                        self.logger.warning(
+                            f"Could not load client cert ({cert_err}). "
+                            f"Proceeding without client cert — mTLS may fail."
+                        )
+                else:
+                    self.logger.warning(
+                        f"No client cert found at {_certs_dir}. mTLS handshake will likely fail."
+                    )
+
+                try:
+                    from sdc11073 import certloader
+                    ssl_container = certloader.SSLContextContainer(
+                        client_context=_ssl_ctx,
+                        server_context=_ssl_ctx,
+                    )
+                except Exception as ssl_err:
+                    self.logger.warning(
+                        f"Could not build SSLContextContainer ({ssl_err}). "
+                        f"Using raw ssl_context as fallback."
+                    )
+                    ssl_container = _ssl_ctx  # type: ignore[assignment]
+
+            """
             self.consumer = SdcConsumer.from_wsd_service(
                 wsd_service=self.wsd_service,
-                ssl_context_container=None
+                ssl_context_container=None,
             )
             # start_all() запускает HTTP-сервер для получения уведомлений от устройства
             # и подписывается на все доступные сервисы, кроме указанных в not_subscribed_actions.
@@ -293,19 +422,23 @@ class DeviceHandler(threading.Thread):
             # или пустое), фильтр пропускает его с предупреждением. Это позволяет
             # подключаться к устройствам, которые ещё не установили локацию
             # (например, только что включились).
-            if self.target_room:
-                device_room = self._get_device_room()
-                if device_room == "":
-                    # Нет LocationContext → предупреждение, но пропускаем (не фильтруем)
-                    print(f"[Worker {self.epr}] WARNING: No LocationContext found in MDIB. "
-                          f"Room filter (target='{self.target_room}') skipped — accepting device.")
-                elif device_room != self.target_room:
-                    print(f"[Worker {self.epr}] Location filter: device room '{device_room}' "
-                          f"!= target '{self.target_room}'. Disconnecting (not an error).")
-                    self._location_filtered = True   # → ban-list в Manager'е
-                    return  # Выходим чисто — finally вызовет stop_all() через _graceful_shutdown
-                else:
-                    print(f"[Worker {self.epr}] Location filter: room '{device_room}' matches. Accepting.")
+                if self.target_room:
+                    device_room = self._get_device_room()
+                    if device_room == "":
+                        # Нет LocationContext → предупреждение, но пропускаем (не фильтруем)
+                        self.logger.warning(
+                            f"No LocationContext found in MDIB. "
+                            f"Room filter (target='{self.target_room}') skipped — accepting device."
+                        )
+                    elif device_room != self.target_room:
+                        self.logger.info(
+                            f"Location filter: device room '{device_room}' "
+                            f"!= target '{self.target_room}'. Disconnecting (not an error)."
+                        )
+                        self._location_filtered = True   # → ban-list в Manager'е
+                        return  # Выходим чисто — finally вызовет stop_all() через _graceful_shutdown
+                    else:
+                        self.logger.info(f"Location filter: room '{device_room}' matches. Accepting.")
 
             # ------------------------------------------------------------------
             # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция смены сессии)
@@ -404,7 +537,7 @@ class DeviceHandler(threading.Thread):
             observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
             observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
 
-            print(f"[Worker {self.epr}] Connection established. Monitoring...")
+            self.logger.info("Connection established. Monitoring...")
 
             # ------------------------------------------------------------------
             # ШАГ 3b: Запись PatientContext в устройство [только 'op']
@@ -440,7 +573,7 @@ class DeviceHandler(threading.Thread):
                 if main_thread:
                     self.qtDeviceHandler.moveToThread(main_thread)
                 else:
-                    print(f"[Worker {self.epr}] Warning: Could not find Main Thread!")
+                    self.logger.warning("Could not find Main Thread!")
 
                 # Уведомляем UI о появлении нового устройства.
                 # Qt Signal автоматически маршалирует вызов в поток получателя (главный).
@@ -467,7 +600,7 @@ class DeviceHandler(threading.Thread):
             while self.running:
                 # Проверяем флаг is_connected от sdc11073 (реагирует на TCP-разрыв)
                 if not self.consumer.is_connected:
-                    print(f"[Worker {self.epr}] Connection lost reported by SDC stack.")
+                    self.logger.warning("Connection lost reported by SDC stack.")
                     self.error_occurred = True
                     break
 
@@ -491,13 +624,26 @@ class DeviceHandler(threading.Thread):
                         # В этом случае missed_heartbeats не сбрасывается, что правильно.
                     missed_heartbeats = 0  # Пинг успешен — сбрасываем счётчик
 
+                except HTTPReturnCodeError as e:
+                    # HTTP 4xx означает, что TCP-соединение живо — провайдер ответил,
+                    # но отклонил запрос (например, HTTP 400 "unauthorized participant"
+                    # от sdcX при --no_tls).  Это НЕ разрыв соединения — сбрасываем счётчик.
+                    missed_heartbeats = 0
+                    # Логируем один раз, чтобы не засорять вывод.
+                    if not getattr(self, '_auth_warn_logged', False):
+                        self.logger.warning(
+                            f'Ping: provider returned HTTP {e.status} '
+                            f'({e.reason}) — connection alive, action not authorized. '
+                            f'Suppressing further warnings.'
+                        )
+                        self._auth_warn_logged = True
 
                 except Exception as e:
                     missed_heartbeats += 1
-                    print(f"[Worker {self.epr}] Ping failed ({missed_heartbeats}/{MAX_MISSED}): {e}")
+                    self.logger.warning(f"Ping failed ({missed_heartbeats}/{MAX_MISSED}): {e}")
                     # Проверяем, превышен ли порог T_fallback
                     if missed_heartbeats * SLEEP_INTERVAL >= T_FALLBACK:
-                        print(f"[Worker {self.epr}] T_fallback exceeded. Disconnecting.")
+                        self.logger.error("T_fallback exceeded. Disconnecting.")
                         self.error_occurred = True
                         break  # Выходим из цикла → поток завершится → Manager удалит устройство
 
@@ -507,8 +653,8 @@ class DeviceHandler(threading.Thread):
                 await asyncio.sleep(SLEEP_INTERVAL)
 
         except Exception as e:
-            # Критическая ошибка на этапе подключения или инициализации
-            print(f"[Worker {self.epr}] Critical Error: {e}")
+            # Критическая ошибка на этапе подключения или инициализации.
+            self.logger.error(f"Critical Error ({type(e).__name__}): {e}", exc_info=True)
             self.error_occurred = True
         finally:
             # DEV-49: Штатное завершение сессии мониторинга.
@@ -517,12 +663,12 @@ class DeviceHandler(threading.Thread):
             # Оркестратор завершает работу штатно, а не аварийно.
             # Без этого шага устройство может активировать fallback-тревогу (60 dBA).
             if self.consumer:
-                print(f"[Worker {self.epr}] Stopping consumer resources (DEV-49 graceful)...")
+                self.logger.info("Stopping consumer resources (DEV-49 graceful)...")
                 try:
                     await self._graceful_shutdown()
                 except Exception as e:
                     # Крайний случай: форсируем закрытие синхронно
-                    print(f"[Worker {self.epr}] Graceful shutdown failed ({e}), forcing stop.")
+                    self.logger.error(f"Graceful shutdown failed ({e}), forcing stop.")
                     try:
                         self.consumer.stop_all()
                     except Exception:
@@ -556,7 +702,7 @@ class DeviceHandler(threading.Thread):
                 if loc_states and loc_states[0].LocationDetail:
                     return loc_states[0].LocationDetail.Room or ""
         except Exception as e:
-            print(f"[Worker {self.epr}] _get_device_room error: {e}")
+            self.logger.error(f"_get_device_room error: {e}")
         return ""
 
     # =========================================================================
@@ -695,7 +841,7 @@ class DeviceHandler(threading.Thread):
         PatientContextDescriptor handle — same approach as apply_ensemble_context().
         """
         if not self.patient_context:
-            print(f"[Worker {self.epr}] No patient context data, skipping apply_patient_to_mdib.")
+            self.logger.debug("No patient context data, skipping apply_patient_to_mdib.")
             return
         if self.mode == "icu":
             return
@@ -709,13 +855,13 @@ class DeviceHandler(threading.Thread):
         try:
             with self.data_lock:
                 if not self.mdib:
-                    print(f"[Worker {self.epr}] MDIB not ready, skipping apply_patient_to_mdib.")
+                    self.logger.warning("MDIB not ready, skipping apply_patient_to_mdib.")
                     return
 
                 # Find PatientContextDescriptor to locate the correct operation
                 pat_descriptors = self.mdib.descriptions.NODETYPE.get(pm.PatientContextDescriptor, [])
                 if not pat_descriptors:
-                    print(f"[Worker {self.epr}] No PatientContextDescriptor found.")
+                    self.logger.warning("No PatientContextDescriptor found.")
                     return
                 pat_descriptor = pat_descriptors[0]
 
@@ -739,17 +885,17 @@ class DeviceHandler(threading.Thread):
                     operation_handle = set_ctx_ops[0].Handle
 
                 if not operation_handle:
-                    print(f"[Worker {self.epr}] No SetContextStateOperation found.")
+                    self.logger.warning("No SetContextStateOperation found.")
                     return
 
                 states_to_send = self._build_patient_workflow_states()
 
         except Exception as e:
-            print(f"[Worker {self.epr}] Failed to build patient context states: {e}")
+            self.logger.error(f"Failed to build patient context states: {e}")
             return
 
         if not states_to_send:
-            print(f"[Worker {self.epr}] No states to send (no descriptors on device).")
+            self.logger.warning("No states to send (no descriptors on device).")
             return
 
         # ------------------------------------------------------------------
@@ -757,22 +903,23 @@ class DeviceHandler(threading.Thread):
         # ------------------------------------------------------------------
         try:
             if self.consumer.context_service_client:
-                print(f"[Worker {self.epr}] Sending PatientContext+Workflow (op='{operation_handle}')...")
+                self.logger.info(f"Sending PatientContext+Workflow (op='{operation_handle}')...")
                 self.consumer.context_service_client.set_context_state(
                     operation_handle=operation_handle,
                     proposed_context_states=states_to_send
                 )
                 ctx = self.patient_context
-                print(f"[Worker {self.epr}] PatientContext applied: "
-                      f"{ctx.get('given_name')} {ctx.get('family_name')}")
+                self.logger.info(
+                    f"PatientContext applied: {ctx.get('given_name')} {ctx.get('family_name')}"
+                )
                 # Log to operation report if logger is active
                 logger = getattr(self.manager, 'operation_logger', None)
                 if logger:
                     logger.log_context_applied(self.epr, 'PatientContext + WorkflowContext')
             else:
-                print(f"[Worker {self.epr}] No context_service_client available.")
+                self.logger.warning("No context_service_client available.")
         except Exception as e:
-            print(f"[Worker {self.epr}] Failed to apply patient context: {e}")
+            self.logger.error(f"Failed to apply patient context: {e}")
 
     # =========================================================================
     # Отправка UUID ансамбля + полного контекста пациента одним батчем
@@ -815,7 +962,7 @@ class DeviceHandler(threading.Thread):
                 # BICEPS ensemble membership.  If absent, skip silently.
                 ens_descriptors = self.mdib.descriptions.NODETYPE.get(pm.EnsembleContextDescriptor, [])
                 if not ens_descriptors:
-                    print(f"[Worker {self.epr}] No EnsembleContextDescriptor found.")
+                    self.logger.warning("No EnsembleContextDescriptor found.")
                     return
                 descriptor = ens_descriptors[0]
 
@@ -828,7 +975,7 @@ class DeviceHandler(threading.Thread):
                         operation_handle = op.Handle
                         break
                 if not operation_handle:
-                    print(f"[Worker {self.epr}] No SetContextState operation for EnsembleContext.")
+                    self.logger.warning("No SetContextState operation for EnsembleContext.")
                     return
 
                 # Step 3: EnsembleContextState — update or create
@@ -880,22 +1027,23 @@ class DeviceHandler(threading.Thread):
             # ------------------------------------------------------------------
             if self.consumer.context_service_client:
                 count = len(states_to_send)
-                print(f"[Worker {self.epr}] Sending {count} context states "
-                      f"(Ensemble+Patient+Workflow) in one batch...")
+                self.logger.info(
+                    f"Sending {count} context states (Ensemble+Patient+Workflow) in one batch..."
+                )
                 self.consumer.context_service_client.set_context_state(
                     operation_handle=operation_handle,
                     proposed_context_states=states_to_send
                 )
-                print(f"[Worker {self.epr}] All contexts applied successfully.")
+                self.logger.info("All contexts applied successfully.")
                 # Log to operation report
                 logger = getattr(self.manager, 'operation_logger', None)
                 if logger:
                     logger.log_context_applied(self.epr, 'EnsembleContext + Patient + Workflow')
             else:
-                print(f"[Worker {self.epr}] No context_service_client available.")
+                self.logger.warning("No context_service_client available.")
 
         except Exception as e:
-            print(f"[Worker {self.epr}] Failed to apply ensemble contexts: {e}")
+            self.logger.error(f"Failed to apply ensemble contexts: {e}")
 
     # =========================================================================
     # Callback для обновлений метрик
@@ -990,11 +1138,10 @@ class DeviceHandler(threading.Thread):
         try:
             with self.data_lock:
                 if not self.consumer or not self.mdib:
-                    print(f"[Worker {self.epr}] acknowledge_alarm: consumer or mdib not available.")
+                    self.logger.warning("acknowledge_alarm: consumer or mdib not available.")
                     return
                 if not self.consumer.set_service_client:
-                    # set_service_client — клиент для SetService (SetValue, SetAlertState и т.д.)
-                    print(f"[Worker {self.epr}] acknowledge_alarm: set_service_client not available.")
+                    self.logger.warning("acknowledge_alarm: set_service_client not available.")
                     return
 
                 # mk_proposed_state() живёт на mdib.xtra (ConsumerMdibMethods), не на set_service_client.
@@ -1005,7 +1152,7 @@ class DeviceHandler(threading.Thread):
                 proposed_state.Presence = pm_types.AlertSignalPresence.ACK
 
         except Exception as e:
-            print(f"[Worker {self.epr}] Failed to prepare alarm acknowledgement: {e}")
+            self.logger.error(f"Failed to prepare alarm acknowledgement: {e}")
             return
 
         # ------------------------------------------------------------------
@@ -1019,9 +1166,9 @@ class DeviceHandler(threading.Thread):
             )
             # Ждём подтверждения от устройства (таймаут 5 секунд)
             future.result(timeout=5)
-            print(f"[Worker {self.epr}] Alarm '{alert_signal_handle}' acknowledged successfully.")
+            self.logger.info(f"Alarm '{alert_signal_handle}' acknowledged successfully.")
         except Exception as e:
-            print(f"[Worker {self.epr}] Failed to acknowledge alarm: {e}")
+            self.logger.error(f"Failed to acknowledge alarm: {e}")
 
     # =========================================================================
     # DEV-49: Штатное завершение сессии мониторинга
@@ -1051,13 +1198,11 @@ class DeviceHandler(threading.Thread):
                 asyncio.to_thread(self.consumer.stop_all),
                 timeout=5.0
             )
-            print(f"[Worker {self.epr}] DEV-49: Unsubscribe completed — device notified.")
+            self.logger.info("DEV-49: Unsubscribe completed — device notified.")
         except asyncio.TimeoutError:
-            # Устройство не ответило — закрываем принудительно.
-            # Это лучше, чем висеть бесконечно при завершении приложения.
-            print(f"[Worker {self.epr}] DEV-49: Unsubscribe timed out (5s). Forcing close.")
+            self.logger.warning("DEV-49: Unsubscribe timed out (5s). Forcing close.")
         except Exception as e:
-            print(f"[Worker {self.epr}] DEV-49: Error during graceful shutdown: {e}")
+            self.logger.error(f"DEV-49: Error during graceful shutdown: {e}")
 
     # =========================================================================
     # SDPi-A R1030/R1031: Детекция перезапуска / смены сессии устройства
@@ -1083,8 +1228,10 @@ class DeviceHandler(threading.Thread):
         if not sequence_or_instance_id_changed_event:
             return  # False-значение — игнорируем (ObservableProperty может сбрасываться)
 
-        print(f"[Worker {self.epr}] WARNING SDPi-A: SequenceId/InstanceId changed! "
-              f"Device may have restarted — forcing reconnect to resync MDIB.")
+        self.logger.warning(
+            "SDPi-A: SequenceId/InstanceId changed! "
+            "Device may have restarted — forcing reconnect to resync MDIB."
+        )
         self.error_occurred = True
         self.running = False  # Выход из цикла при следующей итерации
 

@@ -6,11 +6,12 @@
                 <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="mds_al_system">
                 </pm:AlertSystem>
                 <pm:Sco Handle="sco_mds">
-                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="set_patient_context_op" OperationTarget="pat_context_descriptor" Retriggerable="true"/>
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="opSetPatCtx" OperationTarget="PC.mds0" Retriggerable="true"/>
                     <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="set_ensemble_context_op" OperationTarget="ens_context_descriptor" Retriggerable="true"/>
+                    <pm:Operation xsi:type="pm:ActivateOperationDescriptor" Handle="actop.mds0_sco_0" OperationTarget="mds_1" Retriggerable="true"/>
                 </pm:Sco>
                 <pm:SystemContext Handle="sys_context_1">
-                    <pm:PatientContext xsi:type="pm:PatientContextDescriptor" Handle="pat_context_descriptor" />
+                    <pm:PatientContext xsi:type="pm:PatientContextDescriptor" Handle="PC.mds0" />
                     <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_context_descriptor" />
                     <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_context_descriptor" />
                     <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="wrkflow_context_descriptor" />
@@ -37,6 +38,8 @@
                             <pm:ModifiableData>ActualSignalGenerationDelay</pm:ModifiableData>
                         </pm:Operation>
                         <pm:Operation xsi:type="pm:SetMetricStateOperationDescriptor" Handle="temperature_threshold_control" OperationTarget="temperature" Retriggerable="true" />
+                        <pm:Operation xsi:type="pm:SetValueOperationDescriptor" Handle="numeric.ch0.vmd1_sco_0" OperationTarget="temperature" Retriggerable="true"/>
+                        <pm:Operation xsi:type="pm:SetStringOperationDescriptor" Handle="string.ch0.vmd1_sco_0" OperationTarget="system_statemachine" Retriggerable="true"/>
                     </pm:Sco>
                     <pm:Channel Handle="sense-hat_channel_1">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="device_health" MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
@@ -85,7 +88,7 @@
             </pm:Mds>
         </pm:MdDescription>
         <pm:MdState>
-            <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="pat_context_descriptor" Handle="pat_context_state" ContextAssociation="Assoc">
+            <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="PC.mds0" Handle="Patient_Context" ContextAssociation="Assoc">
                 <pm:CoreData>
                     <pm:Givenname></pm:Givenname>
                     <pm:Familyname></pm:Familyname>
@@ -136,8 +139,11 @@
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_humidity" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_humidity" ActivationState="On" Presence="Off" />
 
-            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_patient_context_op" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="opSetPatCtx" OperatingMode="En" />
             <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_ensemble_context_op" OperatingMode="En" />
+            <pm:State xsi:type="pm:ActivateOperationState" DescriptorHandle="actop.mds0_sco_0" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetValueOperationState" DescriptorHandle="numeric.ch0.vmd1_sco_0" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="string.ch0.vmd1_sco_0" OperatingMode="En" />
 
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="temperature_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />

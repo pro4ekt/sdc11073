@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import threading
+import time
 import uuid
 
 from typing import TYPE_CHECKING
@@ -48,9 +49,11 @@ def get_local_ip() -> str:
     После этого getsockname() возвращает IP, который ОС выбрала бы для этого маршрута.
     Надёжнее, чем socket.gethostbyname(), который может вернуть 127.0.0.1 на некоторых системах.
     """
+    # 192.168.56.1 - для тестов без сети
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("10.255.255.255", 1))  # Адрес не достижим, реальной отправки нет
+        #192.168.56.1 - для тестов без сети
+        s.connect(("8.8.8.8", 80))  # Адрес не достижим, реальной отправки нет
         ip = s.getsockname()[0]
     except Exception:
         ip = "127.0.0.1"  # Fallback: нет сети
@@ -160,6 +163,17 @@ class SdcMyConsumer(QObject):
         #   Для автоматического обновления без рестарта потребовался бы периодический
         #   re-check (например, раз в 5 минут) — это усложнение за рамками текущей версии.
         self._location_rejected: set[str] = set()
+
+        # Reconnect cooldown: EPR → monotonic timestamp of last error.
+        # After a worker fails (error_occurred=True), we must NOT immediately spawn
+        # a new one — the provider's HTTP server may not be ready yet, causing a
+        # ConnectionResetError(10054) on GetMetadata (start_all race condition).
+        # _discovery_loop skips EPRs whose last error is within RECONNECT_COOLDOWN_SEC.
+        self._reconnect_cooldown: dict[str, float] = {}
+
+        # How long (seconds) to wait before retrying a previously failed device.
+        # 15 s gives most SDC providers enough time to fully restart their HTTP server.
+        self.RECONNECT_COOLDOWN_SEC: float = 15.0
 
         # Поток обнаружения устройств — запускается в start()
         # daemon=True: завершится вместе с главным потоком
@@ -437,6 +451,23 @@ class SdcMyConsumer(QObject):
                         if epr in self._location_rejected:
                             continue  # Пропускаем без лога (иначе будет спам каждые 2 сек)
 
+                        # Reconnect cooldown: skip devices that recently failed.
+                        # This prevents ConnectionResetError(10054) on GetMetadata caused
+                        # by trying to reconnect before the provider's HTTP server is ready.
+                        if epr in self._reconnect_cooldown:
+                            elapsed = time.monotonic() - self._reconnect_cooldown[epr]
+                            if elapsed < self.RECONNECT_COOLDOWN_SEC:
+                                remaining = int(self.RECONNECT_COOLDOWN_SEC - elapsed)
+                                # Only log once per ~5 s to avoid console spam
+                                if int(elapsed) % 5 == 0:
+                                    print(f"[Manager] Device {epr} in cooldown — "
+                                          f"retry in {remaining}s.")
+                                continue
+                            else:
+                                # Cooldown expired — allow reconnect and clear the entry
+                                del self._reconnect_cooldown[epr]
+                                print(f"[Manager] Cooldown expired for {epr}. Reconnecting...")
+
                         with self.lock:
                             # Проверяем "мёртвые" воркеры: поток завершился, но запись осталась.
                             # Это может случиться при гонке между remove_device() и следующим Probe.
@@ -529,6 +560,9 @@ class SdcMyConsumer(QObject):
             # ------------------------------------------------------------------
             if error_occurred and self.discovery:
                 print(f"[Manager] Device {epr} had error. Clearing WSDiscovery cache...")
+                # Record the failure timestamp so _discovery_loop enforces a cooldown
+                # before spawning a new DeviceHandler for this EPR.
+                self._reconnect_cooldown[epr] = time.monotonic()
                 try:
                     cleared = False
                     # _services / _remote_services — внутренние кэши sdc11073 WSDiscovery
