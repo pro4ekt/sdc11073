@@ -45,6 +45,37 @@ Item {
                 }
             }
         }
+
+        // Signal handler for roomChanged(str room)
+        // Вызывается из sdcManager.switchRoom().
+        //
+        // ЛОГИКА (НЕ делать .clear() — это баг):
+        //   • room === "" (All Rooms):
+        //       Ничего не удаляем. Текущие устройства остаются в модели.
+        //       Ранее отфильтрованные переподключатся и придут через deviceConnected.
+        //
+        //   • room === "Room_X" (конкретная комната):
+        //       Немедленно убираем из модели устройства из ДРУГИХ комнат.
+        //       Устройства из нужной комнаты остаются — они всё ещё подключены,
+        //       повторного deviceConnected не будет.
+        //       Python остановит лишние устройства → deviceDisconnected придёт позже,
+        //       но устройства уже удалены из модели — дубликата удаления не будет.
+        function onRoomChanged(room) {
+            console.log("QML: Room switched to: '" + room + "'")
+            if (room === "") {
+                // Режим "Все комнаты" — ничего не трогаем
+                return
+            }
+            // Удаляем карточки, чья комната не совпадает с выбранной.
+            // Идём с конца, чтобы remove(i) не сбивал индексы.
+            var i = deviceModel.count - 1
+            while (i >= 0) {
+                if (deviceModel.get(i).room !== room) {
+                    deviceModel.remove(i)
+                }
+                i--
+            }
+        }
     }
 
     // Timer to debounce sorting so UI doesn't stutter on multiple rapid updates
@@ -119,6 +150,80 @@ Item {
             font.pixelSize: 32
             font.family: "Tahoma"
         }
+
+        // ── ROOM SWITCHER ──────────────────────────────────────────────────────
+        // Динамически генерируется из sdcManager.availableRooms.
+        // Кнопка «All» сбрасывает фильтр; кнопки с именами комнат переключают комнату.
+        // Активная кнопка подсвечивается синей рамкой.
+        Row {
+            id: roomSwitcherRow
+            anchors.centerIn: parent
+            spacing: 6
+
+            Text {
+                text: "Room:"
+                color: "#ccd0e8"
+                font.pixelSize: 18
+                font.family: "Tahoma"
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            // Кнопка «All» — снять фильтр, показать все устройства
+            Button {
+                id: allRoomsBtn
+                text: "All"
+                width: 62
+                height: 36
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: sdcManager && sdcManager.switchRoom("")
+
+                background: Rectangle {
+                    radius: 6
+                    color: (!sdcManager || sdcManager.currentRoom === "")
+                           ? "#3a5f9c" : "#404c6e"
+                    border.color: "#9ab0d9"
+                    border.width: (!sdcManager || sdcManager.currentRoom === "") ? 2 : 0
+                }
+                contentItem: Text {
+                    text: allRoomsBtn.text
+                    color: "white"
+                    font.pixelSize: 15
+                    font.family: "Tahoma"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+
+            // Динамические кнопки комнат — появляются по мере подключения устройств
+            Repeater {
+                model: sdcManager ? sdcManager.availableRooms : []
+                delegate: Button {
+                    required property string modelData
+                    text: modelData
+                    width: Math.max(80, text.length * 11)
+                    height: 36
+                    anchors.verticalCenter: roomSwitcherRow.verticalCenter
+                    onClicked: sdcManager && sdcManager.switchRoom(modelData)
+
+                    background: Rectangle {
+                        radius: 6
+                        color: (sdcManager && sdcManager.currentRoom === modelData)
+                               ? "#3a5f9c" : "#404c6e"
+                        border.color: "#9ab0d9"
+                        border.width: (sdcManager && sdcManager.currentRoom === modelData) ? 2 : 0
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: "white"
+                        font.pixelSize: 15
+                        font.family: "Tahoma"
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+        }
+        // ── END ROOM SWITCHER ──────────────────────────────────────────────────
 
         Popup {
             id: pop

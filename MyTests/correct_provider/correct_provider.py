@@ -425,8 +425,8 @@ if __name__ == '__main__':
     provider.start_all()
 
     # Set location to match CompleteConsumer's scope filter: DWHL/F05/TKl
-    loc = SdcLocation(fac='DWHL', poc='F05', bed='TKl')
-    provider.set_location(loc)
+    #loc = SdcLocation(fac='DWHL', poc='F05', bed='TKl')
+    #provider.set_location(loc)
 
     # Publishing the provider into Network to make it visible for consumers
     provider.publish()

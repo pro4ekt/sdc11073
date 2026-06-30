@@ -26,6 +26,7 @@ sdcMyConsumer.py — Менеджер (Manager) сети SDC-устройств.
 
 from __future__ import annotations
 import asyncio
+import logging
 import socket
 import threading
 import time
@@ -39,6 +40,11 @@ from PySide6.QtCore import QObject, Signal, Slot, Property
 from sdc11073.wsdiscovery import WSDiscovery
 from fhirData import FHIRPatientData
 from operationLogger import OperationLogger
+
+# Логгер Manager'а — дочерний по отношению к 'sdc.consumer',
+# поэтому автоматически использует его handlers (консоль + файл).
+# INFO и выше → в консоль; DEBUG → только в файл (без спама).
+_mgr_log = logging.getLogger('sdc.consumer.manager')
 
 
 def get_local_ip() -> str:
@@ -84,26 +90,33 @@ class SdcMyConsumer(QObject):
     # Передаёт EPR (UUID-строку) — QML удалит соответствующий элемент из списка.
     deviceDisconnected = Signal(str, arguments=['epr'])
 
+    # Сигнал: активная комната изменилась (переключение через switchRoom()).
+    # Передаёт новое название комнаты (пустая строка = режим "все комнаты").
+    roomChanged = Signal(str, arguments=['room'])
+
+    # Сигнал: список известных комнат обновился (обнаружена новая комната).
+    # QML пересчитывает availableRooms и перерисовывает кнопки выбора.
+    availableRoomsChanged = Signal()
+
     def __init__(self, fhir_data: FHIRPatientData = None, mode: str = "icu",
-                 target_room: str | None = None, override_ip: str | None = None):
+                 target_room: str | None = None, override_ip: str | None = None,
+                 tls_mode: str = 'auto'):
         """
         Параметры:
-          fhir_data — данные пациента из FHIR (имя, рост, вес, диагнозы).
-                      Передаются каждому DeviceHandler при создании для записи
-                      в PatientContext устройства.
-                      В режиме 'icu' передаётся None (FHIR не загружается).
-          mode        — режим запуска: 'icu' (Qt/QML) или 'op' (headless + FHIR).
-                        Влияет на испускание сигналов в UI и поведение воркеры.
-          target_room — фильтр по комнате (LocationContext.LocationDetail.Room).
-                        Если задан, DeviceHandler отключается сразу после init_mdib(),
-                        если LocationContext.Room устройства не совпадает с этим значением.
-                        None (по умолчанию) — фильтрация отключена, принимаются все.
-                        Работает в ОБОИХ режимах (icu и op).
+          fhir_data   — данные пациента из FHIR.
+          mode        — 'icu' (Qt/QML) или 'op' (headless + FHIR).
+          target_room — фильтр по комнате (LocationContext.Room). None = все.
+          override_ip — явный IP сетевого адаптера для WSDiscovery.
+          tls_mode    — стратегия TLS: 'auto' | 'force_tls' | 'no_tls'.
+                        Пробрасывается в каждый DeviceHandler.
         """
         super().__init__()
 
         # Режим запуска ('icu' | 'op') — прокидывается в каждый DeviceHandler
         self.mode = mode
+
+        # TLS-стратегия — прокидывается в каждый DeviceHandler
+        self.tls_mode: str = tls_mode
 
         # Room filter: если не None, воркер отклоняет устройства из других комнат
         # сразу после init_mdib(), до создания Qt-объекта и до emit deviceConnected.
@@ -167,6 +180,20 @@ class SdcMyConsumer(QObject):
         #   re-check (например, раз в 5 минут) — это усложнение за рамками текущей версии.
         self._location_rejected: set[str] = set()
 
+        # Карта EPR → комната для устройств, отклонённых по LocationContext.
+        # Используется в switchRoom() для ИЗБИРАТЕЛЬНОГО разбанивания:
+        # при переключении на Room_2 из ban-list убираются только EPR с room='Room_2',
+        # устройства из Room_3 остаются в ban-list.
+        #
+        # Также используется в switchRoom() для предварительного бана текущих
+        # подключённых устройств при переключении комнаты.
+        self._rejected_room_map: dict[str, str] = {}
+
+        # Множество всех когда-либо встреченных комнат (accepted + rejected).
+        # Используется для Property availableRooms — списка кнопок в QML.
+        # Обновляется DeviceHandler через register_device_room().
+        self._known_rooms: set[str] = set()
+
         # Reconnect cooldown: EPR → monotonic timestamp of last error.
         # After a worker fails (error_occurred=True), we must NOT immediately spawn
         # a new one — the provider's HTTP server may not be ready yet, causing a
@@ -188,7 +215,7 @@ class SdcMyConsumer(QObject):
         Вызывается из main.py после создания Qt-приложения.
         """
         self.discovery_thread.start()
-        print("[Manager] System started. Discovery loop active.")
+        _mgr_log.info('System started. Discovery loop active.')
 
     def get_patient_context_data(self) -> dict:
         """
@@ -252,10 +279,10 @@ class SdcMyConsumer(QObject):
         и вызывает stop() у всех активных воркеры.
         """
         self.running = False
-        print("[Manager] Stopping...")
+        _mgr_log.info('Stopping...')
         with self.lock:
             for epr, handler in self.devices.items():
-                print(f"[Manager] Stopping worker for: {epr}")
+                _mgr_log.info(f'Stopping worker for: {epr[-12:]}')
                 handler.stop()  # Устанавливает handler.running = False
 
     def _run_discovery(self):
@@ -287,14 +314,14 @@ class SdcMyConsumer(QObject):
         """
         # Ждём, пока устройства успеют подключиться
         await asyncio.sleep(10)
-        print("\n[Ensemble Manager] Checking connected devices...")
+        _mgr_log.info('Ensemble check: scanning connected devices...')
 
         # Снимок реестра под локом — итерируем копию, не оригинал
         with self.lock:
             devices_snapshot = list(self.devices.values())
 
         if not devices_snapshot:
-            print("[Ensemble Manager] No devices found to form an ensemble.")
+            _mgr_log.warning('Ensemble: no devices found.')
             return
 
         from sdc11073.xml_types import pm_qnames as pm
@@ -335,18 +362,18 @@ class SdcMyConsumer(QObject):
                         reason.append(f"Room mismatch ('{room_str}' != '{self.orchestrator_room}')")
                     if has_failure:
                         reason.append("ActivationState is FAILURE")
-                    print(f"[Ensemble Manager] Filtered out device {dev.epr}. Reason: {', '.join(reason)}")
+                    _mgr_log.debug(f'Ensemble: filtered out {dev.epr[-12:]} — {", ".join(reason)}')
 
         devices_snapshot = valid_devices
 
         if not devices_snapshot:
-            print("[Ensemble Manager] No valid devices remaining to form an ensemble.")
+            _mgr_log.warning('Ensemble: no valid devices remaining.')
             return
 
         # ------------------------------------------------------------------
         # Сбор информации об устройствах для отображения пользователю
         # ------------------------------------------------------------------
-        print("-" * 40)
+        _mgr_log.info('-' * 40)
         for dev in devices_snapshot:
             with dev.data_lock:
                 loc_str = "Unknown"
@@ -365,17 +392,16 @@ class SdcMyConsumer(QObject):
                             health = state.MetricValue.Value
                         break
 
-                print(f"[Device] EPR: {dev.epr} | Location: {loc_str} | Health: {health}")
-        print("-" * 40)
+                _mgr_log.info(f'  {dev.epr[-12:]} | {loc_str} | health={health}')
+        _mgr_log.info('-' * 40)
 
         # Запускаем blocking input() в отдельном потоке через asyncio.to_thread(),
         # чтобы не заблокировать event loop на время ожидания ввода пользователя
         ans = await asyncio.to_thread(input, "Create Ensemble for these devices? (y/n): ")
 
         if ans.strip().lower() == 'y':
-            # Генерируем уникальный UUID для этого ансамбля
             ensemble_uuid = str(uuid.uuid4())
-            print(f"\n[Ensemble Manager] Creating Ensemble with UUID: {ensemble_uuid}")
+            _mgr_log.info(f'Creating Ensemble UUID={ensemble_uuid}')
 
             # Create the OperationLogger before calling apply_ensemble_context().
             # This ensures that when DeviceHandlers receive the context callback
@@ -403,7 +429,7 @@ class SdcMyConsumer(QObject):
             for dev in devices_snapshot:
                 dev.apply_ensemble_context(ensemble_uuid)
         else:
-            print("[Ensemble Manager] Ensemble creation aborted.")
+            _mgr_log.info('Ensemble creation aborted by user.')
 
     # =========================================================================
     # Основной цикл обнаружения устройств
@@ -422,7 +448,7 @@ class SdcMyConsumer(QObject):
         self.manager_loop = asyncio.get_running_loop()
 
         local_ip = self.override_ip if self.override_ip else get_local_ip()
-        print(f"[Manager] Network Scan on IP: {local_ip}")
+        _mgr_log.info(f'Network scan | IP={local_ip} | TLS={self.tls_mode}')
 
         # Инициализируем WS-Discovery на нашем IP.
         # WSDiscovery рассылает UDP multicast Probe и слушает Hello/ProbeMatch ответы.
@@ -463,40 +489,43 @@ class SdcMyConsumer(QObject):
                                 remaining = int(self.RECONNECT_COOLDOWN_SEC - elapsed)
                                 # Only log once per ~5 s to avoid console spam
                                 if int(elapsed) % 5 == 0:
-                                    print(f"[Manager] Device {epr} in cooldown — "
-                                          f"retry in {remaining}s.")
+                                        _mgr_log.debug(
+                                            f'Device {epr[-12:]} in cooldown — '
+                                            f'retry in {remaining}s.'
+                                        )
                                 continue
                             else:
                                 # Cooldown expired — allow reconnect and clear the entry
                                 del self._reconnect_cooldown[epr]
-                                print(f"[Manager] Cooldown expired for {epr}. Reconnecting...")
+                                _mgr_log.info(f'Cooldown expired for {epr[-12:]}. Reconnecting...')
 
                         with self.lock:
                             # Проверяем "мёртвые" воркеры: поток завершился, но запись осталась.
                             # Это может случиться при гонке между remove_device() и следующим Probe.
                             if epr in self.devices and not self.devices[epr].is_alive():
-                                print(f"[Manager] Found dead worker thread for {epr}. Cleaning up.")
+                                _mgr_log.debug(f'Dead worker for {epr[-12:]}. Cleaning up.')
                                 del self.devices[epr]
 
                             # Создаём воркер только для НЕЗНАКОМЫХ устройств
                             if epr not in self.devices:
-                                print(f"[Manager] Found NEW device: {epr}. Spawning Worker.")
+                                _mgr_log.info(f'New device: {epr[-12:]}. Spawning worker.')
                                 device = DeviceHandler(
                                     service, self,
                                     mode=self.mode,
                                     target_room=self.target_room,
+                                    tls_mode=self.tls_mode,
                                 )
                                 self.devices[epr] = device
                                 device.start()  # Запускает threading.Thread.start()
 
                     except Exception as loop_err:
-                        print(f"[Manager] Error processing a discovered service: {loop_err}")
+                        _mgr_log.error(f'Error processing discovered service: {loop_err}')
 
                 # Пауза 2 секунды перед следующим сканированием
                 await asyncio.sleep(2)
 
             except Exception as e:
-                print(f"[Manager] Discovery Loop Error: {e}")
+                _mgr_log.error(f'Discovery loop error: {e}')
                 await asyncio.sleep(5)  # Длиннее пауза после ошибки
 
         # Цикл завершён (self.running = False) — останавливаем WSDiscovery
@@ -511,7 +540,7 @@ class SdcMyConsumer(QObject):
         # per event in OperationLogger.log()).
         if self.operation_logger:
             path = self.operation_logger.finalize()
-            print(f"[Manager] Operation log saved: {path}")
+            _mgr_log.info(f'Operation log saved: {path}')
 
     # =========================================================================
     # Удаление воркера из реестра (вызывается воркером при завершении)
@@ -542,13 +571,15 @@ class SdcMyConsumer(QObject):
         # _location_rejected) sees the entry as soon as possible.
         if location_filtered:
             self._location_rejected.add(epr)
-            print(f"[Manager] Device {epr} added to location-reject list "
-                  f"(target room: '{self.target_room}'). Will not reconnect this session.")
+            _mgr_log.info(
+                f'Device {epr[-12:]} location-rejected '
+                f"(target room: '{self.target_room}'). Will not reconnect this session."
+            )
 
         with self.lock:
             if epr in self.devices:
                 handler = self.devices[epr]
-                print(f"[Manager] Removing handler for {epr} from registry.")
+                _mgr_log.info(f'Removing handler for {epr[-12:]}.')
                 del self.devices[epr]
                 # Уведомляем QML только в режиме 'icu' И только если устройство
                 # реально появилось в UI (deviceConnected был отправлен).
@@ -562,14 +593,10 @@ class SdcMyConsumer(QObject):
             # Очистка кэша WSDiscovery (антизомби-защита)
             # ------------------------------------------------------------------
             if error_occurred and self.discovery:
-                print(f"[Manager] Device {epr} had error. Clearing WSDiscovery cache...")
-                # Record the failure timestamp so _discovery_loop enforces a cooldown
-                # before spawning a new DeviceHandler for this EPR.
+                _mgr_log.info(f'Device {epr[-12:]} had error — clearing WSDiscovery cache.')
                 self._reconnect_cooldown[epr] = time.monotonic()
                 try:
                     cleared = False
-                    # _services / _remote_services — внутренние кэши sdc11073 WSDiscovery
-                    # Названия могут отличаться в разных версиях библиотеки — проверяем оба
                     if hasattr(self.discovery, '_services') and epr in self.discovery._services:
                         del self.discovery._services[epr]
                         cleared = True
@@ -578,6 +605,128 @@ class SdcMyConsumer(QObject):
                         cleared = True
 
                     if cleared:
-                        print(f"[Manager] Cache for {epr} cleared successfully.")
+                        _mgr_log.debug(f'WSDiscovery cache cleared for {epr[-12:]}.')
                 except Exception as e:
-                    print(f"[Manager] Error clearing cache for {epr}: {e}")
+                    _mgr_log.warning(f'Error clearing WSDiscovery cache for {epr[-12:]}: {e}')
+
+    # =========================================================================
+    # Регистрация комнаты устройства (вызывается DeviceHandler'ом)
+    # =========================================================================
+    def register_device_room(self, epr: str, room: str) -> None:
+        """
+        Вызывается из DeviceHandler после init_mdib() для любого устройства
+        (принятого ИЛИ отфильтрованного по LocationContext).
+
+        Обновляет _known_rooms и испускает availableRoomsChanged, если это
+        первое появление данной комнаты — QML пересчитает список кнопок.
+
+        Потокобезопасность: set.add() защищён GIL; availableRoomsChanged — Qt-сигнал
+        с автоматическим маршалингом в поток объекта (QueuedConnection).
+        """
+        if not room:
+            return
+        if room not in self._known_rooms:
+            self._known_rooms.add(room)
+            _mgr_log.info(f'New room: {room!r}. Known rooms: {sorted(self._known_rooms)}')
+            self.availableRoomsChanged.emit()
+
+    # =========================================================================
+    # Переключение активной комнаты в runtime (Slot для QML)
+    # =========================================================================
+    @Slot(str)
+    def switchRoom(self, new_room: str) -> None:
+        """
+        Переключает активный фильтр по комнате в режиме реального времени.
+
+        Параметры:
+          new_room — название комнаты (например, 'Room_1').
+                     Пустая строка '' означает «все комнаты» (фильтр снимается).
+
+        Алгоритм:
+          1. Обновляет self.target_room (None для «все комнаты»).
+          2. Останавливает подключённые устройства НЕ из новой комнаты.
+             Предварительно добавляет их в _location_rejected, чтобы
+             _discovery_loop не подключился к ним снова немедленно.
+          3. Разбанивает устройства новой комнаты из _location_rejected.
+          4. Испускает roomChanged → QML очищает deviceModel и обновляет header.
+
+        Переход в «все комнаты»:
+          - Разбаниваются ВСЕ ранее отклонённые устройства.
+          - Текущие подключённые устройства остаются активными.
+
+        Время переключения: 5–15 с (DEV-49 graceful shutdown + reconnect + init_mdib).
+        """
+        # Пустая строка из QML → режим «все комнаты»
+        effective_room: str | None = new_room if new_room else None
+
+        if effective_room == self.target_room:
+            return  # Нет изменений — ничего не делаем
+
+        old_room = self.target_room
+        _mgr_log.info(f'switchRoom: {old_room!r} → {effective_room!r}')
+
+        # 1. Обновляем фильтр (одна атомарная запись — GIL гарантирует видимость)
+        self.target_room = effective_room
+
+        # 2. Снимок текущих подключённых воркеров (под локом, не итерируем напрямую)
+        with self.lock:
+            handlers_snapshot = list(self.devices.values())
+
+        # 3. Если переключаемся НА конкретную комнату — останавливаем устройства из других комнат.
+        #    Если переключаемся НА «все комнаты» — ничего не останавливаем.
+        if effective_room is not None:
+            stopped = 0
+            for handler in handlers_snapshot:
+                # _get_device_room() читает LocationContext из MDIB (с локом внутри)
+                handler_room = handler._get_device_room()
+                if handler_room != effective_room:
+                    # Предварительный бан: _discovery_loop не создаст новый воркер
+                    # пока старый ещё завершает DEV-49 shutdown
+                    if handler_room:
+                        self._rejected_room_map[handler.epr] = handler_room
+                        self._location_rejected.add(handler.epr)
+                    handler.stop()   # running=False → выход из цикла → DEV-49 shutdown
+                    stopped += 1
+            if stopped:
+                _mgr_log.info(f'switchRoom: stopping {stopped} device(s) from other rooms.')
+
+        # 4. Разбаниваем устройства новой комнаты (или всех, если new_room == '').
+        if effective_room is not None:
+            to_unban = [e for e, r in list(self._rejected_room_map.items())
+                        if r == effective_room]
+        else:
+            to_unban = list(self._rejected_room_map.keys())  # Режим «все комнаты»
+
+        for epr in to_unban:
+            self._location_rejected.discard(epr)
+            self._rejected_room_map.pop(epr, None)
+            self._reconnect_cooldown.pop(epr, None)  # Разрешаем немедленное переподключение
+
+        if to_unban:
+            _mgr_log.info(f'switchRoom: un-banned {len(to_unban)} device(s) for {effective_room!r}.')
+
+        # 5. Уведомляем QML: очистить список устройств и обновить header
+        self.roomChanged.emit(new_room)
+
+    # =========================================================================
+    # Qt Properties для QML
+    # =========================================================================
+
+    @Property(str, notify=roomChanged)
+    def currentRoom(self) -> str:
+        """
+        Текущий активный фильтр по комнате.
+        Пустая строка = режим «все комнаты» (фильтр снят).
+        QML использует это для подсветки активной кнопки в room switcher.
+        """
+        return self.target_room if self.target_room else ''
+
+    @Property(list, notify=availableRoomsChanged)
+    def availableRooms(self) -> list:
+        """
+        Отсортированный список всех когда-либо обнаруженных комнат.
+        QML использует этот список для генерации кнопок переключения комнат.
+        Обновляется динамически по мере подключения устройств из новых комнат.
+        """
+        return sorted(self._known_rooms)
+

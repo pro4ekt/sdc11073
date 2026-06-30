@@ -170,7 +170,7 @@ async def main(provider):
         await asyncio.sleep(5)
 
 # Add configuration constants
-NETWORK_ADAPTER = "Ethernet 2"
+NETWORK_ADAPTER = "Wi-Fi"
 MDIB_FILE = "neuro_micro_mdib.xml"
 
 if __name__ == '__main__':

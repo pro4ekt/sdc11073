@@ -7,26 +7,23 @@ main.py — Точка входа приложения SDC-консьюмера.
               формирование BICEPS EnsembleContext/WorkflowContext.
 
 ФИЛЬТРАЦИЯ ПО КОМНАТЕ (--room):
-  Опциональный аргумент. Если указан, Consumer подписывается ТОЛЬКО на те
-  SDC Provider'ы, у которых LocationContext.Room совпадает с указанным значением.
-  Устройства из других комнат обнаруживаются WSDiscovery, но после init_mdib()
-  немедленно отключаются без занесения в UI и без ошибки (DEV-49 не вызывается,
-  т.к. подписок WS-Eventing ещё нет).
+  Если указан, Consumer подписывается ТОЛЬКО на те SDC Provider'ы, у которых
+  LocationContext.Room совпадает с указанным значением.
 
-  Пример запуска:
-    python main.py --mode=icu --room="ICU-3"
-    python main.py --mode=icu            # без фильтра — подключает все устройства
+TLS-РЕЖИМ (--tls / --no_tls):
+  --tls      Принудительный TLS для всех подключений (загружает сертификаты
+             из certs_out/ или pat/certs/). Используй когда Provider анонсирует
+             http://, но фактически требует TLS.
+  --no_tls   Отключить TLS полностью — plain HTTP, без fallback. Удобно для
+             тестирования Provider'ов без сертификатов.
+  (без флага) auto-режим: https:// → TLS сразу; http:// → plain с TLS-fallback
+             если получен ConnectionResetError.
 
-ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПУСКА (ICU):
-  1. QGuiApplication + QML-движок
-  2. SdcMyConsumer(fhir_data=None, mode='icu', target_room=args.room) → WSDiscovery
-  3. QML-контекст регистрируется → Qt event loop
-
-ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПУСКА (OP):
-  1. QCoreApplication (headless)
-  2. FHIRPatientData.fetch(patient_id)
-  3. SdcMyConsumer(fhir_data=fhir, mode='op', target_room=args.room) → WSDiscovery
-  4. Qt event loop (без UI)
+Примеры:
+  python main.py --mode=icu
+  python main.py --mode=icu --room="Room_1"
+  python main.py --mode=icu --no_tls
+  python main.py --mode=icu --tls --room="OR-1"
 """
 
 from __future__ import annotations
@@ -89,11 +86,36 @@ if __name__ == "__main__":
             "По умолчанию: автоопределение через маршрут к 8.8.8.8."
         ),
     )
+
+    # ── TLS-стратегия (взаимоисключающая группа) ─────────────────────────────
+    _tls_group = parser.add_mutually_exclusive_group()
+    _tls_group.add_argument(
+        "--tls",
+        action="store_true",
+        default=False,
+        help=(
+            "Принудительный TLS для ВСЕХ подключений. "
+            "Загружает сертификаты из Qt/certs_out/ или pat/certs/. "
+            "Используй когда Provider анонсирует http:// но требует TLS."
+        ),
+    )
+    _tls_group.add_argument(
+        "--no_tls",
+        action="store_true",
+        default=False,
+        help=(
+            "Отключить TLS — plain HTTP, без TLS-fallback. "
+            "Удобно для тестирования Provider'ов без сертификатов. "
+            "Соответствует запуску sdcProvider/sdcX с --no_tls."
+        ),
+    )
+
     # parse_known_args позволяет Qt-аргументам (-platform, -style) не вызывать ошибку
     args, qt_argv = parser.parse_known_args()
     mode = args.mode
     target_room: str | None = args.room
     override_ip: str | None = args.ip
+    tls_mode: str = 'force_tls' if args.tls else ('no_tls' if args.no_tls else 'auto')
 
     # ------------------------------------------------------------------
     # ШАГ 0b: Настройка логирования sdc11073 (как в tutorial/consumer/consumer.py)
@@ -111,7 +133,11 @@ if __name__ == "__main__":
     _sep = '=' * 72
     _log.info(_sep)
     _log.info(f'SESSION START  {_ts}')
-    _log.info(f'Mode: {mode}' + (f'  |  Room filter: {target_room}' if target_room else '  |  No room filter'))
+    _log.info(
+        f'Mode: {mode}'
+        + (f'  |  Room: {target_room}' if target_room else '  |  No room filter')
+        + f'  |  TLS: {tls_mode}'
+    )
     _log.info(_sep)
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -147,7 +173,10 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # В режиме 'icu': fhir_data=None (FHIR не нужен, UI работает без него).
     # В режиме 'op':  fhir_data=fhir (контексты будут записаны в каждое устройство).
-    manager = SdcMyConsumer(fhir_data=fhir, mode=mode, target_room=target_room, override_ip=override_ip)
+    manager = SdcMyConsumer(
+        fhir_data=fhir, mode=mode, target_room=target_room,
+        override_ip=override_ip, tls_mode=tls_mode,
+    )
     manager.start()
 
     # ------------------------------------------------------------------

@@ -59,8 +59,8 @@ def _setup_module_logger() -> logging.Logger:
     Настраивает корневой логгер модуля deviceHandler.
 
     Уровни:
-      - Консоль (StreamHandler): INFO
-      - Файл (RotatingFileHandler): DEBUG
+      - Консоль (StreamHandler): INFO — краткий формат HH:MM:SS [LEVEL] msg
+      - Файл (RotatingFileHandler): DEBUG — полный формат с именем логгера
         Файл: Qt/logs/sdc_consumer.log
         Ротация: 5 МБ × 5 резервных копий → sdc_consumer.log.1 … .5
     """
@@ -72,13 +72,19 @@ def _setup_module_logger() -> logging.Logger:
 
     logger.setLevel(logging.DEBUG)
 
-    _fmt = logging.Formatter(
-        fmt='%(asctime)s [%(levelname)-8s] %(name)s — %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-    )
+    # ── Консоль (INFO+) ───────────────────────────────────────────────────────
+    # Краткий формат: время + уровень + сообщение. Только INFO и выше,
+    # чтобы не засорять вывод DEBUG-деталями (cooldown-спам, кэш и т.д.).
+    _con_handler = logging.StreamHandler()
+    _con_handler.setLevel(logging.INFO)
+    _con_handler.setFormatter(logging.Formatter(
+        fmt='%(asctime)s [%(levelname)-5s] %(message)s',
+        datefmt='%H:%M:%S',
+    ))
+    logger.addHandler(_con_handler)
 
-
-    # ── Файл (ротация) ────────────────────────────────────────────────────────
+    # ── Файл (DEBUG+, ротация) ────────────────────────────────────────────────
+    # Полный формат с именем логгера — для детального анализа после сессии.
     _file_handler = logging.handlers.RotatingFileHandler(
         filename=str(_LOG_DIR / 'sdc_consumer.log'),
         maxBytes=5 * 1024 * 1024,   # 5 МБ на файл
@@ -86,7 +92,10 @@ def _setup_module_logger() -> logging.Logger:
         encoding='utf-8',
     )
     _file_handler.setLevel(logging.DEBUG)
-    _file_handler.setFormatter(_fmt)
+    _file_handler.setFormatter(logging.Formatter(
+        fmt='%(asctime)s [%(levelname)-8s] %(name)s — %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    ))
     logger.addHandler(_file_handler)
 
     # Не пробрасываем в корневой логгер (предотвращаем дублирование)
@@ -177,7 +186,7 @@ class DeviceHandler(threading.Thread):
     """
 
     def __init__(self, wsd_service, manager, mode: str = "icu",
-                 target_room: str | None = None):
+                 target_room: str | None = None, tls_mode: str = 'auto'):
         """
         Параметры:
           wsd_service — объект из WSDiscovery, содержащий EPR (уникальный ID)
@@ -193,6 +202,10 @@ class DeviceHandler(threading.Thread):
                         Если задан, воркер проверяет комнату устройства ПОСЛЕ init_mdib()
                         и немедленно завершается без ошибки, если комната не совпадает.
                         None = фильтрация отключена.
+          tls_mode    — стратегия TLS-подключения:
+                        'auto'      — автодетект (https:// → TLS; http:// → plain с fallback).
+                        'force_tls' — всегда TLS, независимо от схемы URL (--tls).
+                        'no_tls'    — всегда plain HTTP, без fallback (--no_tls).
         """
         # Инициализируем поток как демон: он автоматически завершится,
         # когда завершится главный поток приложения
@@ -200,6 +213,10 @@ class DeviceHandler(threading.Thread):
 
         # Режим запуска — управляет поведением Qt-UI и FHIR-контекстов
         self.mode = mode
+
+        # TLS-стратегия: 'auto' | 'force_tls' | 'no_tls'
+        # Устанавливается из CLI (--tls / --no_tls) через Manager.
+        self.tls_mode: str = tls_mode
 
         # Фильтр по LocationContext.Room.
         # Проверяется в _worker_logic() сразу после init_mdib().
@@ -431,17 +448,28 @@ class DeviceHandler(threading.Thread):
                     return _ssl_ctx  # type: ignore[return-value]
 
             # ------------------------------------------------------------------
-            # Стратегия подключения: автодетект https:// → TLS сразу.
-            # Если sdcX анонсирует http:// но фактически требует TLS
-            # (ConnectionResetError 10054) — повторяем с SSL (TLS-fallback).
-            # Fallback теперь безопасен: провайдер собран с TLSConfig.
+            # Стратегия подключения — управляется self.tls_mode:
+            #   'no_tls'    — plain HTTP принудительно (--no_tls), без fallback.
+            #                 Удобно для тестирования без сертификатов.
+            #   'force_tls' — TLS принудительно (--tls), независимо от схемы URL.
+            #   'auto'      — автодетект: https:// → TLS сразу; http:// → plain
+            #                 с TLS-fallback если ConnectionResetError (winerror 10054).
             # ------------------------------------------------------------------
             ssl_container = None
-            if x_addrs and any(str(addr).startswith('https://') for addr in x_addrs):
-                self.logger.info("HTTPS detected — building mTLS SSL context...")
+
+            if self.tls_mode == 'no_tls':
+                self.logger.info('TLS disabled (--no_tls) — plain HTTP, no fallback.')
+
+            elif self.tls_mode == 'force_tls':
+                self.logger.info('TLS forced (--tls) — building SSL context...')
                 ssl_container = _build_ssl_container()
-            else:
-                self.logger.info('HTTP announced — connecting without SSL (will retry if reset).')
+
+            else:  # 'auto'
+                if x_addrs and any(str(addr).startswith('https://') for addr in x_addrs):
+                    self.logger.info('HTTPS detected — building mTLS SSL context...')
+                    ssl_container = _build_ssl_container()
+                else:
+                    self.logger.info('HTTP announced — connecting without SSL (will retry if reset).')
 
             self.consumer = SdcConsumer.from_wsd_service(
                 wsd_service=self.wsd_service,
@@ -457,8 +485,9 @@ class DeviceHandler(threading.Thread):
                     or (isinstance(_cause, OSError) and getattr(_cause, 'winerror', None) == 10054)
                     or 'NotConnected' in type(_connect_err).__name__
                 )
-                if _is_reset and ssl_container is None:
-                    # Провайдер анонсировал http:// но требует TLS — повторяем с SSL
+                # TLS-fallback только в режиме 'auto' и только если соединение сброшено.
+                # В 'no_tls' fallback запрещён — пользователь явно отключил TLS.
+                if _is_reset and ssl_container is None and self.tls_mode != 'no_tls':
                     self.logger.warning(
                         'HTTP connection reset — provider likely requires TLS. '
                         'Retrying with mTLS SSL context...'
@@ -516,41 +545,50 @@ class DeviceHandler(threading.Thread):
                 # от их местоположения. LocationContext становится доступен только
                 # ПОСЛЕ init_mdib() — он хранится в context_states MDIB.
                 #
+                # ВАЖНО: _get_device_room() нельзя вызывать здесь — она сама захватывает
+                # data_lock, что вызвало бы дедлок (threading.Lock не реентрантен).
+                # Вместо этого читаем LocationContext напрямую из MDIB (лок уже держим).
+                #
                 # Если target_room задан и комната устройства не совпадает →
                 # возвращаемся из _worker_logic() чистым путём (return, не исключение).
-                # Это означает:
-                #   - error_occurred = False → кэш WSDiscovery НЕ очищается
-                #     (устройство здорово, просто в другой комнате — оно может снова
-                #     прийти из WSDiscovery, и это нормально)
-                #   - _ui_connected = False → Manager не шлёт deviceDisconnected
-                #     (в QML ничего не было добавлено → нечего удалять)
-                #   - consumer.stop_all() НЕ вызывается: WS-Eventing подписки ещё
-                #     не оформлены (start_all() выполнен, но Subscribe ещё не нужен
-                #     т.к. мы не намерены слушать события). На практике sdc11073
-                #     уже отправил Subscribe в start_all — поэтому вызываем stop_all()
-                #     в блоке finally через _graceful_shutdown() для чистоты.
-                #
-                # NOTE: если устройство НЕ публикует LocationContext (поле отсутствует
-                # или пустое), фильтр пропускает его с предупреждением. Это позволяет
-                # подключаться к устройствам, которые ещё не установили локацию
-                # (например, только что включились).
+
+                # Читаем комнату прямо из MDIB (data_lock уже захвачен выше)
+                _device_room_here = ''
+                try:
+                    _loc_states = [s for s in self.mdib.context_states.objects
+                                   if s.NODETYPE == pm.LocationContextState]
+                    if _loc_states and _loc_states[0].LocationDetail:
+                        _device_room_here = _loc_states[0].LocationDetail.Room or ''
+                except Exception as _loc_err:
+                    self.logger.error(f'Error reading LocationContext: {_loc_err}')
+
+                # Регистрируем комнату в Manager'е для dropdown «доступные комнаты».
+                # Вызываем даже если фильтр не задан — это позволяет UI-кнопкам
+                # появляться по мере подключения устройств из разных комнат.
+                if _device_room_here and hasattr(self.manager, 'register_device_room'):
+                    self.manager.register_device_room(self.epr, _device_room_here)
+
                 if self.target_room:
-                    device_room = self._get_device_room()
-                    if device_room == "":
+                    if _device_room_here == '':
                         # Нет LocationContext → предупреждение, но пропускаем (не фильтруем)
                         self.logger.warning(
-                            f"No LocationContext found in MDIB. "
+                            f'No LocationContext found in MDIB. '
                             f"Room filter (target='{self.target_room}') skipped — accepting device."
                         )
-                    elif device_room != self.target_room:
+                    elif _device_room_here != self.target_room:
                         self.logger.info(
-                            f"Location filter: device room '{device_room}' "
+                            f"Location filter: device room '{_device_room_here}' "
                             f"!= target '{self.target_room}'. Disconnecting (not an error)."
                         )
+                        # Сохраняем EPR→комната в Manager'е для логики switchRoom() un-ban.
+                        # _rejected_room_map позволяет при переключении на эту комнату
+                        # разбанить именно эти устройства без повторного TCP-подключения.
+                        if hasattr(self.manager, '_rejected_room_map'):
+                            self.manager._rejected_room_map[self.epr] = _device_room_here
                         self._location_filtered = True   # → ban-list в Manager'е
                         return  # Выходим чисто — finally вызовет stop_all() через _graceful_shutdown
                     else:
-                        self.logger.info(f"Location filter: room '{device_room}' matches. Accepting.")
+                        self.logger.info(f"Location filter: room '{_device_room_here}' matches. Accepting.")
 
             # ------------------------------------------------------------------
             # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция смены сессии)
