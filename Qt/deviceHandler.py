@@ -185,34 +185,16 @@ class DeviceHandler(threading.Thread):
          manager.remove_device() для самоудаления из реестра.
     """
 
-    def __init__(self, wsd_service, manager, mode: str = "icu",
+    def __init__(self, wsd_service, manager,
                  target_room: str | None = None, tls_mode: str = 'auto'):
         """
         Параметры:
-          wsd_service — объект из WSDiscovery, содержащий EPR (уникальный ID)
-                        и адрес устройства для подключения.
-          manager     — ссылка на SdcMyConsumer (Manager), нужна для:
-                        - получения данных пациента
-                        - отправки сигнала deviceConnected в UI
-                        - регистрации/удаления из реестра устройств
-          mode        — режим запуска ('icu' | 'op'):
-                        'icu' — создаёт QtDeviceHandler, испускает сигналы в UI.
-                        'op'  — headless, пропускает Qt/QML-логику, активирует FHIR-контексты.
-          target_room — фильтр по LocationContext.Room (строка или None).
-                        Если задан, воркер проверяет комнату устройства ПОСЛЕ init_mdib()
-                        и немедленно завершается без ошибки, если комната не совпадает.
-                        None = фильтрация отключена.
-          tls_mode    — стратегия TLS-подключения:
-                        'auto'      — автодетект (https:// → TLS; http:// → plain с fallback).
-                        'force_tls' — всегда TLS, независимо от схемы URL (--tls).
-                        'no_tls'    — всегда plain HTTP, без fallback (--no_tls).
+          wsd_service -- объект из WSDiscovery, содержащий EPR и адрес устройства.
+          manager     -- ссылка на SdcMyConsumer (Manager).
+          target_room -- фильтр по LocationContext.Room (строка или None).
+          tls_mode    -- стратегия TLS: 'auto' | 'force_tls' | 'no_tls'.
         """
-        # Инициализируем поток как демон: он автоматически завершится,
-        # когда завершится главный поток приложения
         threading.Thread.__init__(self, daemon=True)
-
-        # Режим запуска — управляет поведением Qt-UI и FHIR-контекстов
-        self.mode = mode
 
         # TLS-стратегия: 'auto' | 'force_tls' | 'no_tls'
         # Устанавливается из CLI (--tls / --no_tls) через Manager.
@@ -231,12 +213,9 @@ class DeviceHandler(threading.Thread):
         # Явно конвертируем в str для гарантии корректного сравнения в словарях.
         self.epr = str(wsd_service.epr)
 
-        # Ссылка на Manager — нужна для обратных вызовов и доступа к данным пациента
+        # Ссылка на Manager
         self.manager = manager
 
-        # Получаем данные пациента из FHIR при создании воркера.
-        # Они будут записаны в SDC-контекст устройства после инициализации MDIB.
-        self.patient_context = self.manager.get_patient_context_data()
 
         # Флаг для управления основным циклом мониторинга
         self.running = True
@@ -705,32 +684,19 @@ class DeviceHandler(threading.Thread):
             # При последующем вызове apply_ensemble_context() данные будут перезаписаны —
             # это корректно, т.к. SetContextState идемпотентен (повторная запись тех же
             # данных не создаёт дублирования в MDIB провайдера).
-            if self.mode == "op" and self.patient_context:
-                self.apply_patient_to_mdib()
-
             # ------------------------------------------------------------------
-            # ШАГ 4: Создание Qt-объекта и его передача в UI-поток (только 'icu')
+            # ШАГ 4: Создание Qt-объекта и его передача в UI-поток
             # ------------------------------------------------------------------
-            if self.mode == "icu":
-                # QtDeviceHandler создаётся здесь (в рабочем потоке) — это нормально.
-                # НО объект QObject нельзя долго использовать из чужого потока.
-                self.qtDeviceHandler = QtDeviceHandler(self)
+            self.qtDeviceHandler = QtDeviceHandler(self)
 
-                # moveToThread() перемещает Qt-объект в главный поток.
-                # После этого все слоты и сигналы QtDeviceHandler будут выполняться
-                # в главном потоке через очередь событий Qt — это потокобезопасно.
-                main_thread = QCoreApplication.instance().thread()
-                if main_thread:
-                    self.qtDeviceHandler.moveToThread(main_thread)
-                else:
-                    self.logger.warning("Could not find Main Thread!")
+            main_thread = QCoreApplication.instance().thread()
+            if main_thread:
+                self.qtDeviceHandler.moveToThread(main_thread)
+            else:
+                self.logger.warning("Could not find Main Thread!")
 
-                # Уведомляем UI о появлении нового устройства.
-                # Qt Signal автоматически маршалирует вызов в поток получателя (главный).
-                # Помечаем _ui_connected ПЕРЕД emit() — это атомарный флаг для Manager'а:
-                # он знает, что deviceDisconnected нужно послать при отключении.
-                self._ui_connected = True
-                self.manager.deviceConnected.emit(self.qtDeviceHandler)
+            self._ui_connected = True
+            self.manager.deviceConnected.emit(self.qtDeviceHandler)
 
             # ------------------------------------------------------------------
             # ШАГ 5: Основной цикл мониторинга с механизмом T_fallback (IHE SDPi)
@@ -754,8 +720,8 @@ class DeviceHandler(threading.Thread):
                     self.error_occurred = True
                     break
 
-                # Запускаем обновление UI в главном потоке (только в режиме 'icu')
-                if self.mode == "icu" and self.qtDeviceHandler:
+                # Запускаем обновление UI в главном потоке
+                if self.qtDeviceHandler:
                     self.qtDeviceHandler.scheduleUpdate()
 
                 # Активный пинг: пытаемся сделать лёгкий сетевой запрос.
