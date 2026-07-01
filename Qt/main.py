@@ -1,20 +1,20 @@
 """
-main.py — Точка входа приложения SDC-консьюмера (ICU-режим).
+main.py -- Entry point for the SDC Consumer application (ICU mode).
 
-ФИЛЬТРАЦИЯ ПО КОМНАТЕ (--room):
-  Если указан, Consumer подписывается ТОЛЬКО на те SDC Provider'ы, у которых
-  LocationContext.Room совпадает с указанным значением.
+ROOM FILTER (--room):
+  If specified, the Consumer subscribes ONLY to SDC Providers whose
+  LocationContext.Room matches the given value.
 
-TLS-РЕЖИМ (--tls / --no_tls):
-  --tls      Принудительный TLS для всех подключений (загружает сертификаты
-             из certs_out/ или pat/certs/). Используй когда Provider анонсирует
-             http://, но фактически требует TLS.
-  --no_tls   Отключить TLS полностью — plain HTTP, без fallback. Удобно для
-             тестирования Provider'ов без сертификатов.
-  (без флага) auto-режим: https:// → TLS сразу; http:// → plain с TLS-fallback
-             если получен ConnectionResetError.
+TLS MODE (--tls / --no_tls):
+  --tls      Force TLS for all connections (loads certificates from
+             certs_out/ or pat/certs/). Use when a Provider announces
+             http:// but actually requires TLS.
+  --no_tls   Disable TLS entirely -- plain HTTP, no fallback. Useful for
+             testing Providers without certificates.
+  (no flag)  Auto mode: https:// -> TLS immediately; http:// -> plain with
+             TLS-fallback if ConnectionResetError is received.
 
-Примеры:
+Examples:
   python main.py
   python main.py --room="Room_1"
   python main.py --no_tls
@@ -31,29 +31,29 @@ import datetime
 
 from sdc11073.loghelper import basic_logging_setup
 
-# Manager — координатор сети SDC-устройств
+# Manager -- coordinator of the SDC device network
 from sdcMyConsumer import SdcMyConsumer
 
 if __name__ == "__main__":
 
-    # Импортируем логгер из deviceHandler (он уже настроен с файловым хэндлером)
+    # Import module logger from deviceHandler (already configured with file handler)
     from deviceHandler import _module_log as _log
 
     # ------------------------------------------------------------------
-    # ШАГ 0: Парсинг аргументов командной строки
+    # STEP 0: Parse command-line arguments
     # ------------------------------------------------------------------
     parser = argparse.ArgumentParser(
-        description="SDC Consumer — оркестратор медицинских устройств (ICU)"
+        description="SDC Consumer -- medical device orchestrator (ICU)"
     )
     parser.add_argument(
         "--room",
         default=None,
         metavar="ROOM_ID",
         help=(
-            "Фильтр по комнате (LocationContext.Room). "
-            "Если указан, Consumer подключается ТОЛЬКО к устройствам из этой комнаты. "
-            "Пример: --room=\"ICU-3\". "
-            "По умолчанию: None (фильтрация отключена, все устройства принимаются)."
+            "Room filter (LocationContext.Room). "
+            "If set, the Consumer connects ONLY to devices in this room. "
+            "Example: --room=\"ICU-3\". "
+            "Default: None (filter disabled, all devices accepted)."
         ),
     )
     parser.add_argument(
@@ -61,23 +61,23 @@ if __name__ == "__main__":
         default=None,
         metavar="IP_ADDRESS",
         help=(
-            "IP-адрес сетевого адаптера для WSDiscovery. "
-            "Используй если устройства находятся в другом VMware/сетевом сегменте. "
-            "Пример: --ip=192.168.242.100. "
-            "По умолчанию: автоопределение через маршрут к 8.8.8.8."
+            "Network adapter IP address for WSDiscovery. "
+            "Use if devices are in a different VMware/network segment. "
+            "Example: --ip=192.168.242.100. "
+            "Default: auto-detected via route to 8.8.8.8."
         ),
     )
 
-    # ── TLS-стратегия (взаимоисключающая группа) ─────────────────────────────
+    # -- TLS strategy (mutually exclusive group) ------------------------------
     _tls_group = parser.add_mutually_exclusive_group()
     _tls_group.add_argument(
         "--tls",
         action="store_true",
         default=False,
         help=(
-            "Принудительный TLS для ВСЕХ подключений. "
-            "Загружает сертификаты из Qt/certs_out/ или pat/certs/. "
-            "Используй когда Provider анонсирует http:// но требует TLS."
+            "Force TLS for ALL connections. "
+            "Loads certificates from Qt/certs_out/ or pat/certs/. "
+            "Use when Provider announces http:// but requires TLS."
         ),
     )
     _tls_group.add_argument(
@@ -85,24 +85,24 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help=(
-            "Отключить TLS — plain HTTP, без TLS-fallback. "
-            "Удобно для тестирования Provider'ов без сертификатов. "
-            "Соответствует запуску sdcProvider/sdcX с --no_tls."
+            "Disable TLS -- plain HTTP, no TLS-fallback. "
+            "Useful for testing Providers without certificates. "
+            "Equivalent to running sdcProvider/sdcX with --no_tls."
         ),
     )
 
-    # parse_known_args позволяет Qt-аргументам (-platform, -style) не вызывать ошибку
+    # parse_known_args allows Qt arguments (-platform, -style) without errors
     args, qt_argv = parser.parse_known_args()
     target_room: str | None = args.room
     override_ip: str | None = args.ip
     tls_mode: str = 'force_tls' if args.tls else ('no_tls' if args.no_tls else 'auto')
 
     # ------------------------------------------------------------------
-    # ШАГ 0b: Настройка логирования sdc11073
+    # STEP 0b: Configure sdc11073 logging
     # ------------------------------------------------------------------
     basic_logging_setup(level=logging.WARNING)
 
-    # ── Разделитель сессии в лог-файле ───────────────────────────────────────
+    # -- Session separator in the log file --------------------------------
     _ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _sep = '=' * 72
     _log.info(_sep)
@@ -112,10 +112,9 @@ if __name__ == "__main__":
         + f'  |  TLS: {tls_mode}'
     )
     _log.info(_sep)
-    # ─────────────────────────────────────────────────────────────────────────
 
     # ------------------------------------------------------------------
-    # ШАГ 1: Инициализация Qt-приложения (ДО Manager'а)
+    # STEP 1: Initialise Qt application (BEFORE the Manager)
     # ------------------------------------------------------------------
     effective_argv = [sys.argv[0]] + qt_argv
 
@@ -123,7 +122,7 @@ if __name__ == "__main__":
     app = QGuiApplication(effective_argv)
 
     # ------------------------------------------------------------------
-    # ШАГ 2: Создание Manager'а и запуск сканирования сети
+    # STEP 2: Create Manager and start network discovery
     # ------------------------------------------------------------------
     manager = SdcMyConsumer(
         target_room=target_room,
@@ -133,7 +132,7 @@ if __name__ == "__main__":
     manager.start()
 
     # ------------------------------------------------------------------
-    # ШАГ 3: QML-движок
+    # STEP 3: QML engine
     # ------------------------------------------------------------------
     from PySide6.QtQml import QQmlApplicationEngine
 
@@ -149,6 +148,6 @@ if __name__ == "__main__":
         sys.exit(-1)
 
     # ------------------------------------------------------------------
-    # ШАГ 4: Запуск Qt event loop
+    # STEP 4: Start Qt event loop
     # ------------------------------------------------------------------
     sys.exit(app.exec())

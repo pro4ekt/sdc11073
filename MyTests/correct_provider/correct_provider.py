@@ -313,18 +313,16 @@ async def main(provider):
         ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
         ens_info_list = []
         for e in ensembles:
+            ctx_assoc = getattr(e, 'ContextAssociation', 'N/A')
             if getattr(e, "Identification", None) and len(e.Identification) > 0:
                 ident = e.Identification[0]
-                # Извлекаем IdentifierName (может быть как объектом LocalizedText, так и списком)
-                ident_name_str = "None"
-                if getattr(ident, "IdentifierName", None):
-                    ident_name = ident.IdentifierName[0] if isinstance(ident.IdentifierName, list) else ident.IdentifierName
-                    ident_name_str = str(getattr(ident_name, "text", ident_name))
-                
-                # Выводим Root, Extension и IdentifierName для наглядности
-                ens_info_list.append(f" Name:{ident_name_str}")
+                root = getattr(ident, 'Root', 'N/A')
+                extension = getattr(ident, 'Extension', 'N/A')
+                ens_info_list.append(
+                    f"Root:{root} | Extension:{extension} | ContextAssociation:{ctx_assoc}"
+                )
             else:
-                ens_info_list.append(None)
+                ens_info_list.append(f"(no Identification) | ContextAssociation:{ctx_assoc}")
         
         print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}, Danger codes = {danger_codes}, Ensembles = {ens_info_list}")
 

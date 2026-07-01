@@ -9,6 +9,7 @@ import threading
 import time
 from qtDeviceHandler import QtDeviceHandler
 from deviceHandler import DeviceHandler
+from contextAggregator import SmartAlertAggregator
 from PySide6.QtCore import QObject, Signal, Slot, Property
 from sdc11073.wsdiscovery import WSDiscovery
 _mgr_log = logging.getLogger('sdc.consumer.manager')
@@ -36,6 +37,7 @@ class SdcMyConsumer(QObject):
         self.override_ip: str | None = override_ip
         self.devices = {}
         self.lock = threading.Lock()
+        self.aggregator = SmartAlertAggregator(self)
         self.discovery = None
         self._location_rejected: set[str] = set()
         self._rejected_room_map: dict[str, str] = {}

@@ -1,20 +1,20 @@
-"""
-deviceHandler.py — «Рабочий поток» (Worker) для одного SDC-устройства.
+﻿"""
+deviceHandler.py -- Worker thread for a single SDC device.
 
-АРХИТЕКТУРА:
-  Каждое обнаруженное устройство получает свой собственный объект DeviceHandler,
-  который запускается как отдельный системный поток (threading.Thread).
-  Внутри этого потока создаётся изолированный asyncio event loop — это ключевое решение:
-  сетевые задержки или зависание одного устройства не влияют на остальные.
+ARCHITECTURE:
+  Each discovered device gets its own DeviceHandler object, which runs as a
+  dedicated system thread (threading.Thread). An isolated asyncio event loop
+  is created inside that thread -- this is the key design decision: network
+  timeouts or a hanging device do not affect the others.
 
-  Поток живёт ровно столько, сколько живёт соединение с устройством.
-  При разрыве (штатном или аварийном) поток завершается и уведомляет Manager
-  через метод remove_device(), который решает, нужно ли сбросить кэш WSDiscovery.
+  The thread lives exactly as long as the connection to the device lives.
+  On disconnect (graceful or error) the thread exits and notifies the Manager
+  via remove_device(), which decides whether to flush the WSDiscovery cache.
 
-ВЗАИМОДЕЙСТВИЕ С UI:
-  Для передачи данных в QML используется объект QtDeviceHandler (QObject).
-  Он создаётся в рабочем потоке, но сразу перемещается в главный поток через moveToThread(),
-  чтобы Qt-сигналы и свойства работали корректно и потокобезопасно.
+UI INTERACTION:
+  A QtDeviceHandler (QObject) bridges this worker to QML. It is created in the
+  worker thread but immediately moved to the main thread via moveToThread() so
+  that Qt signals and properties work correctly and thread-safely.
 """
 
 import threading
@@ -29,7 +29,7 @@ from decimal import Decimal
 # =============================================================================
 # LOGGING SETUP
 # =============================================================================
-# Log directory: Qt/logs/  (создаётся автоматически если нет)
+# Log directory: Qt/logs/  (created automatically if absent)
 _LOG_DIR = pathlib.Path(__file__).parent / 'logs'
 _LOG_DIR.mkdir(exist_ok=True)
 
@@ -38,13 +38,13 @@ class _SuppressGetContextStates400(logging.Filter):
     Suppress the repetitive 'GetContextStates HTTP 400' ERROR spam from sdc11073's
     soap client / mdib logger. sdcX returns HTTP 400 for GetContextStates when the
     consumer is not authorized (no mTLS). We already handle this in the ping loop
-    and log a one-time warning — the sdc11073 internal ERROR is redundant and noisy.
+    and log a one-time warning -- the sdc11073 internal ERROR is redundant and noisy.
     """
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno != logging.ERROR:
             return True
         msg = record.getMessage()
-        # Drop "GetContextStates: POST … HTTP response=400" from sdc.client.soap
+        # Drop "GetContextStates: POST ... HTTP response=400" from sdc.client.soap
         if 'GetContextStates' in msg and '400' in msg:
             return False
         # Drop the traceback from sdc.client.mdib that follows the soap error
@@ -56,25 +56,25 @@ class _SuppressGetContextStates400(logging.Filter):
 
 def _setup_module_logger() -> logging.Logger:
     """
-    Настраивает корневой логгер модуля deviceHandler.
+    Configure the root logger for the deviceHandler module.
 
-    Уровни:
-      - Консоль (StreamHandler): INFO — краткий формат HH:MM:SS [LEVEL] msg
-      - Файл (RotatingFileHandler): DEBUG — полный формат с именем логгера
-        Файл: Qt/logs/sdc_consumer.log
-        Ротация: 5 МБ × 5 резервных копий → sdc_consumer.log.1 … .5
+    Levels:
+      - Console (StreamHandler): INFO  -- short format HH:MM:SS [LEVEL] msg
+      - File (RotatingFileHandler): DEBUG -- full format with logger name
+        File: Qt/logs/sdc_consumer.log
+        Rotation: 5 MB x 5 backup copies -> sdc_consumer.log.1 ... .5
     """
     logger = logging.getLogger('sdc.consumer')
 
-    # Не добавляем handlers повторно (если модуль импортируется несколько раз)
+    # Avoid adding handlers more than once (if module is imported multiple times)
     if logger.handlers:
         return logger
 
     logger.setLevel(logging.DEBUG)
 
-    # ── Консоль (INFO+) ───────────────────────────────────────────────────────
-    # Краткий формат: время + уровень + сообщение. Только INFO и выше,
-    # чтобы не засорять вывод DEBUG-деталями (cooldown-спам, кэш и т.д.).
+    # -- Console (INFO+) -------------------------------------------------------
+    # Short format: time + level + message. INFO and above only, to avoid
+    # flooding the output with DEBUG details (cooldown spam, cache, etc.).
     _con_handler = logging.StreamHandler()
     _con_handler.setLevel(logging.INFO)
     _con_handler.setFormatter(logging.Formatter(
@@ -83,226 +83,230 @@ def _setup_module_logger() -> logging.Logger:
     ))
     logger.addHandler(_con_handler)
 
-    # ── Файл (DEBUG+, ротация) ────────────────────────────────────────────────
-    # Полный формат с именем логгера — для детального анализа после сессии.
+    # -- File (DEBUG+, rotation) -----------------------------------------------
+    # Full format with logger name -- for detailed post-session analysis.
     _file_handler = logging.handlers.RotatingFileHandler(
         filename=str(_LOG_DIR / 'sdc_consumer.log'),
-        maxBytes=5 * 1024 * 1024,   # 5 МБ на файл
+        maxBytes=5 * 1024 * 1024,   # 5 MB per file
         backupCount=5,
         encoding='utf-8',
     )
     _file_handler.setLevel(logging.DEBUG)
     _file_handler.setFormatter(logging.Formatter(
-        fmt='%(asctime)s [%(levelname)-8s] %(name)s — %(message)s',
+        fmt='%(asctime)s [%(levelname)-8s] %(name)s -- %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     ))
     logger.addHandler(_file_handler)
 
-    # Не пробрасываем в корневой логгер (предотвращаем дублирование)
+    # Do not propagate to the root logger (prevents duplicate log entries)
     logger.propagate = False
 
     return logger
 
-# Модульный логгер — используется для сообщений вне класса DeviceHandler
+# Module-level logger -- used for messages outside of DeviceHandler
 _module_log = _setup_module_logger()
 
 # Suppress repetitive GetContextStates HTTP 400 ERROR spam from sdc11073 internals.
-# sdcX blocks context queries from unauthorized participants — this is expected when
-# running without mTLS. We handle it in the ping loop already; the sdc11073 internal
-# ERROR is noise. Apply filter once at import time.
+# sdcX blocks context queries from unauthorized participants -- this is expected when
+# running without mTLS. We handle it in the ping loop already. Apply filter once.
 logging.getLogger('sdc.client.soap').addFilter(_SuppressGetContextStates400())
 logging.getLogger('sdc.client.mdib').addFilter(_SuppressGetContextStates400())
 
-# Импортируем Qt-обёртку — она создаётся для каждого устройства и живёт в UI-потоке
+# Qt wrapper -- created per device and lives in the UI thread
 from qtDeviceHandler import QtDeviceHandler
 
-# Основные классы sdc11073 для потребителя (Consumer = клиент SDC-устройства)
+# Core sdc11073 classes for the consumer side (Consumer = SDC device client)
 from sdc11073.consumer import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError
 
-# periodic_actions — список действий, которые НЕ нужно подписывать через subscriptions.
-# Они приходят периодически и обрабатываются иначе.
+# periodic_actions -- actions that must NOT be subscribed via WS-Eventing;
+# they are delivered periodically and handled differently.
 from sdc11073.xml_types.actions import periodic_actions
 
-# pm — XML-имена (QName) для типов BICEPS/SDC (дескрипторы, стейты и т.д.)
+# pm -- XML QNames for BICEPS/SDC types (descriptors, states, etc.)
 from sdc11073.xml_types import pm_qnames as pm
 
-# pm_types — Python-классы для значений типов BICEPS (enum'ы, структуры данных)
+# pm_types -- Python classes for BICEPS value types (enums, data structures)
 from sdc11073.xml_types import pm_types
 
-# Конкретные типы для работы с измерениями
+# Specific types used for building measurement values
 from sdc11073.xml_types.pm_types import Measurement, CodedValue
 
-# observableproperties — механизм подписки на изменения в ConsumerMdib
-# Позволяет вызывать callback при обновлении метрик или тревог
+# observableproperties -- subscription mechanism for ConsumerMdib changes;
+# allows registering callbacks that fire when metrics or alerts are updated.
 from sdc11073 import observableproperties
 
-# Нужен для получения ссылки на главный UI-поток Qt при moveToThread() (только 'icu').
-# QCoreApplication работает в обоих режимах — это базовый класс для QGuiApplication.
+# Needed to obtain a reference to the main Qt UI thread for moveToThread().
+# QCoreApplication is the base class of QGuiApplication.
 from PySide6.QtCore import QCoreApplication
 
-# RelatedMeasurement — класс sdc11073, у которого есть баг в методе from_node():
-# он вызывает __init__ с аргументом, который в норме обязателен, но при десериализации
-# ещё не известен. Обходим это патчем ниже.
+# RelatedMeasurement has a bug in from_node(): it calls cls(...) which requires
+# the 'value' argument in __init__, but during XML deserialization that value is
+# not yet known. Work around it with the monkey-patch below.
 from sdc11073.xml_types.pm_types import Measurement, RelatedMeasurement
 
 
 # =============================================================================
-# MONKEY-PATCH: Исправление бага десериализации RelatedMeasurement
+# MONKEY-PATCH: Fix RelatedMeasurement deserialization bug
 # =============================================================================
-# Проблема: стандартный from_node() пытается вызвать cls(...), что требует
-#           аргумент 'value' в __init__ — но при парсинге XML он ещё неизвестен.
-# Решение:  подменяем from_node() на версию, которая сначала создаёт объект
-#           с заглушкой (None, None), а потом заполняет его через update_from_node().
-# Это классический monkey-patch — изменение поведения чужой библиотеки в рантайме.
+# Problem:  the default from_node() tries cls(...) which needs 'value' in
+#           __init__ -- but during XML parsing it is not available yet.
+# Solution: replace from_node() with a version that first creates the object
+#           with a placeholder (None, None), then populates it via
+#           update_from_node(). Classic monkey-patch -- modifying a third-party
+#           library's behaviour at runtime.
 @classmethod
 def _related_measurement_from_node(cls, node):
-    # Создаём "пустой" объект с заглушкой, минуя требование __init__
+    # Create an "empty" object bypassing the __init__ requirement
     obj = cls(Measurement(None, None))
-    # Теперь заполняем его реальными данными из XML-узла
+    # Populate it from the real XML node data
     obj.update_from_node(node)
     return obj
 
-# Заменяем метод класса RelatedMeasurement на нашу исправленную версию
+# Replace the class method with our fixed version
 RelatedMeasurement.from_node = _related_measurement_from_node
 
 
 # =============================================================================
-# Класс DeviceHandler — рабочий поток для одного SDC-устройства
+# DeviceHandler -- worker thread for one SDC device
 # =============================================================================
 class DeviceHandler(threading.Thread):
     """
     Worker class (The "Worker").
 
-    Отвечает за поддержание соединения с ОДНИМ конкретным SDC-устройством (Provider).
-    Запускается в собственном системном потоке с независимым asyncio event loop.
+    Maintains the connection to ONE specific SDC device (Provider).
+    Runs in its own system thread with an independent asyncio event loop.
 
-    Жизненный цикл:
-      1. Manager создаёт DeviceHandler и вызывает start().
-      2. Поток подключается к устройству, инициализирует MDIB, запускает мониторинг.
-      3. При разрыве соединения (или ошибке) поток завершается и вызывает
-         manager.remove_device() для самоудаления из реестра.
+    Lifecycle:
+      1. Manager creates DeviceHandler and calls start().
+      2. Thread connects to the device, initialises the MDIB, starts monitoring.
+      3. On disconnect (or error) the thread exits and calls
+         manager.remove_device() to remove itself from the registry.
     """
 
     def __init__(self, wsd_service, manager,
                  target_room: str | None = None, tls_mode: str = 'auto'):
         """
-        Параметры:
-          wsd_service -- объект из WSDiscovery, содержащий EPR и адрес устройства.
-          manager     -- ссылка на SdcMyConsumer (Manager).
-          target_room -- фильтр по LocationContext.Room (строка или None).
-          tls_mode    -- стратегия TLS: 'auto' | 'force_tls' | 'no_tls'.
+        Parameters:
+          wsd_service -- WSDiscovery service object containing EPR and address.
+          manager     -- reference to SdcMyConsumer (Manager).
+          target_room -- LocationContext.Room filter (string or None).
+          tls_mode    -- TLS strategy: 'auto' | 'force_tls' | 'no_tls'.
         """
         threading.Thread.__init__(self, daemon=True)
 
-        # TLS-стратегия: 'auto' | 'force_tls' | 'no_tls'
-        # Устанавливается из CLI (--tls / --no_tls) через Manager.
+        # TLS strategy: 'auto' | 'force_tls' | 'no_tls'
+        # Set from CLI (--tls / --no_tls) via Manager.
         self.tls_mode: str = tls_mode
 
-        # Фильтр по LocationContext.Room.
-        # Проверяется в _worker_logic() сразу после init_mdib().
-        # Если не None и комната устройства не совпадает → воркер завершается без ошибки
-        # (не очищается кэш WSDiscovery, не испускается deviceDisconnected).
+        # LocationContext.Room filter.
+        # Checked in _worker_logic() immediately after init_mdib().
+        # If not None and device room does not match -> worker exits without error
+        # (WSDiscovery cache is NOT cleared, deviceDisconnected is NOT emitted).
         self.target_room: str | None = target_room
 
-        # Сохраняем WSD-сервис — он нужен для подключения SdcConsumer
+        # WSD service -- needed to create the SdcConsumer connection
         self.wsd_service = wsd_service
 
-        # EPR (Endpoint Reference) — уникальный UUID устройства в сети.
-        # Явно конвертируем в str для гарантии корректного сравнения в словарях.
+        # EPR (Endpoint Reference) -- unique UUID of the device on the network.
+        # Explicitly cast to str to guarantee correct dict key comparisons.
         self.epr = str(wsd_service.epr)
 
-        # Ссылка на Manager
+        # Reference to the Manager
         self.manager = manager
 
-
-        # Флаг для управления основным циклом мониторинга
+        # Flag controlling the main monitoring loop
         self.running = True
 
-        # SDC Consumer — объект для общения с устройством по сети (HTTP/SOAP/WS)
-        # Инициализируется в _worker_logic(), здесь None
+        # SDC Consumer -- object that communicates with the device over HTTP/SOAP/WS.
+        # Initialised in _worker_logic(); None here.
         self.consumer = None
 
-        # ConsumerMdib — локальная копия MDIB (Medical Device Information Base) устройства.
-        # Автоматически обновляется при получении уведомлений от устройства.
+        # ConsumerMdib -- local mirror of the device's MDIB.
+        # Automatically updated when push notifications arrive from the device.
         self.mdib = None
 
-        # Таймстемп последнего вызова scheduleUpdate() (monotonic, seconds).
-        # Используется в on_metric_update / on_alert_update для rate-limiting:
-        # не более 1 обновления UI в секунду при высокочастотных waveform-данных.
+        # Timestamp of the last scheduleUpdate() call (monotonic, seconds).
+        # Used in on_metric_update / on_alert_update for rate-limiting:
+        # at most 1 UI refresh per second during high-frequency waveform data.
         self._last_ui_update_ts: float = 0.0
 
-        # Qt-обёртка, через которую QML читает данные этого устройства
+        # Qt wrapper through which QML reads this device's data
         self.qtDeviceHandler = None
 
-        # Флаг: True означает что deviceConnected.emit() уже был отправлен.
-        # Используется в Manager.remove_device() чтобы решать, нужно ли emit deviceDisconnected.
-        # Устройства, отфильтрованные по target_room до emit(), остаются False.
+        # Flag: True means deviceConnected.emit() has already been sent.
+        # Used in Manager.remove_device() to decide whether to emit deviceDisconnected.
+        # Devices filtered by target_room before emit() stay False.
         self._ui_connected: bool = False
 
-        # Флаг: завершился ли поток из-за ошибки (в отличие от штатной остановки).
-        # Если True — Manager сбросит кэш WSDiscovery для этого EPR.
+        # Flag: did the thread exit due to an error (vs a clean stop)?
+        # If True -- Manager will flush the WSDiscovery cache for this EPR.
         self.error_occurred = False
 
-        # Мьютекс для защиты доступа к self.mdib.
-        # ПРАВИЛО: любой поток, читающий/записывающий MDIB, ОБЯЗАН держать этот лок.
-        # Исключение: сетевые вызовы (set_context_state и т.д.) делаются БЕЗ лока,
-        # чтобы не блокировать UI-поток на время ожидания сетевого ответа.
+        # Lock protecting access to self.mdib.
+        # RULE: any thread reading or writing MDIB MUST hold this lock.
+        # Exception: network calls (set_context_state etc.) are made WITHOUT
+        # the lock to avoid blocking the UI thread during a network round-trip.
         self.data_lock = threading.Lock()
 
-        # Заглушка для будущего OPC UA сервера (сейчас не используется)
+        # Placeholder for a future OPC UA server (unused at the moment)
         self.opcua_server = None
 
-        # ── Логгер этого воркера ──────────────────────────────────────────────
-        # Имя логгера включает укороченный EPR (последние 12 символов UUID),
-        # чтобы в логах сразу было видно, от какого устройства пришло сообщение.
+        # -- Worker logger ----------------------------------------------------
+        # Logger name includes the last 12 chars of the UUID so log lines
+        # immediately identify which device they came from.
         _short_epr = self.epr[-12:] if len(self.epr) > 12 else self.epr
         self.logger = logging.getLogger(f'sdc.consumer.worker.{_short_epr}')
 
-        # Флаг: True означает что воркер завершился из-за фильтрации по LocationContext.
-        # Устанавливается в _worker_logic() при несовпадении target_room.
-        # Используется в run() для передачи в manager.remove_device(location_filtered=True),
-        # что добавляет EPR в сессионный ban-list → _discovery_loop больше не создаёт
-        # DeviceHandler для этого устройства до рестарта оркестратора.
+        # Flag: True means the worker exited due to LocationContext filtering.
+        # Set in _worker_logic() when target_room does not match.
+        # Used in run() to call manager.remove_device(location_filtered=True),
+        # which adds the EPR to a session ban-list so _discovery_loop never
+        # creates a new DeviceHandler for this device until process restart.
         self._location_filtered: bool = False
 
-        # Флаг: True означает штатное завершение (DEV-49).
-        # Используется в _graceful_shutdown() чтобы отличать плановый stop от аварийного.
+        # Flag: True means a graceful shutdown is in progress (DEV-49).
+        # Used in _graceful_shutdown() to distinguish planned stop from crash.
         self._intentional_shutdown = False
 
+        # UUID of the ensemble this device belongs to.
+        # Assigned by SmartAlertAggregator.evaluate_and_bind_device() via
+        # apply_ensemble_context() after a successful EnsembleContextState send.
+        # None -- device has not been bound to any ensemble yet.
+        self.ensemble_uuid: str | None = None
 
 
     # =========================================================================
-    # Точка входа потока (вызывается threading.Thread при start())
+    # Thread entry point (called by threading.Thread on start())
     # =========================================================================
     def run(self):
         """
-        Запускается автоматически при вызове DeviceHandler.start().
-        Создаёт изолированный asyncio event loop и запускает в нём основную логику.
+        Invoked automatically when DeviceHandler.start() is called.
+        Creates an isolated asyncio event loop and runs the main logic in it.
 
-        ВАЖНО: каждый поток создаёт свой event loop — это обеспечивает изоляцию.
-        Сетевой таймаут на одном устройстве не замораживает обработку других.
+        IMPORTANT: each thread creates its own event loop -- this provides
+        isolation. A network timeout on one device does not freeze the others.
         """
-        # Создаём новый event loop специально для этого потока
+        # Create a new event loop dedicated to this thread
         loop = asyncio.new_event_loop()
-        # Регистрируем его как "текущий" для данного потока
+        # Register it as the "current" loop for this thread
         asyncio.set_event_loop(loop)
 
         try:
-            # Запускаем основную async-логику и блокируем поток до её завершения
+            # Run the main async logic and block the thread until it finishes
             loop.run_until_complete(self._worker_logic())
         finally:
-            # Гарантированная очистка event loop при любом исходе
+            # Guaranteed event loop cleanup regardless of outcome
             try:
                 loop.close()
             except Exception:
                 pass
 
-            # САМОУДАЛЕНИЕ из реестра Manager'а.
-            # Передаём error_occurred: если True → Manager сбросит WSDiscovery-кэш.
-            # Передаём location_filtered: если True → Manager добавит EPR в ban-list,
-            # предотвращая повторное создание DeviceHandler для этого устройства.
+            # Self-removal from the Manager's registry.
+            # error_occurred=True  -> Manager flushes WSDiscovery cache.
+            # location_filtered=True -> Manager adds EPR to ban-list,
+            #   preventing a new DeviceHandler from being created for this device.
             self.manager.remove_device(
                 self.epr,
                 self.error_occurred,
@@ -311,40 +315,40 @@ class DeviceHandler(threading.Thread):
             self.logger.info("Thread Exiting (Dead).")
 
     # =========================================================================
-    # Основная асинхронная логика подключения и мониторинга
+    # Main async connection and monitoring logic
     # =========================================================================
     async def _worker_logic(self):
         """
-        Выполняется внутри изолированного asyncio event loop этого потока.
+        Runs inside this thread's isolated asyncio event loop.
 
-        Фазы работы:
-          1. Подключение к устройству (SdcConsumer)
-          2. Инициализация локальной копии MDIB
-          3. Подписка на обновления метрик и тревог
-          4. Создание Qt-объекта и его перемещение в главный поток
-          5. Основной цикл мониторинга с механизмом T_fallback (IHE SDPi)
+        Phases:
+          1. Connect to the SDC device (SdcConsumer)
+          2. Initialise the local MDIB copy
+          3. Subscribe to metric and alert updates
+          4. Create the Qt object and move it to the main thread
+          5. Main monitoring loop with T_fallback mechanism (IHE SDPi)
         """
         self.logger.info("Connecting...")
         try:
             # ------------------------------------------------------------------
-            # ШАГ 1: Подключение к SDC-устройству
+            # STEP 1: Connect to the SDC device
             # ------------------------------------------------------------------
-            # from_wsd_service() создаёт SdcConsumer по данным из WSDiscovery —
-            # это не требует ручного указания IP/порта.
-            # ssl_context_container=None означает работу без TLS (нешифрованное соединение).
+            # from_wsd_service() creates SdcConsumer from WSDiscovery data --
+            # no manual IP/port specification required.
+            # ssl_context_container=None = unencrypted connection.
             x_addrs = getattr(self.wsd_service, 'x_addrs', 'unknown')
             self.logger.debug(f"Transport addresses (x_addrs): {x_addrs}")
 
             # ------------------------------------------------------------------
-            # _build_ssl_container() — вспомогательная функция: строит SSLContextContainer
-            # с клиентским сертификатом из pat/certs/ (IHE test PKI).
-            # Используется и при явном https://, и при TLS-fallback для http://.
+            # _build_ssl_container() -- builds SSLContextContainer with a client
+            # certificate from pat/certs/ (IHE test PKI).
+            # Used for explicit https:// AND for TLS-fallback on http://.
             # ------------------------------------------------------------------
             def _build_ssl_container():
                 _qt_dir = pathlib.Path(__file__).parent        # Master/Qt/
                 _base   = _qt_dir.parent                       # Master/
                 _cert_candidates = [
-                    # ① certs_out/ внутри Qt/ — наши сгенерированные сертификаты
+                    # (1) certs_out/ inside Qt/ -- our generated certificates
                     (_qt_dir / 'certs_out' / 'consumer.pem',
                      _qt_dir / 'certs_out' / 'consumer.key',
                      _qt_dir / 'certs_out' / 'ca1.pem',
@@ -353,31 +357,31 @@ class DeviceHandler(threading.Thread):
                      _qt_dir / 'certs_out' / 'consumer.key',
                      _qt_dir / 'certs_out' / 'ca.pem',
                      [None]),
-                    # ② pat/certs/ — наши сертификаты скопированные туда
+                    # (2) pat/certs/ -- our certificates copied there
                     (_base / 'pat' / 'certs' / 'consumer.pem',
                      _base / 'pat' / 'certs' / 'consumer.key',
                      _base / 'pat' / 'certs' / 'ca1.pem',
                      [None]),
-                    # ③ IHE PAT test PKI (pat/certs/) — только если наших нет
+                    # (3) IHE PAT test PKI (pat/certs/) -- fallback if ours are absent
                     (_base / 'pat' / 'certs' / 'user_certificate_root_signed.pem',
                      _base / 'pat' / 'certs' / 'user_private_key_encrypted.pem',
                      _base / 'pat' / 'certs' / 'root_certificate.pem',
                      ['dummypassword', 'password', 'sdcX', '12345']),
-                    # ④ sdc11073 unit-test PKI (tests/certificates/)
+                    # (4) sdc11073 unit-test PKI (tests/certificates/)
                     (_base / 'tests' / 'certificates' / 'test_certificate.pem',
                      _base / 'tests' / 'certificates' / 'test_private_key.pem',
                      None,
                      ['password', 'dummypassword']),
                 ]
 
-                # ── CLIENT context: consumer → provider (стандартный SSL-клиент) ──
+                # -- CLIENT context: consumer -> provider (standard SSL client) --
                 _client_ctx = ssl.create_default_context()
                 _client_ctx.check_hostname = False
                 _client_ctx.verify_mode = ssl.CERT_NONE
 
-                # ── SERVER context: provider → consumer (приём уведомлений WS-Eventing) ──
-                # Важно: нужен PROTOCOL_TLS_SERVER, иначе Python не умеет принимать
-                # входящие TLS-соединения от провайдера (create_default_context даёт CLIENT ctx).
+                # -- SERVER context: provider -> consumer (WS-Eventing notifications) --
+                # IMPORTANT: PROTOCOL_TLS_SERVER is required -- create_default_context()
+                # returns a CLIENT context which cannot accept incoming TLS connections.
                 _server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 _server_ctx.check_hostname = False
                 _server_ctx.verify_mode = ssl.CERT_NONE
@@ -427,28 +431,28 @@ class DeviceHandler(threading.Thread):
                     return _ssl_ctx  # type: ignore[return-value]
 
             # ------------------------------------------------------------------
-            # Стратегия подключения — управляется self.tls_mode:
-            #   'no_tls'    — plain HTTP принудительно (--no_tls), без fallback.
-            #                 Удобно для тестирования без сертификатов.
-            #   'force_tls' — TLS принудительно (--tls), независимо от схемы URL.
-            #   'auto'      — автодетект: https:// → TLS сразу; http:// → plain
-            #                 с TLS-fallback если ConnectionResetError (winerror 10054).
+            # Connection strategy -- controlled by self.tls_mode:
+            #   'no_tls'    -- plain HTTP forced (--no_tls), no TLS fallback.
+            #   'force_tls' -- TLS forced (--tls), regardless of URL scheme.
+            #   'auto'      -- auto-detect: https:// -> TLS immediately;
+            #                  http:// -> plain with TLS-fallback on
+            #                  ConnectionResetError (winerror 10054).
             # ------------------------------------------------------------------
             ssl_container = None
 
             if self.tls_mode == 'no_tls':
-                self.logger.info('TLS disabled (--no_tls) — plain HTTP, no fallback.')
+                self.logger.info('TLS disabled (--no_tls) -- plain HTTP, no fallback.')
 
             elif self.tls_mode == 'force_tls':
-                self.logger.info('TLS forced (--tls) — building SSL context...')
+                self.logger.info('TLS forced (--tls) -- building SSL context...')
                 ssl_container = _build_ssl_container()
 
             else:  # 'auto'
                 if x_addrs and any(str(addr).startswith('https://') for addr in x_addrs):
-                    self.logger.info('HTTPS detected — building mTLS SSL context...')
+                    self.logger.info('HTTPS detected -- building mTLS SSL context...')
                     ssl_container = _build_ssl_container()
                 else:
-                    self.logger.info('HTTP announced — connecting without SSL (will retry if reset).')
+                    self.logger.info('HTTP announced -- connecting without SSL (will retry if reset).')
 
             self.consumer = SdcConsumer.from_wsd_service(
                 wsd_service=self.wsd_service,
@@ -464,11 +468,11 @@ class DeviceHandler(threading.Thread):
                     or (isinstance(_cause, OSError) and getattr(_cause, 'winerror', None) == 10054)
                     or 'NotConnected' in type(_connect_err).__name__
                 )
-                # TLS-fallback только в режиме 'auto' и только если соединение сброшено.
-                # В 'no_tls' fallback запрещён — пользователь явно отключил TLS.
+                # TLS fallback only in 'auto' mode and only on connection reset.
+                # In 'no_tls' mode fallback is forbidden -- user explicitly disabled TLS.
                 if _is_reset and ssl_container is None and self.tls_mode != 'no_tls':
                     self.logger.warning(
-                        'HTTP connection reset — provider likely requires TLS. '
+                        'HTTP connection reset -- provider likely requires TLS. '
                         'Retrying with mTLS SSL context...'
                     )
                     ssl_container = _build_ssl_container()
@@ -481,24 +485,23 @@ class DeviceHandler(threading.Thread):
                     raise
 
             # ------------------------------------------------------------------
-            # ШАГ 2: Инициализация MDIB (под локом!)
+            # STEP 2: Initialise MDIB (under lock!)
             # ------------------------------------------------------------------
-            # init_mdib() делает сетевой запрос GetMdib и загружает полное описание
-            # устройства (дескрипторы + начальные стейты) в локальную память.
-            # После этого MDIB живёт и обновляется через push-уведомления.
-            # Держим лок, пока MDIB не готов — иначе QtDeviceHandler может прочитать None.
+            # init_mdib() performs a GetMdib network request and loads the full
+            # device description (descriptors + initial states) into local memory.
+            # The MDIB is then kept up to date via push notifications.
+            # Hold the lock until MDIB is ready -- otherwise QtDeviceHandler may
+            # read None.
             with self.data_lock:
                 self.mdib = ConsumerMdib(self.consumer)
                 self.mdib.init_mdib()
 
-                # ------------------------------------------------------------------
-                # ДИАГНОСТИКА: что пришло в GetMdib и есть ли ContextService
-                # ------------------------------------------------------------------
+                # -- Diagnostics: what GetMdib returned, is ContextService present --
                 _ctx_states = list(self.mdib.context_states.objects)
                 _n_ctx = len(_ctx_states)
                 if _n_ctx > 0:
                     self.logger.info(
-                        f'[DIAG] GetMdib returned {_n_ctx} context state(s) — '
+                        f'[DIAG] GetMdib returned {_n_ctx} context state(s) -- '
                         f'GetContextStates call NOT needed.'
                     )
                     for _s in _ctx_states:
@@ -508,7 +511,7 @@ class DeviceHandler(threading.Thread):
                         )
                 else:
                     self.logger.warning(
-                        f'[DIAG] GetMdib returned 0 context states — '
+                        f'[DIAG] GetMdib returned 0 context states -- '
                         f'device may require GetContextStates separately.'
                     )
 
@@ -518,20 +521,19 @@ class DeviceHandler(threading.Thread):
                 )
 
                 # ------------------------------------------------------------------
-                # ШАГ 2b: Фильтрация по LocationContext (если задан target_room)
+                # STEP 2b: Location filter (if target_room is set)
                 # ------------------------------------------------------------------
-                # WSDiscovery обнаруживает все SDC Provider'ы в сети вне зависимости
-                # от их местоположения. LocationContext становится доступен только
-                # ПОСЛЕ init_mdib() — он хранится в context_states MDIB.
+                # WSDiscovery discovers all SDC providers on the network regardless
+                # of their physical location. LocationContext is only available
+                # AFTER init_mdib() -- it is stored in context_states in the MDIB.
                 #
-                # ВАЖНО: _get_device_room() нельзя вызывать здесь — она сама захватывает
-                # data_lock, что вызвало бы дедлок (threading.Lock не реентрантен).
-                # Вместо этого читаем LocationContext напрямую из MDIB (лок уже держим).
+                # NOTE: _get_device_room() cannot be called here -- it acquires
+                # data_lock internally, which would deadlock (Lock is not reentrant).
+                # Instead read LocationContext directly (data_lock already held).
                 #
-                # Если target_room задан и комната устройства не совпадает →
-                # возвращаемся из _worker_logic() чистым путём (return, не исключение).
+                # If target_room is set and device room does not match ->
+                # return from _worker_logic() cleanly (return, not exception).
 
-                # Читаем комнату прямо из MDIB (data_lock уже захвачен выше)
                 _device_room_here = ''
                 try:
                     _loc_states = [s for s in self.mdib.context_states.objects
@@ -541,151 +543,102 @@ class DeviceHandler(threading.Thread):
                 except Exception as _loc_err:
                     self.logger.error(f'Error reading LocationContext: {_loc_err}')
 
-                # Регистрируем комнату в Manager'е для dropdown «доступные комнаты».
-                # Вызываем даже если фильтр не задан — это позволяет UI-кнопкам
-                # появляться по мере подключения устройств из разных комнат.
+                # Register the room with Manager for the room-switcher dropdown.
+                # Call even if no filter is set -- lets room buttons appear
+                # as devices from different rooms connect.
                 if _device_room_here and hasattr(self.manager, 'register_device_room'):
                     self.manager.register_device_room(self.epr, _device_room_here)
 
                 if self.target_room:
                     if _device_room_here == '':
-                        # Нет LocationContext → предупреждение, но пропускаем (не фильтруем)
+                        # No LocationContext -> warn but accept the device (no filter)
                         self.logger.warning(
                             f'No LocationContext found in MDIB. '
-                            f"Room filter (target='{self.target_room}') skipped — accepting device."
+                            f"Room filter (target='{self.target_room}') skipped -- accepting device."
                         )
                     elif _device_room_here != self.target_room:
                         self.logger.info(
                             f"Location filter: device room '{_device_room_here}' "
                             f"!= target '{self.target_room}'. Disconnecting (not an error)."
                         )
-                        # Сохраняем EPR→комната в Manager'е для логики switchRoom() un-ban.
-                        # _rejected_room_map позволяет при переключении на эту комнату
-                        # разбанить именно эти устройства без повторного TCP-подключения.
+                        # Save EPR->room in Manager for switchRoom() un-ban logic.
+                        # _rejected_room_map allows targeted un-banning when switching
+                        # to this room without a new TCP connection.
                         if hasattr(self.manager, '_rejected_room_map'):
                             self.manager._rejected_room_map[self.epr] = _device_room_here
-                        self._location_filtered = True   # → ban-list в Manager'е
-                        return  # Выходим чисто — finally вызовет stop_all() через _graceful_shutdown
+                        self._location_filtered = True   # -> ban-list in Manager
+                        return  # exit cleanly -- finally calls stop_all() via _graceful_shutdown
                     else:
                         self.logger.info(f"Location filter: room '{_device_room_here}' matches. Accepting.")
 
             # ------------------------------------------------------------------
-            # ШАГ 2b: Подписка на SDPi-A R1030/R1031 (детекция смены сессии)
+            # STEP 2c: Subscribe to SDPi-A R1030/R1031 (session change detection)
             # ------------------------------------------------------------------
-            # ЧТО ТАКОЕ ObservableProperty (механизм sdc11073):
-            # ─────────────────────────────────────────────────────────────────
-            # ObservableProperty — это Python-дескриптор (аналог property), объявленный
-            # на уровне класса ConsumerMdib. Например:
+            # HOW ObservableProperty WORKS (sdc11073 mechanism):
+            # ----------------------------------------------------------------
+            # ObservableProperty is a Python descriptor declared at the class level
+            # of ConsumerMdib. It intercepts assignment (=) and automatically notifies
+            # all registered subscribers on every value change.
+            # sdc11073 does the assignment when it processes an incoming SOAP report:
             #
-            #   class ConsumerMdib:
-            #       sequence_or_instance_id_changed_event = ObservableProperty()
-            #       metrics_by_handle                     = ObservableProperty()
-            #       alert_by_handle                       = ObservableProperty()
-            #       ...
-            #
-            # Дескриптор перехватывает операцию присваивания (=) и при каждом
-            # изменении значения автоматически вызывает всех зарегистрированных
-            # подписчиков. Внутри это выглядит примерно так:
-            #
-            #   class ObservableProperty:
-            #       def __set__(self, obj, value):
-            #           obj._storage[self.name] = value       # сохраняем значение
-            #           for cb in obj._subscribers[self.name]: # уведомляем всех
-            #               cb(value)
-            #
-            # КТО ДЕЛАЕТ ПРИСВАИВАНИЕ:
-            # sdc11073, когда получает входящий SOAP-репорт от устройства:
-            #
-            #   # Внутри ConsumerMdib (упрощённо):
             #   def _on_episodic_metric_report(self, report):
             #       states = {s.DescriptorHandle: s for s in report.states}
-            #       self.metrics_by_handle = states   # ← ObservableProperty срабатывает здесь
-            #       # → все подписанные callback'и вызываются автоматически
+            #       self.metrics_by_handle = states   # <- ObservableProperty fires
+            #       # -> all subscribed callbacks are invoked automatically
             #
-            # КАК ПОДПИСАТЬСЯ — функция observableproperties.bind():
-            #   observableproperties.bind(obj, имя_поля=callback)
-            #   Эквивалентно: obj._subscribers['имя_поля'].append(callback)
+            # Subscribe via:  observableproperties.bind(obj, field_name=callback)
             #
-            # ВАЖНО — НЕ ВСЕ ПОЛЯ ConsumerMdib являются ObservableProperty.
-            # Список ObservableProperty в ConsumerMdib (можно привязать через bind()):
-            #   ✓ sequence_or_instance_id_changed_event — перезапуск/смена сессии
-            #   ✓ metrics_by_handle     — EpisodicMetricReport
-            #   ✓ alert_by_handle       — EpisodicAlertReport
-            #   ✓ operation_by_handle   — EpisodicOperationalStateReport
-            #   ✓ context_by_handle     — EpisodicContextReport
-            #   ✓ component_by_handle   — EpisodicComponentReport
-            #   ✓ waveform_by_handle    — WaveformStream
-            #   ✓ description_modifications — DescriptionModificationReport
+            # Observable fields in ConsumerMdib:
+            #   sequence_or_instance_id_changed_event -- device restart / session change
+            #   metrics_by_handle     -- EpisodicMetricReport
+            #   alert_by_handle       -- EpisodicAlertReport
+            #   operation_by_handle   -- EpisodicOperationalStateReport
+            #   context_by_handle     -- EpisodicContextReport
+            #   component_by_handle   -- EpisodicComponentReport
+            #   waveform_by_handle    -- WaveformStream
+            #   description_modifications -- DescriptionModificationReport
             #
-            # Обычные атрибуты (bind() к ним вызовет ошибку):
-            #   ✗ mdib_version  — просто int, обновляется внутри при каждом репорте,
-            #                     но НЕ через ObservableProperty → нельзя подписаться.
-            #
-            # ─────────────────────────────────────────────────────────────────
-            # ПОЧЕМУ НЕТ ПЕРИОДИЧЕСКОЙ ПРОВЕРКИ mdib_version (R1030/R1031):
-            # ─────────────────────────────────────────────────────────────────
-            # SDC работает поверх TCP. TCP гарантирует доставку и порядок байт —
-            # потеря отдельного SOAP-репорта на транспортном уровне невозможна.
-            # sdc11073 дополнительно валидирует MdibVersion внутри диспетчера
-            # входящих сообщений (ConsumerMdib._on_episodic_report).
-            #
-            # Периодическое сравнение mdib_version раз в 5 секунд (polling) является
-            # архитектурно неверным подходом для R1030/R1031: за один интервал
-            # легитимно приходит N репортов → gap = N → ложная тревога.
-            #
-            # Правильный детектор смены сессии — event-driven через
-            # sequence_or_instance_id_changed_event, что и подключается ниже.
-            # Полноценная поимплементация R1030 per-report требует перехвата
-            # заголовков SOAP (MdibVersion из SOAP Header) — за рамками текущей
-            # архитектуры, sdc11073 не предоставляет эти данные в публичном API.
+            # WHY we do NOT poll mdib_version for R1030/R1031:
+            # SDC runs over TCP which guarantees delivery and ordering.
+            # sdc11073 also validates MdibVersion internally.
+            # Polling once per 5 seconds is architecturally wrong: N legitimate
+            # reports arrive per interval -> gap = N -> false alarm.
+            # Event-driven detection via sequence_or_instance_id_changed_event
+            # (subscribed below) is the correct approach.
             observableproperties.bind(
                 self.mdib,
                 sequence_or_instance_id_changed_event=self._on_sequence_id_changed
             )
 
             # ------------------------------------------------------------------
-            # ШАГ 3: Подписка на push-уведомления через observableproperties
+            # STEP 3: Subscribe to metric and alert push notifications
             # ------------------------------------------------------------------
-            # Используем тот же механизм ObservableProperty (см. описание выше в ШАГ 2b).
-            #
-            # Поток данных для metrics_by_handle:
-            #   Устройство (сеть)
-            #     ↓  SOAP EpisodicMetricReport
-            #   sdc11073 внутренний поток уведомлений
-            #     ↓  ConsumerMdib._on_episodic_metric_report()
-            #     ↓  self.metrics_by_handle = { handle: MetricState }
-            #   ObservableProperty.__set__() → вызывает подписчиков
-            #     ↓
-            #   on_metric_update(metrics_by_handle)  ← наш callback
-            #
-            # Аналогично для alert_by_handle — только триггером служит EpisodicAlertReport.
-            #
-            # Оба callback'а активны в ОБОИХ режимах:
-            #   'icu' — вызывают scheduleUpdate() для обновления Qt/QML UI (rate-limited)
-            #   'op'  — пишут события в OperationLogger (тревоги сразу, метрики с троттлингом)
             observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
             observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
 
             self.logger.info("Connection established. Monitoring...")
 
             # ------------------------------------------------------------------
-            # ШАГ 3b: Запись PatientContext в устройство [только 'op']
+            # STEP 3b: Ensemble context binding via SmartAlertAggregator
             # ------------------------------------------------------------------
-            # В 'op'-режиме FHIR-данные уже загружены в self.patient_context при
-            # создании воркера (DeviceHandler.__init__ → manager.get_patient_context_data()).
-            # Отправляем их немедленно после init_mdib(), не дожидаясь формирования ансамбля.
-            #
-            # Зачем это нужно, если apply_ensemble_context() тоже отправит Patient+Workflow?
-            # Потому что ансамбль формируется через ~10 секунд (asyncio.sleep(10) в
-            # _ensemble_formation_task) и требует подтверждения пользователя (y/n).
-            # apply_patient_to_mdib() гарантирует, что данные пациента попадут в устройство
-            # как можно раньше — независимо от того, будет ли ансамбль создан вообще.
-            #
-            # При последующем вызове apply_ensemble_context() данные будут перезаписаны —
-            # это корректно, т.к. SetContextState идемпотентен (повторная запись тех же
-            # данных не создаёт дублирования в MDIB провайдера).
+            # IMPORTANT: called OUTSIDE any with self.data_lock: block.
+            # evaluate_and_bind_device() acquires data_lock internally.
+            # threading.Lock is NOT reentrant -- calling it while already holding
+            # the lock would cause an immediate deadlock.
+            aggregator = getattr(self.manager, 'aggregator', None)
+            if aggregator is not None:
+                self.logger.debug('[Aggregator] Calling evaluate_and_bind_device...')
+                try:
+                    aggregator.evaluate_and_bind_device(self)
+                except Exception as _agg_err:
+                    self.logger.error(
+                        f'[Aggregator] evaluate_and_bind_device raised an unexpected '
+                        f'exception -- ensemble binding skipped: {_agg_err}',
+                        exc_info=True,
+                    )
+
             # ------------------------------------------------------------------
-            # ШАГ 4: Создание Qt-объекта и его передача в UI-поток
+            # STEP 4: Create Qt object and move it to the UI thread
             # ------------------------------------------------------------------
             self.qtDeviceHandler = QtDeviceHandler(self)
 
@@ -699,69 +652,67 @@ class DeviceHandler(threading.Thread):
             self.manager.deviceConnected.emit(self.qtDeviceHandler)
 
             # ------------------------------------------------------------------
-            # ШАГ 5: Основной цикл мониторинга с механизмом T_fallback (IHE SDPi)
+            # STEP 5: Main monitoring loop with T_fallback (IHE SDPi)
             # ------------------------------------------------------------------
-            # T_fallback — требование стандарта IHE SDPi: потребитель должен
-            # обнаружить разрыв соединения не позднее чем через T_fallback секунд
-            # после последнего успешного обмена данными.
-            # Реализация: активный пинг (get_context_states) каждые SLEEP_INTERVAL секунд.
-            # Если подряд N пингов упали — считаем соединение потерянным.
+            # T_fallback: the consumer must detect a connection loss within
+            # T_fallback seconds of the last successful data exchange.
+            # Implementation: active ping (GetContextStates) every SLEEP_INTERVAL s.
+            # If N consecutive pings fail -> declare the connection lost.
 
-            SLEEP_INTERVAL = 5.0        # T_keepalive: интервал между пингами (секунды)
-            T_FALLBACK = 15.0           # Максимальное время до объявления разрыва (секунды)
-            MAX_MISSED = int(T_FALLBACK / SLEEP_INTERVAL)  # = 3 пропущенных интервала
+            SLEEP_INTERVAL = 5.0        # T_keepalive: ping interval (seconds)
+            T_FALLBACK = 15.0           # Max time before declaring disconnect (seconds)
+            MAX_MISSED = int(T_FALLBACK / SLEEP_INTERVAL)  # = 3 missed intervals
 
-            missed_heartbeats = 0  # Счётчик последовательных неудачных пингов
+            missed_heartbeats = 0  # consecutive failed ping counter
 
             while self.running:
-                # Проверяем флаг is_connected от sdc11073 (реагирует на TCP-разрыв)
+                # Check sdc11073's is_connected flag (reacts to TCP disconnect)
                 if not self.consumer.is_connected:
                     self.logger.warning("Connection lost reported by SDC stack.")
                     self.error_occurred = True
                     break
 
-                # Запускаем обновление UI в главном потоке
+                # Trigger a UI refresh in the main thread
                 if self.qtDeviceHandler:
                     self.qtDeviceHandler.scheduleUpdate()
 
-                # Активный пинг: пытаемся сделать лёгкий сетевой запрос.
-                # get_context_states() — один из самых лёгких запросов к устройству.
-                # ВАЖНО: get_context_states() — синхронный блокирующий SOAP-вызов.
-                # asyncio.to_thread() выполняет его в пуле потоков, освобождая event loop.
-                # Это гарантирует, что входящие WS-Eventing уведомления (тревоги, метрики)
-                # продолжают обрабатываться, даже если устройство отвечает с задержкой.
+                # Active ping: attempt a lightweight network request.
+                # GetContextStates is one of the lightest requests available.
+                # asyncio.to_thread() runs it in the thread pool so the event loop
+                # is not blocked, allowing incoming WS-Eventing notifications
+                # (alarms, metrics) to continue processing even if the device is slow.
                 try:
                     if self.consumer and self.consumer.is_connected:
                         if self.consumer.context_service_client:
                             await asyncio.to_thread(
                                 self.consumer.context_service_client.get_context_states
                             )
-                            # Пинг успешен — контексты доступны
+                            # Ping succeeded -- context queries are allowed
                             if not getattr(self, '_ctx_ping_ok_logged', False):
                                 self.logger.info(
-                                    '[DIAG] GetContextStates ping: SUCCESS — '
+                                    '[DIAG] GetContextStates ping: SUCCESS -- '
                                     'device allows context queries without authorization.'
                                 )
                                 self._ctx_ping_ok_logged = True
                         else:
-                            # ContextService вообще не объявлен устройством
+                            # ContextService not advertised by the device
                             if not getattr(self, '_no_ctx_svc_logged', False):
                                 self.logger.warning(
-                                    '[DIAG] No context_service_client — '
+                                    '[DIAG] No context_service_client -- '
                                     'device did not advertise ContextService in metadata.'
                                 )
                                 self._no_ctx_svc_logged = True
-                    missed_heartbeats = 0  # Пинг успешен — сбрасываем счётчик
+                    missed_heartbeats = 0  # ping succeeded -- reset counter
 
                 except HTTPReturnCodeError as e:
-                    # HTTP 4xx означает, что TCP-соединение живо — провайдер ответил,
-                    # но отклонил запрос (например, HTTP 400 "unauthorized participant"
-                    # от sdcX при --no_tls).  Это НЕ разрыв соединения — сбрасываем счётчик.
+                    # HTTP 4xx means TCP connection is alive -- provider replied but
+                    # rejected the request (e.g. HTTP 400 "unauthorized participant"
+                    # from sdcX with --no_tls). This is NOT a disconnect -- reset counter.
                     missed_heartbeats = 0
-                    # Логируем один раз, чтобы не засорять вывод.
+                    # Log once to avoid console spam.
                     if not getattr(self, '_auth_warn_logged', False):
                         self.logger.warning(
-                            f'[DIAG] Ping: provider returned HTTP {e.status} ({e.reason}) — '
+                            f'[DIAG] Ping: provider returned HTTP {e.status} ({e.reason}) -- '
                             f'connection alive but GetContextStates is blocked '
                             f'(unauthorized). Context data came via GetMdib only. '
                             f'Suppressing further warnings.'
@@ -771,33 +722,32 @@ class DeviceHandler(threading.Thread):
                 except Exception as e:
                     missed_heartbeats += 1
                     self.logger.warning(f"Ping failed ({missed_heartbeats}/{MAX_MISSED}): {e}")
-                    # Проверяем, превышен ли порог T_fallback
+                    # Check whether T_fallback threshold has been exceeded
                     if missed_heartbeats * SLEEP_INTERVAL >= T_FALLBACK:
                         self.logger.error("T_fallback exceeded. Disconnecting.")
                         self.error_occurred = True
-                        break  # Выходим из цикла → поток завершится → Manager удалит устройство
+                        break  # exit loop -> thread finishes -> Manager removes device
 
-                # Ждём до следующей итерации.
-                # await здесь критически важен: он отдаёт управление event loop'у,
-                # позволяя обрабатывать другие async-задачи (например, входящие уведомления).
+                # Yield control back to the event loop, allowing other async tasks
+                # (e.g. incoming notifications) to be processed.
                 await asyncio.sleep(SLEEP_INTERVAL)
 
         except Exception as e:
-            # Критическая ошибка на этапе подключения или инициализации.
+            # Critical error during connection or initialisation phase.
             self.logger.error(f"Critical Error ({type(e).__name__}): {e}", exc_info=True)
             self.error_occurred = True
         finally:
-            # DEV-49: Штатное завершение сессии мониторинга.
-            # _graceful_shutdown() отправляет Unsubscribe на все активные подписки
-            # с таймаутом 5 секунд, что позволяет прикроватному монитору понять:
-            # Оркестратор завершает работу штатно, а не аварийно.
-            # Без этого шага устройство может активировать fallback-тревогу (60 dBA).
+            # DEV-49: Graceful session termination.
+            # _graceful_shutdown() sends WS-Eventing Unsubscribe on all active
+            # subscriptions with a 5-second timeout. This tells the bedside monitor
+            # that the Orchestrator is shutting down cleanly, not crashing.
+            # Without this the device may activate a fallback alarm (60 dBA).
             if self.consumer:
                 self.logger.info("Stopping consumer resources (DEV-49 graceful)...")
                 try:
                     await self._graceful_shutdown()
                 except Exception as e:
-                    # Крайний случай: форсируем закрытие синхронно
+                    # Last resort: force-close synchronously
                     self.logger.error(f"Graceful shutdown failed ({e}), forcing stop.")
                     try:
                         self.consumer.stop_all()
@@ -805,18 +755,18 @@ class DeviceHandler(threading.Thread):
                         pass
 
     # =========================================================================
-    # Вспомогательный метод: чтение комнаты из LocationContext MDIB
+    # Helper: read device room from MDIB LocationContext
     # =========================================================================
     def _get_device_room(self) -> str:
         """
         Reads the device's room identifier from its MDIB LocationContextState.
 
         Returns:
-            The Room string from LocationDetail (e.g. "ICU-3", "OR-1").
+            The Room string from LocationDetail (e.g. "ICU-3").
             Empty string "" if no LocationContextState is present, or if
             LocationDetail / Room is None.
 
-        Thread safety: MUST be called WITHOUT data_lock held — this method
+        Thread safety: MUST be called WITHOUT data_lock held -- this method
         acquires data_lock internally for the read and releases it immediately.
         The lock is needed because _worker_logic() may run concurrently with
         sdc11073 notification threads that update context_states.
@@ -836,434 +786,191 @@ class DeviceHandler(threading.Thread):
         return ""
 
     # =========================================================================
-    # Вспомогательный метод: построение PatientContextState + WorkflowContextState
+    # Send ensemble UUID to the provider via EnsembleContextState
     # =========================================================================
-    def _build_patient_workflow_states(self) -> list:
+    def apply_ensemble_context(self, ensemble_uuid: str) -> bool:
         """
-        Builds a list of proposed BICEPS context states from self.patient_context.
+        Builds an EnsembleContextState with the given UUID and sends it to the
+        SDC Provider via a SetContextState SOAP call.
 
-        Returns: [PatientContextState, WorkflowContextState?]
-          — PatientContextState is always included if PatientContextDescriptor exists.
-          — WorkflowContextState is included only if WorkflowContextDescriptor exists.
-          — Returns [] if patient_context is empty or no descriptors found.
+        Called from SmartAlertAggregator.evaluate_and_bind_device() once the
+        aggregator has decided which ensemble this device belongs to.
 
-        IMPORTANT: Must be called with self.data_lock HELD and self.mdib ready.
-        Does NOT perform any network calls — only constructs in-memory objects.
-        """
-        ctx = self.patient_context
-        if not ctx:
-            return []
+        On success: stores the UUID in self.ensemble_uuid.
 
-        states = []
+        Returns:
+          True  -- EnsembleContext successfully applied on the provider.
+          False -- operation skipped (no descriptor, no connection, error).
 
-        # ── PatientContextState ──────────────────────────────────────────────
-        pat_descriptors = self.mdib.descriptions.NODETYPE.get(pm.PatientContextDescriptor, [])
-        if pat_descriptors:
-            pat_descriptor = pat_descriptors[0]
-            existing_pat = self.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
-            if existing_pat:
-                # "Update" strategy: deep-copy the existing state so the Provider
-                # keeps its own handle/version fields intact and only receives our
-                # changes. mk_copy() is a BICEPS deep-copy — safe to modify freely.
-                proposed_pat = existing_pat[0].mk_copy()
-            else:
-                # "Create" strategy: no state exists yet on the Provider.
-                # mk_proposed_context_object() creates a blank proposed state
-                # with the correct DescriptorHandle pre-filled by the library.
-                proposed_pat = self.consumer.context_service_client.mk_proposed_context_object(
-                    pat_descriptor.Handle
-                )
-
-            # ASSOCIATED = context is active and attached to this patient.
-            # Other values: DISASSOCIATED (released), PRE_ASSOCIATED (pending), NO_ASSOCIATION.
-            proposed_pat.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
-            proposed_pat.CoreData.Givenname  = ctx.get('given_name')  or None
-            proposed_pat.CoreData.Familyname = ctx.get('family_name') or None
-
-            # Weight / Height: BICEPS requires Decimal for precise numeric values.
-            # split()[0] strips the unit suffix if the value came as "70.5 kg" (string).
-            weight_num = ctx.get('weight_value')
-            if weight_num is not None:
-                w_str = str(weight_num).split()[0] if isinstance(weight_num, str) else str(weight_num)
-                proposed_pat.CoreData.Weight = Measurement(
-                    Decimal(w_str), CodedValue(ctx.get('weight_unit') or 'kg')
-                )
-            else:
-                proposed_pat.CoreData.Weight = None
-
-            height_num = ctx.get('height_value')
-            if height_num is not None:
-                h_str = str(height_num).split()[0] if isinstance(height_num, str) else str(height_num)
-                proposed_pat.CoreData.Height = Measurement(
-                    Decimal(h_str), CodedValue(ctx.get('height_unit') or 'cm')
-                )
-            else:
-                proposed_pat.CoreData.Height = None
-
-            states.append(proposed_pat)
-
-        # ── WorkflowContextState ─────────────────────────────────────────────
-        # WorkflowContextDescriptor is optional — not all SDC devices expose it.
-        # If absent, we skip silently (no error) since Patient+Ensemble are enough.
-        wf_descriptors = self.mdib.descriptions.NODETYPE.get(pm.WorkflowContextDescriptor, [])
-        if wf_descriptors:
-            wf_descriptor = wf_descriptors[0]
-            existing_wf = self.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
-            if existing_wf:
-                proposed_wf = existing_wf[0].mk_copy()
-            else:
-                proposed_wf = self.consumer.context_service_client.mk_proposed_context_object(
-                    wf_descriptor.Handle
-                )
-
-            proposed_wf.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
-
-            # WorkflowDetail can be None on a freshly created proposed state —
-            # initialise it before accessing its sub-fields.
-            if not hasattr(proposed_wf, 'WorkflowDetail') or proposed_wf.WorkflowDetail is None:
-                proposed_wf.WorkflowDetail = pm_types.WorkflowDetail()
-
-            # FHIR Patient ID → BICEPS InstanceIdentifier.
-            # Root = our system namespace ("Hospital_FHIR"),
-            # Extension = the patient's ID within that namespace.
-            patient_id = ctx.get('patient_id')
-            if patient_id:
-                patient_data = pm_types.PatientDemographicsCoreData()
-                identifier = pm_types.InstanceIdentifier(
-                    root='Hospital_FHIR',
-                    extension_string=str(patient_id)
-                )
-                patient_data.Identification.append(identifier)
-                proposed_wf.WorkflowDetail.Patient = patient_data
-
-            # DangerCode carries active diagnoses as CodedValue entries.
-            # IMPORTANT: clear() before re-filling to prevent duplicates when this
-            # method is called multiple times for the same device (e.g. apply_patient
-            # followed by apply_ensemble both call _build_patient_workflow_states).
-            conditions = ctx.get('conditions', [])
-            if conditions:
-                if not proposed_wf.WorkflowDetail.DangerCode:
-                    proposed_wf.WorkflowDetail.DangerCode = []
-                proposed_wf.WorkflowDetail.DangerCode.clear()
-                for condition in conditions:
-                    proposed_wf.WorkflowDetail.DangerCode.append(pm_types.CodedValue(str(condition)))
-
-            states.append(proposed_wf)
-
-        return states
-
-    # =========================================================================
-    # Запись данных пациента (из FHIR) в PatientContext устройства
-    # =========================================================================
-    def apply_patient_to_mdib(self):
-        """
-        Sends FHIR patient data into the provider's PatientContextState + WorkflowContextState
-        via a SetContextState SOAP call.
-
-        Uses _build_patient_workflow_states() to avoid duplicating the state-building logic
-        that is also used in apply_ensemble_context().
-
-        TWO-PHASE PATTERN (thread-safe network call):
-          Phase 1 (under data_lock):  read MDIB, build proposed states.
+        TWO-PHASE PATTERN (thread-safe):
+          Phase 1 (under data_lock):  read MDIB, build proposed state.
           Phase 2 (lock released):    send SetContextState over the network.
-
-        The operation handle is selected by matching OperationTarget to the
-        PatientContextDescriptor handle — same approach as apply_ensemble_context().
         """
-        if not self.patient_context:
-            self.logger.debug("No patient context data, skipping apply_patient_to_mdib.")
-            return
-        if self.mode == "icu":
-            return
+        from sdc11073.xml_types import pm_qnames as _pm
+        from sdc11073.xml_types import pm_types as _pm_types
 
-        operation_handle = None
-        states_to_send   = []
+        operation_handle: str | None = None
+        proposed_ens = None
 
         # ------------------------------------------------------------------
-        # Phase 1: Build states under data_lock
+        # Phase 1: Build EnsembleContextState under data_lock
         # ------------------------------------------------------------------
         try:
             with self.data_lock:
-                if not self.mdib:
-                    self.logger.warning("MDIB not ready, skipping apply_patient_to_mdib.")
-                    return
+                if not self.mdib or not self.consumer:
+                    self.logger.warning('apply_ensemble_context: MDIB or consumer not ready.')
+                    return False
 
-                # Find PatientContextDescriptor to locate the correct operation
-                pat_descriptors = self.mdib.descriptions.NODETYPE.get(pm.PatientContextDescriptor, [])
-                if not pat_descriptors:
-                    self.logger.warning("No PatientContextDescriptor found.")
-                    return
-                pat_descriptor = pat_descriptors[0]
-
-                # Find SetContextState operation whose OperationTarget = PatientContextDescriptor.
-                #
-                # WHY filter by OperationTarget instead of taking set_ctx_ops[0]?
-                # A device may expose multiple SetContextState operations, each targeting
-                # a different context type (Patient, Ensemble, Location…).  Using the wrong
-                # handle would cause the Provider to reject the request with OperationNotAllowed.
-                # Filtering by OperationTarget == PatientContextDescriptor.Handle guarantees
-                # we call the correct entry point.
-                set_ctx_ops = self.mdib.descriptions.NODETYPE.get(pm.SetContextStateOperationDescriptor, [])
-                for op in set_ctx_ops:
-                    if op.OperationTarget == pat_descriptor.Handle:
-                        operation_handle = op.Handle
-                        break
-                # Fallback: some minimal SDC implementations expose only ONE generic
-                # SetContextState operation without OperationTarget specificity.
-                # Accept it rather than silently failing.
-                if not operation_handle and set_ctx_ops:
-                    operation_handle = set_ctx_ops[0].Handle
-
-                if not operation_handle:
-                    self.logger.warning("No SetContextStateOperation found.")
-                    return
-
-                states_to_send = self._build_patient_workflow_states()
-
-        except Exception as e:
-            self.logger.error(f"Failed to build patient context states: {e}")
-            return
-
-        if not states_to_send:
-            self.logger.warning("No states to send (no descriptors on device).")
-            return
-
-        # ------------------------------------------------------------------
-        # Phase 2: Send SetContextState (lock released)
-        # ------------------------------------------------------------------
-        try:
-            if self.consumer.context_service_client:
-                self.logger.info(f"Sending PatientContext+Workflow (op='{operation_handle}')...")
-                self.consumer.context_service_client.set_context_state(
-                    operation_handle=operation_handle,
-                    proposed_context_states=states_to_send
+                # Locate EnsembleContextDescriptor -- indicates device supports ensemble membership
+                ens_descriptors = self.mdib.descriptions.NODETYPE.get(
+                    _pm.EnsembleContextDescriptor, []
                 )
-                ctx = self.patient_context
-                self.logger.info(
-                    f"PatientContext applied: {ctx.get('given_name')} {ctx.get('family_name')}"
-                )
-                # Log to operation report if logger is active
-                logger = getattr(self.manager, 'operation_logger', None)
-                if logger:
-                    logger.log_context_applied(self.epr, 'PatientContext + WorkflowContext')
-            else:
-                self.logger.warning("No context_service_client available.")
-        except Exception as e:
-            self.logger.error(f"Failed to apply patient context: {e}")
-
-    # =========================================================================
-    # Отправка UUID ансамбля + полного контекста пациента одним батчем
-    # =========================================================================
-    def apply_ensemble_context(self, ensemble_uuid: str):
-        """
-        Sends EnsembleContextState (with the ensemble UUID) plus PatientContextState
-        and WorkflowContextState — all in a single atomic SetContextState request.
-
-        Patient/Workflow states are built via _build_patient_workflow_states() to
-        avoid duplicating the ~60-line construction logic from apply_patient_to_mdib().
-
-        MODE 'icu': returns immediately — no FHIR data, no ensemble in ICU mode.
-
-        TWO-PHASE PATTERN: same as apply_patient_to_mdib() — Phase 1 under lock,
-        Phase 2 (network call) with lock released.
-        """
-        if self.mode == "icu":
-            return
-        try:
-            # pm and pm_types are already imported at module level, but we re-import
-            # locally here so the names shadow the module-level ones cleanly within
-            # this method's scope.  This also makes the dependency explicit if this
-            # method is ever extracted or tested in isolation.
-            from sdc11073.xml_types import pm_qnames as pm
-            from sdc11073.xml_types import pm_types
-
-            operation_handle = None
-            states_to_send   = []
-
-            # ------------------------------------------------------------------
-            # Phase 1: Build all context states under data_lock
-            # ------------------------------------------------------------------
-            with self.data_lock:
-                if not self.mdib:
-                    return
-
-                # Step 1: EnsembleContextDescriptor
-                # Presence of EnsembleContextDescriptor indicates the device supports
-                # BICEPS ensemble membership.  If absent, skip silently.
-                ens_descriptors = self.mdib.descriptions.NODETYPE.get(pm.EnsembleContextDescriptor, [])
                 if not ens_descriptors:
-                    self.logger.warning("No EnsembleContextDescriptor found.")
-                    return
+                    self.logger.warning(
+                        'apply_ensemble_context: no EnsembleContextDescriptor in MDIB -- '
+                        'device does not support ensemble binding.'
+                    )
+                    return False
                 descriptor = ens_descriptors[0]
 
-                # Step 2: Operation targeting EnsembleContextDescriptor.
-                # Same OperationTarget-based filter as apply_patient_to_mdib() —
-                # see that method for the detailed rationale.
-                set_ctx_ops = self.mdib.descriptions.NODETYPE.get(pm.SetContextStateOperationDescriptor, [])
+                # Find the SetContextState operation targeting EnsembleContextDescriptor.
+                # Filtering by OperationTarget is essential: a device may expose several
+                # SetContextState operations (one per context type). Using the wrong handle
+                # causes the provider to respond with OperationNotAllowed.
+                set_ctx_ops = self.mdib.descriptions.NODETYPE.get(
+                    _pm.SetContextStateOperationDescriptor, []
+                )
                 for op in set_ctx_ops:
                     if op.OperationTarget == descriptor.Handle:
                         operation_handle = op.Handle
                         break
-                if not operation_handle:
-                    self.logger.warning("No SetContextState operation for EnsembleContext.")
-                    return
 
-                # Step 3: EnsembleContextState — update or create
-                existing_ens = self.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+                if not operation_handle:
+                    self.logger.warning(
+                        'apply_ensemble_context: no SetContextState operation '
+                        'targeting EnsembleContextDescriptor found.'
+                    )
+                    return False
+
+                # Build proposed EnsembleContextState -- update existing or create new
+                existing_ens = self.mdib.context_states.NODETYPE.get(
+                    _pm.EnsembleContextState, []
+                )
                 if existing_ens:
                     proposed_ens = existing_ens[0].mk_copy()
                     # Clear stale identifiers to avoid accumulating duplicate UUIDs
-                    # if apply_ensemble_context() is called more than once per session.
-                    if hasattr(proposed_ens, 'Identification') and proposed_ens.Identification is not None:
+                    # if this method is called more than once for the same device.
+                    if getattr(proposed_ens, 'Identification', None) is not None:
                         proposed_ens.Identification.clear()
                 else:
                     proposed_ens = self.consumer.context_service_client.mk_proposed_context_object(
                         descriptor.Handle
                     )
 
-                proposed_ens.ContextAssociation = pm_types.ContextAssociation.ASSOCIATED
+                proposed_ens.ContextAssociation = _pm_types.ContextAssociation.ASSOCIATED
 
-                # Ensemble InstanceIdentifier structure:
-                #   root      = fixed UUID of our Orchestrator system (stable across sessions).
-                #               Any SDC participant can use this to identify our system as the
-                #               ensemble coordinator.
-                #   extension = session-specific ensemble UUID (generated once per OR session).
-                #               Allows matching devices to a particular surgical session.
-                identifier = pm_types.InstanceIdentifier(
+                # InstanceIdentifier carries two pieces of information:
+                #   root      -- fixed UUID identifying this Orchestrator system.
+                #   extension -- session-specific ensemble UUID from the aggregator.
+                identifier = _pm_types.InstanceIdentifier(
                     root='bce837e3-0c46-4e52-af32-15bb36cfd746',
-                    extension_string=ensemble_uuid
+                    extension_string=ensemble_uuid,
                 )
-                # IdentifierName: human-readable label shown on the device's own display
-                # (e.g. on a Dräger screen, if the device renders EnsembleContext names).
-                identifier.IdentifierName = [pm_types.LocalizedText(ensemble_uuid)]
-                if not hasattr(proposed_ens, 'Identification') or proposed_ens.Identification is None:
+                identifier.IdentifierName = [_pm_types.LocalizedText(ensemble_uuid)]
+
+                if getattr(proposed_ens, 'Identification', None) is None:
                     proposed_ens.Identification = []
                 proposed_ens.Identification.append(identifier)
 
-                states_to_send = [proposed_ens]
+        except Exception as exc:
+            self.logger.error(f'apply_ensemble_context: failed to build state -- {exc}')
+            return False
 
-                # Step 4: Append Patient + Workflow states — same batch, atomic delivery.
-                # Sending all three context types in ONE SetContextState request means the
-                # Provider applies them atomically: either all succeed or all fail.
-                # This prevents a race condition where Ensemble is written but PatientContext
-                # is not yet present (which would happen with two separate requests).
-                # _build_patient_workflow_states() is the shared builder — it keeps the
-                # state construction logic in exactly one place.
-                if self.patient_context:
-                    states_to_send.extend(self._build_patient_workflow_states())
+        # ------------------------------------------------------------------
+        # Phase 2: Send SetContextState (lock released -- network call)
+        # ------------------------------------------------------------------
+        try:
+            if not self.consumer.context_service_client:
+                self.logger.warning('apply_ensemble_context: context_service_client not available.')
+                return False
 
-            # ------------------------------------------------------------------
-            # Phase 2: Single atomic network request (lock released)
-            # ------------------------------------------------------------------
-            if self.consumer.context_service_client:
-                count = len(states_to_send)
-                self.logger.info(
-                    f"Sending {count} context states (Ensemble+Patient+Workflow) in one batch..."
-                )
-                self.consumer.context_service_client.set_context_state(
-                    operation_handle=operation_handle,
-                    proposed_context_states=states_to_send
-                )
-                self.logger.info("All contexts applied successfully.")
-                # Log to operation report
-                logger = getattr(self.manager, 'operation_logger', None)
-                if logger:
-                    logger.log_context_applied(self.epr, 'EnsembleContext + Patient + Workflow')
-            else:
-                self.logger.warning("No context_service_client available.")
+            self.logger.info(
+                f'Sending EnsembleContext {ensemble_uuid[:8]}... '
+                f'to provider (op={operation_handle}).'
+            )
+            self.consumer.context_service_client.set_context_state(
+                operation_handle=operation_handle,
+                proposed_context_states=[proposed_ens],
+            )
 
-        except Exception as e:
-            self.logger.error(f"Failed to apply ensemble contexts: {e}")
+            # Store locally -- DeviceHandler now knows its ensemble membership
+            self.ensemble_uuid = ensemble_uuid
+            self.logger.info(
+                f'EnsembleContext applied successfully. '
+                f'Device {self.epr[-12:]} bound to ensemble {ensemble_uuid[:8]}...'
+            )
+            return True
+
+        except Exception as exc:
+            self.logger.error(f'apply_ensemble_context: SOAP call failed -- {exc}')
+            return False
 
     # =========================================================================
-    # Callback для обновлений метрик
+    # Callback: metric updates
     # =========================================================================
     def on_metric_update(self, metrics_by_handle):
         """
         Called by sdc11073 from its notification thread on EpisodicMetricReport.
-
-        'icu' mode: triggers scheduleUpdate() for Qt/QML refresh (rate-limited to 1 Hz
-                    to avoid flooding the UI thread with waveform data).
-
-        'op' mode:  writes metric snapshots to OperationLogger (throttled to once per
-                    5 seconds per device to keep the log readable).
+        Triggers a rate-limited (1 Hz) UI refresh via QtDeviceHandler.scheduleUpdate().
         """
-        if self.mode == "icu":
-            if not self.qtDeviceHandler:
-                return
-            now = time.monotonic()
-            if now - self._last_ui_update_ts >= 1.0:
-                self._last_ui_update_ts = now
-                self.qtDeviceHandler.scheduleUpdate()
-
-        elif self.mode == "op":
-            logger = getattr(self.manager, 'operation_logger', None)
-            if not logger:
-                return
-            now = time.monotonic()
-            # Throttle: write one snapshot per 5 seconds per device
-            if now - self._last_ui_update_ts < 5.0:
-                return
+        if not self.qtDeviceHandler:
+            return
+        now = time.monotonic()
+        if now - self._last_ui_update_ts >= 1.0:
             self._last_ui_update_ts = now
-            for handle, state in metrics_by_handle.items():
-                val = getattr(state.MetricValue, 'Value', None) if state.MetricValue else None
-                if val is not None:
-                    logger.log_metric(self.epr, handle, str(val))
+            self.qtDeviceHandler.scheduleUpdate()
 
     # =========================================================================
-    # Callback для обновлений тревог
+    # Callback: alert updates
     # =========================================================================
     def on_alert_update(self, alert_by_handle):
         """
         Called by sdc11073 from its notification thread on EpisodicAlertReport.
-
-        'icu' mode: triggers scheduleUpdate() immediately (0.2 s anti-spam cooldown)
-                    because alarm state changes must reach UI without noticeable delay.
-
-        'op' mode:  logs every alarm state transition to OperationLogger immediately
-                    (no throttle — alarms are clinically significant events).
+        Triggers an immediate UI refresh (0.2 s anti-spam cooldown) because alarm
+        state changes must reach the UI without noticeable delay.
         """
-        if self.mode == "icu":
-            if not self.qtDeviceHandler:
-                return
-            now = time.monotonic()
-            if now - self._last_ui_update_ts >= 0.2:
-                self._last_ui_update_ts = now
-                self.qtDeviceHandler.scheduleUpdate()
-
-        elif self.mode == "op":
-            logger = getattr(self.manager, 'operation_logger', None)
-            if not logger:
-                return
-            for handle, state in alert_by_handle.items():
-                presence = str(getattr(state, 'Presence', 'Unknown'))
-                logger.log_alarm(self.epr, handle, presence)
+        if not self.qtDeviceHandler:
+            return
+        now = time.monotonic()
+        if now - self._last_ui_update_ts >= 0.2:
+            self._last_ui_update_ts = now
+            self.qtDeviceHandler.scheduleUpdate()
 
     # =========================================================================
-    # DEV-31: Удалённое квитирование (acknowledgement) тревоги
+    # DEV-31: Remote alarm acknowledgement
     # =========================================================================
     def acknowledge_alarm(self, operation_handle: str, alert_signal_handle: str):
         """
-        Квитирует активную тревогу сигнала на устройстве (DEV-31 из IHE SDPi).
+        Acknowledges an active alarm signal on the device (DEV-31 from IHE SDPi).
 
-        Квитирование переводит AlertSignalPresence из On → Ack:
-          On  — тревога активна, звук и индикация включены
-          Ack — звук подавлен (пользователь принял к сведению), индикация остаётся
-          Latch — параметр вернулся в норму, но требуется ручной сброс
-          Off — тревога неактивна
+        Acknowledgement transitions AlertSignalPresence from On -> Ack:
+          On    -- alarm active, audio and visual indication enabled
+          Ack   -- audio suppressed (user acknowledged), visual indication remains
+          Latch -- parameter returned to normal but manual reset required
+          Off   -- alarm inactive
 
-        Параметры:
-          operation_handle      — handle операции SetAlertState (из MDIB устройства)
-          alert_signal_handle   — handle конкретного AlertSignalState для квитирования
+        Parameters:
+          operation_handle    -- handle of the SetAlertState operation (from MDIB)
+          alert_signal_handle -- handle of the specific AlertSignalState to acknowledge
 
-        ДВУХФАЗОВАЯ СТРУКТУРА:
-          Phase 1 (под data_lock): читаем стейт из MDIB и готовим proposed state.
-          Phase 2 (без лока):      отправляем SetAlertState по сети.
+        TWO-PHASE PATTERN:
+          Phase 1 (under data_lock): read state from MDIB, build proposed state.
+          Phase 2 (lock released):   send SetAlertState over the network.
         """
         proposed_state = None
 
         # ------------------------------------------------------------------
-        # Phase 1: Подготовка proposed state под локом
+        # Phase 1: Prepare proposed state under lock
         # ------------------------------------------------------------------
         try:
             with self.data_lock:
@@ -1274,11 +981,11 @@ class DeviceHandler(threading.Thread):
                     self.logger.warning("acknowledge_alarm: set_service_client not available.")
                     return
 
-                # mk_proposed_state() живёт на mdib.xtra (ConsumerMdibMethods), не на set_service_client.
-                # Создаёт копию текущего стейта с handle alert_signal_handle для изменения.
+                # mk_proposed_state() lives on mdib.xtra (ConsumerMdibMethods).
+                # Creates a copy of the current state for the given handle.
                 proposed_state = self.mdib.xtra.mk_proposed_state(alert_signal_handle)
 
-                # Устанавливаем новое значение Presence = ACK
+                # Set new Presence value = ACK
                 proposed_state.Presence = pm_types.AlertSignalPresence.ACK
 
         except Exception as e:
@@ -1286,93 +993,93 @@ class DeviceHandler(threading.Thread):
             return
 
         # ------------------------------------------------------------------
-        # Phase 2: Сетевой вызов SetAlertState (без data_lock)
+        # Phase 2: Network call SetAlertState (without data_lock)
         # ------------------------------------------------------------------
         try:
-            # set_alert_state() возвращает Future — результат операции на устройстве
+            # set_alert_state() returns a Future -- operation result from the device
             future = self.consumer.set_service_client.set_alert_state(
                 operation_handle,
                 proposed_state
             )
-            # Ждём подтверждения от устройства (таймаут 5 секунд)
+            # Wait for device confirmation (5-second timeout)
             future.result(timeout=5)
             self.logger.info(f"Alarm '{alert_signal_handle}' acknowledged successfully.")
         except Exception as e:
             self.logger.error(f"Failed to acknowledge alarm: {e}")
 
     # =========================================================================
-    # DEV-49: Штатное завершение сессии мониторинга
+    # DEV-49: Graceful monitoring session termination
     # =========================================================================
     async def _graceful_shutdown(self):
         """
-        Реализует транзакцию DEV-49 (IHE SDPi) — штатное завершение мониторинга.
+        Implements DEV-49 (IHE SDPi) -- graceful end of monitoring session.
 
-        Логика:
-          1. Отправляем WS-Eventing Unsubscribe на все активные подписки.
-          2. Ждём подтверждения (timeout 5 секунд).
-          3. Если устройство не отвечает — принудительно закрываем соединение.
+        Logic:
+          1. Send WS-Eventing Unsubscribe on all active subscriptions.
+          2. Wait for confirmation (timeout 5 seconds).
+          3. If device does not respond -- force-close the connection.
 
-        Почему это важно:
-          Если TCP-сокет закрыть без Unsubscribe, прикроватный монитор расценит это
-          как аварийный разрыв и запустит акустическую fallback-тревогу (60 dBA).
-          При штатном Unsubscribe устройство понимает, что наблюдатель ушёл сам,
-          и возвращает ответственность за управление тревогами себе.
+        Why this matters:
+          If a TCP socket is closed without Unsubscribe the bedside monitor
+          treats it as an abnormal disconnect and activates a fallback alarm
+          (60 dBA). A graceful Unsubscribe tells the device the observer left
+          intentionally, and the device resumes its own alarm management.
 
-        asyncio.to_thread() нужен, т.к. stop_all() — синхронный блокирующий вызов:
-          он выполняется в пуле потоков, не блокируя event loop.
+        asyncio.to_thread() is needed because stop_all() is a synchronous
+        blocking call -- it runs in the thread pool so the event loop is free.
         """
         self._intentional_shutdown = True
         try:
-            # Даём stop_all() до 5 секунд на отправку Unsubscribe и получение ответа.
+            # Give stop_all() up to 5 seconds to send Unsubscribe and get a reply.
             await asyncio.wait_for(
                 asyncio.to_thread(self.consumer.stop_all),
                 timeout=5.0
             )
-            self.logger.info("DEV-49: Unsubscribe completed — device notified.")
+            self.logger.info("DEV-49: Unsubscribe completed -- device notified.")
         except asyncio.TimeoutError:
             self.logger.warning("DEV-49: Unsubscribe timed out (5s). Forcing close.")
         except Exception as e:
             self.logger.error(f"DEV-49: Error during graceful shutdown: {e}")
 
     # =========================================================================
-    # SDPi-A R1030/R1031: Детекция перезапуска / смены сессии устройства
+    # SDPi-A R1030/R1031: Device restart / session change detection
     # =========================================================================
     def _on_sequence_id_changed(self, sequence_or_instance_id_changed_event: bool):
         """
-        Callback для observableproperties: срабатывает когда устройство изменяет
-        SequenceId или InstanceId в заголовках SOAP-репортов.
+        ObservableProperty callback: fires when the device changes its
+        SequenceId or InstanceId in SOAP report headers.
 
-        SequenceId/InstanceId меняется при:
-          - Перезапуске устройства (reboot)
-          - Сбросе SDC-сессии (software reset)
-          - Смене активного сетевого интерфейса
+        SequenceId/InstanceId changes on:
+          - Device reboot
+          - SDC session reset (software reset)
+          - Active network interface change
 
-        В любом из этих случаев текущая MDIB-копия устарела:
-        устройство начало новую "жизнь" с новым MDIB.
-        Единственное корректное действие — разорвать соединение и переподключиться,
-        выполнив GetMdib заново для получения актуального состояния всех тревог.
+        In any of these cases the local MDIB copy is stale: the device has
+        started a new "life" with a new MDIB. The only correct action is to
+        disconnect and reconnect, calling GetMdib again to get the current
+        alarm state.
 
-        THREAD SAFETY: вызывается из потока уведомлений sdc11073 (не asyncio loop).
-        Запись bool в self.running/self.error_occurred атомарна благодаря GIL Python.
+        THREAD SAFETY: called from the sdc11073 notification thread (not the
+        asyncio loop). Writing bool to self.running/self.error_occurred is
+        atomic thanks to Python's GIL.
         """
         if not sequence_or_instance_id_changed_event:
-            return  # False-значение — игнорируем (ObservableProperty может сбрасываться)
+            return  # False value -- ignore (ObservableProperty may reset to False)
 
         self.logger.warning(
             "SDPi-A: SequenceId/InstanceId changed! "
-            "Device may have restarted — forcing reconnect to resync MDIB."
+            "Device may have restarted -- forcing reconnect to resync MDIB."
         )
         self.error_occurred = True
-        self.running = False  # Выход из цикла при следующей итерации
-
+        self.running = False  # exit loop on next iteration
 
     # =========================================================================
-    # Сигнал остановки
+    # Stop signal
     # =========================================================================
     def stop(self):
         """
-        Штатная остановка воркера.
-        Устанавливает self.running = False, что приводит к выходу из основного цикла
-        мониторинга при следующей итерации (после текущего asyncio.sleep()).
+        Graceful worker stop.
+        Sets self.running = False, which causes the monitoring loop to exit
+        on its next iteration (after the current asyncio.sleep()).
         """
         self.running = False
