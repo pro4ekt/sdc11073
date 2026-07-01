@@ -629,7 +629,9 @@ class DeviceHandler(threading.Thread):
             if aggregator is not None:
                 self.logger.debug('[Aggregator] Calling evaluate_and_bind_device...')
                 try:
-                    aggregator.evaluate_and_bind_device(self)
+                    # ИСПОЛЬЗУЕМ to_thread, так как внутри работает синхронный requests (FHIR)
+                    # и синхронный SOAP-клиент (apply_ensemble_context)
+                    await asyncio.to_thread(aggregator.evaluate_and_bind_device, self)
                 except Exception as _agg_err:
                     self.logger.error(
                         f'[Aggregator] evaluate_and_bind_device raised an unexpected '
@@ -914,6 +916,167 @@ class DeviceHandler(threading.Thread):
         except Exception as exc:
             self.logger.error(f'apply_ensemble_context: SOAP call failed -- {exc}')
             return False
+
+    # =========================================================================
+    # Apply FHIR patient / clinical context
+    # =========================================================================
+    def apply_fhir_contexts(self, fhir_data) -> None:
+        """
+        Receives enriched FHIR patient data from SmartAlertAggregator and
+        writes DangerCodes into the device's WorkflowContextState via
+        SetContextState SOAP call.
+
+        Called by SmartAlertAggregator.evaluate_and_bind_device() after FHIR
+        data has been fetched (or None if the FHIR server was unreachable).
+
+        TWO-PHASE PATTERN (thread-safe):
+          Phase 1 (under data_lock):  read MDIB, build proposed WorkflowContextState.
+          Phase 2 (lock released):    send SetContextState over the network.
+
+        Parameters:
+          fhir_data -- FHIRPatientData instance, or None on fetch failure.
+        """
+        if fhir_data is None:
+            self.logger.warning(
+                'apply_fhir_contexts: fhir_data is None '
+                '(fetch failed or FHIR server unreachable) -- skipping.'
+            )
+            return
+
+        from sdc11073.xml_types import pm_qnames as _pm
+        from sdc11073.xml_types import pm_types as _pm_types
+
+        # Fetch danger codes from FHIR result
+        raw_danger_codes = fhir_data.get_danger_codes()
+        if not raw_danger_codes:
+            self.logger.info(
+                f'apply_fhir_contexts: FHIR returned no DangerCodes for patient '
+                f'{fhir_data.get_patient_id()!r} -- nothing to write.'
+            )
+            return
+
+        operation_handle: str | None = None
+        proposed_wf = None
+
+        # ------------------------------------------------------------------
+        # Phase 1: Build proposed WorkflowContextState under data_lock
+        # ------------------------------------------------------------------
+        try:
+            with self.data_lock:
+                if not self.mdib or not self.consumer:
+                    self.logger.warning('apply_fhir_contexts: MDIB or consumer not ready.')
+                    return
+
+                # Locate WorkflowContextDescriptor
+                wf_descriptors = self.mdib.descriptions.NODETYPE.get(
+                    _pm.WorkflowContextDescriptor, []
+                )
+                if not wf_descriptors:
+                    self.logger.warning(
+                        'apply_fhir_contexts: no WorkflowContextDescriptor in MDIB -- '
+                        'device does not support WorkflowContext.'
+                    )
+                    return
+                wf_descriptor = wf_descriptors[0]
+
+                # Find a registered SetContextState operation handle.
+                # sdc11073's GenericContextProvider registers handlers for
+                # PatientContext and EnsembleContext ops, but NOT WorkflowContext.
+                # Any registered SetContextState handle accepts any context state
+                # type -- we prefer the patient-context op (opSetPatCtx) since
+                # WorkflowContext is patient-related, falling back to the first
+                # available op.
+                set_ctx_ops = self.mdib.descriptions.NODETYPE.get(
+                    _pm.SetContextStateOperationDescriptor, []
+                )
+                # Preferred: op targeting PatientContextDescriptor (has registered handler)
+                pat_descriptors = self.mdib.descriptions.NODETYPE.get(
+                    _pm.PatientContextDescriptor, []
+                )
+                pat_handle = pat_descriptors[0].Handle if pat_descriptors else None
+                for op in set_ctx_ops:
+                    if pat_handle and op.OperationTarget == pat_handle:
+                        operation_handle = op.Handle
+                        break
+                # Fallback: any SetContextState op
+                if not operation_handle and set_ctx_ops:
+                    operation_handle = set_ctx_ops[0].Handle
+
+                if not operation_handle:
+                    self.logger.warning(
+                        'apply_fhir_contexts: no SetContextState operation found in MDIB.'
+                    )
+                    return
+
+                # Get existing WorkflowContextState to copy, or create new
+                wf_states = self.mdib.context_states.NODETYPE.get(
+                    _pm.WorkflowContextState, []
+                )
+                if wf_states:
+                    proposed_wf = wf_states[0].mk_copy()
+                else:
+                    proposed_wf = self.consumer.context_service_client.mk_proposed_context_object(
+                        wf_descriptor.Handle
+                    )
+
+                proposed_wf.ContextAssociation = _pm_types.ContextAssociation.ASSOCIATED
+
+                # Build CodedValue list from FHIR danger codes
+                coded_danger_codes = []
+                for dc in raw_danger_codes:
+                    try:
+                        coded_value = _pm_types.CodedValue(dc['code'])
+                        if dc.get('system'):
+                            coded_value.CodingSystem = dc['system']
+                        if dc.get('display'):
+                            coded_value.ConceptDescription = [
+                                _pm_types.LocalizedText(dc['display'])
+                            ]
+                        coded_danger_codes.append(coded_value)
+                    except Exception as _cv_err:
+                        self.logger.warning(
+                            f'apply_fhir_contexts: could not build CodedValue '
+                            f'for {dc!r}: {_cv_err}'
+                        )
+
+                if not coded_danger_codes:
+                    self.logger.warning('apply_fhir_contexts: all DangerCode conversions failed.')
+                    return
+
+                # Assign to WorkflowDetail.DangerCode
+                if proposed_wf.WorkflowDetail is None:
+                    self.logger.warning(
+                        'apply_fhir_contexts: WorkflowDetail is None -- cannot set DangerCode.'
+                    )
+                    return
+                proposed_wf.WorkflowDetail.DangerCode = coded_danger_codes
+
+        except Exception as exc:
+            self.logger.error(f'apply_fhir_contexts: failed to build state -- {exc}', exc_info=True)
+            return
+
+        # ------------------------------------------------------------------
+        # Phase 2: Send SetContextState (lock released -- network call)
+        # ------------------------------------------------------------------
+        try:
+            if not self.consumer.context_service_client:
+                self.logger.warning('apply_fhir_contexts: context_service_client not available.')
+                return
+
+            self.logger.info(
+                f'apply_fhir_contexts: sending {len(coded_danger_codes)} DangerCode(s) '
+                f'to WorkflowContext (op={operation_handle}).'
+            )
+            self.consumer.context_service_client.set_context_state(
+                operation_handle=operation_handle,
+                proposed_context_states=[proposed_wf],
+            )
+            self.logger.info(
+                f'apply_fhir_contexts: WorkflowContext DangerCodes applied successfully '
+                f'on device {self.epr[-12:]}.'
+            )
+        except Exception as exc:
+            self.logger.error(f'apply_fhir_contexts: SOAP call failed -- {exc}')
 
     # =========================================================================
     # Callback: metric updates

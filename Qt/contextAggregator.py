@@ -3,6 +3,8 @@ import threading
 import uuid
 from typing import Optional, Tuple, Set, Dict
 
+from fhirData import FHIRPatientData
+
 # TYPE_CHECKING guard to avoid circular imports when annotating DeviceHandler
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -27,6 +29,9 @@ class SmartAlertAggregator:
 
         # Device registry per ensemble: ensemble_uuid -> set(epr)
         self._ensemble_devices: Dict[str, Set[str]] = {}
+
+        # FHIR cache: patient_id -> FHIRPatientData (populated on first access)
+        self._fhir_cache: Dict[str, FHIRPatientData] = {}
 
     def _extract_patient_and_room(self, device_handler: 'DeviceHandler') -> Tuple[Optional[str], Optional[str]]:
         """
@@ -149,6 +154,43 @@ class SmartAlertAggregator:
         )
         return patient_id, room
 
+    def _get_or_fetch_fhir_data(self, patient_id: str) -> Optional[FHIRPatientData]:
+        """
+        Returns a cached FHIRPatientData instance for patient_id, or fetches
+        it from the FHIR server on the first call.
+
+        Cache policy: one FHIRPatientData object per patient_id for the
+        lifetime of the aggregator (session-scoped cache).
+
+        Thread safety: self.lock must NOT be held by the caller -- the HTTP
+        request may take several seconds and would block other devices.
+        """
+        # -- Cache hit ---------------------------------------------------------
+        if patient_id in self._fhir_cache:
+            self.logger.debug(
+                f'[Aggregator] FHIR cache hit for patient_id={patient_id!r}.'
+            )
+            return self._fhir_cache[patient_id]
+
+        # -- Cache miss: fetch from FHIR server --------------------------------
+        self.logger.info(
+            f'[Aggregator] FHIR cache miss -- fetching data for patient_id={patient_id!r}...'
+        )
+        try:
+            fhir_data = FHIRPatientData()
+            fhir_data.fetch(patient_id)
+            self._fhir_cache[patient_id] = fhir_data
+            self.logger.info(
+                f'[Aggregator] FHIR data fetched and cached for patient_id={patient_id!r}.'
+            )
+            return fhir_data
+        except Exception as exc:
+            self.logger.error(
+                f'[Aggregator] FHIR fetch failed for patient_id={patient_id!r}: {exc}. '
+                f'Proceeding without FHIR data.'
+            )
+            return None
+
     def evaluate_and_bind_device(self, device_handler: 'DeviceHandler') -> None:
         """
         Entry point for a newly connected device.
@@ -212,11 +254,14 @@ class SmartAlertAggregator:
             f'{member_count} member(s). Sending context to {device_handler.epr[-12:]}...'
         )
 
+        # FHIR fetch -- executed outside self.lock (HTTP round-trip; may be slow).
+        # Returns None gracefully if the FHIR server is unreachable.
+        fhir_data = self._get_or_fetch_fhir_data(patient_id)
+
         # Network SOAP call -- executed outside self.lock to avoid holding the
         # aggregator mutex during a potentially slow round-trip to the device.
         success = device_handler.apply_ensemble_context(ensemble_uuid)
         if success:
-            print()
             self.logger.info(
                 f'[Aggregator] EnsembleContext {ensemble_uuid[:8]}... '
                 f'successfully applied to {device_handler.epr[-12:]}.'
@@ -231,3 +276,10 @@ class SmartAlertAggregator:
                 f'[Aggregator] Failed to apply EnsembleContext to '
                 f'{device_handler.epr[-12:]}. Rolled back local binding.'
             )
+
+        # Apply FHIR patient/clinical context to the device (demographics,
+        # danger codes, vital measurements). Called regardless of ensemble
+        # binding outcome -- FHIR data is independent of SDC ensemble state.
+        # apply_fhir_contexts() is implemented on DeviceHandler.
+        device_handler.apply_fhir_contexts(fhir_data)
+

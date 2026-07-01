@@ -8,6 +8,7 @@
                 <pm:Sco Handle="sco_mds">
                     <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="opSetPatCtx" OperationTarget="PC.mds0" Retriggerable="true"/>
                     <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="set_ensemble_context_op" OperationTarget="ens_context_descriptor" Retriggerable="true"/>
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="set_workflow_context_op" OperationTarget="wrkflow_context_descriptor" Retriggerable="true"/>
                     <pm:Operation xsi:type="pm:ActivateOperationDescriptor" Handle="actop.mds0_sco_0" OperationTarget="mds_1" Retriggerable="true"/>
                 </pm:Sco>
                 <pm:SystemContext Handle="sys_context_1">
@@ -89,6 +90,9 @@
         </pm:MdDescription>
         <pm:MdState>
             <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="PC.mds0" Handle="Patient_Context" ContextAssociation="Assoc">
+                <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="example">
+                    <pm:IdentifierName></pm:IdentifierName>
+                </pm:Identification>
                 <pm:CoreData>
                     <pm:Givenname></pm:Givenname>
                     <pm:Familyname></pm:Familyname>
@@ -111,7 +115,7 @@
             <pm:State xsi:type="pm:WorkflowContextState" DescriptorHandle="wrkflow_context_descriptor" Handle="wrkflow_context_state" ContextAssociation="Assoc">
                 <pm:WorkflowDetail>
                     <pm:Patient>
-                        <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="OR2-patient-001">
+                        <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="example">
                         </pm:Identification>
                     </pm:Patient>
                     <pm:DangerCode Code=" ">
@@ -142,6 +146,7 @@
 
             <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="opSetPatCtx" OperatingMode="En" />
             <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_ensemble_context_op" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_workflow_context_op" OperatingMode="En" />
             <pm:State xsi:type="pm:ActivateOperationState" DescriptorHandle="actop.mds0_sco_0" OperatingMode="En" />
             <pm:State xsi:type="pm:SetValueOperationState" DescriptorHandle="numeric.ch0.vmd1_sco_0" OperatingMode="En" />
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="string.ch0.vmd1_sco_0" OperatingMode="En" />

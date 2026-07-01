@@ -300,6 +300,7 @@ async def main(provider):
         
         workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
         danger_codes = []
+        wf_patients = []
         for w in workflows:
             if getattr(w, "WorkflowDetail", None):
                 # В зависимости от того, как sdc11073 парсит нестандартные/кастомные теги,
@@ -309,7 +310,17 @@ async def main(provider):
                     danger_codes.append(code)
                 else:
                     danger_codes.append(None)
-        
+
+                # Check patient identification in workflow context
+                pat = getattr(w.WorkflowDetail, 'Patient', None)
+                if pat and getattr(pat, 'Identification', None) and len(pat.Identification) > 0:
+                    ident = pat.Identification[0]
+                    root = getattr(ident, 'Root', 'N/A')
+                    ext = getattr(ident, 'Extension', 'N/A')
+                    wf_patients.append(f"Root:{root} | Ext:{ext}")
+                else:
+                    wf_patients.append(None)
+
         ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
         ens_info_list = []
         for e in ensembles:
@@ -324,7 +335,9 @@ async def main(provider):
             else:
                 ens_info_list.append(f"(no Identification) | ContextAssociation:{ctx_assoc}")
         
-        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}, Danger codes = {danger_codes}, Ensembles = {ens_info_list}")
+        print(f"Given names = {given_names}, Heights = {heights}, Weights = {weights}, Rooms = {rooms}, Danger codes = {danger_codes}, Workflow Patients = {wf_patients}, Ensembles = {ens_info_list}")
+        if any(dc is not None for dc in danger_codes):
+            print(f"[DangerCodes] {danger_codes}")
 
         # Process any pending incoming requests (e.g. alert controls)
         await handle_requests(provider, share_state_temp, share_state_hum)
@@ -364,10 +377,6 @@ MDIB_FILE = "correct_mdib.xml"
 
 if __name__ == '__main__':
     import pathlib
-    import logging
-    from sdc11073.loghelper import basic_logging_setup
-    from sdc11073 import commlog
-    basic_logging_setup(level=logging.INFO)
 
     # ── SSL disabled (plain HTTP) ─────────────────────────────────────────
     # Consumer launched with --no_tls flag → both sides use plain HTTP.

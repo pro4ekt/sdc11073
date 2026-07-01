@@ -70,12 +70,22 @@ def print_contexts(provider):
 
     workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
     danger_codes = []
+    wf_patients = []
     for w in workflows:
         if getattr(w, "WorkflowDetail", None):
             if hasattr(w.WorkflowDetail, 'DangerCode') and w.WorkflowDetail.DangerCode:
                 danger_codes.append(w.WorkflowDetail.DangerCode[0].Code)
             else:
                 danger_codes.append(None)
+
+            pat = getattr(w.WorkflowDetail, 'Patient', None)
+            if pat and getattr(pat, 'Identification', None) and len(pat.Identification) > 0:
+                ident = pat.Identification[0]
+                root = getattr(ident, 'Root', 'N/A')
+                ext = getattr(ident, 'Extension', 'N/A')
+                wf_patients.append(f"Root:{root} | Ext:{ext}")
+            else:
+                wf_patients.append(None)
 
     ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
     ens_info_list = []
@@ -93,8 +103,10 @@ def print_contexts(provider):
     health_state = provider.mdib.entities.by_handle("device_health").state.MetricValue
     health_val = health_state.Value if health_state else "N/A"
 
-    print(f"[Context] Patients={given_names} | Rooms={rooms} | DangerCodes={danger_codes} | "
+    print(f"[Context] Patients={given_names} | Rooms={rooms} | DangerCodes={danger_codes} | WF_Patients={wf_patients} | "
           f"Ensembles={ens_info_list} | DeviceHealth={health_val}%")
+    if any(dc is not None for dc in danger_codes):
+        print(f"[DangerCodes] {danger_codes}")
 
 
 def update_statemachine_and_vmd(provider, new_state: str):
