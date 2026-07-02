@@ -276,6 +276,14 @@ class DeviceHandler(threading.Thread):
         # None -- device has not been bound to any ensemble yet.
         self.ensemble_uuid: str | None = None
 
+        # Ack-timeout: maps AlertSignal descriptor handle -> monotonic time when
+        # Presence transitioned to Ack.  If the signal is still Ack after
+        # ACK_TIMEOUT_SEC seconds (i.e. the condition did not clear), the consumer
+        # automatically re-raises the alarm by sending SetAlertState(Presence=On).
+        # This prevents a silenced alarm from being forgotten indefinitely.
+        self._ack_timestamps: dict[str, float] = {}
+        self.ACK_TIMEOUT_SEC: float = 30.0
+
 
     # =========================================================================
     # Thread entry point (called by threading.Thread on start())
@@ -730,6 +738,44 @@ class DeviceHandler(threading.Thread):
                         self.error_occurred = True
                         break  # exit loop -> thread finishes -> Manager removes device
 
+                # ------------------------------------------------------------------
+                # Ack-timeout: re-raise alarms that have been silenced too long
+                # ------------------------------------------------------------------
+                now_mono = time.monotonic()
+                expired = [
+                    h for h, t in list(self._ack_timestamps.items())
+                    if now_mono - t >= self.ACK_TIMEOUT_SEC
+                ]
+                for sig_handle in expired:
+                    self.logger.warning(
+                        f'[Ack-timeout] {sig_handle}: Ack held for '
+                        f'{self.ACK_TIMEOUT_SEC:.0f}s — re-raising alarm (Presence=On).'
+                    )
+                    op_handle = None
+                    try:
+                        with self.data_lock:
+                            if self.mdib:
+                                op_descs = self.mdib.descriptions.NODETYPE.get(
+                                    pm.SetAlertStateOperationDescriptor, []
+                                )
+                                for op in op_descs:
+                                    if op.OperationTarget == sig_handle:
+                                        op_handle = op.Handle
+                                        break
+                                if not op_handle and op_descs:
+                                    op_handle = op_descs[0].Handle
+                    except Exception as _e:
+                        self.logger.error(f'[Ack-timeout] Could not find op_handle: {_e}')
+
+                    if op_handle:
+                        try:
+                            await asyncio.to_thread(
+                                self._reactivate_alarm, op_handle, sig_handle
+                            )
+                        except Exception as _e:
+                            self.logger.error(f'[Ack-timeout] Re-raise failed: {_e}')
+                    self._ack_timestamps.pop(sig_handle, None)
+
                 # Yield control back to the event loop, allowing other async tasks
                 # (e.g. incoming notifications) to be processed.
                 await asyncio.sleep(SLEEP_INTERVAL)
@@ -1101,13 +1147,68 @@ class DeviceHandler(threading.Thread):
         Called by sdc11073 from its notification thread on EpisodicAlertReport.
         Triggers an immediate UI refresh (0.2 s anti-spam cooldown) because alarm
         state changes must reach the UI without noticeable delay.
+
+        Also tracks Ack timestamps for the re-raise timeout mechanism:
+          On  → Ack : record timestamp in _ack_timestamps
+          Ack → Off : clear timestamp (condition resolved)
+          Ack → On  : clear timestamp (already re-raised)
         """
+        now = time.monotonic()
+
+        for handle, state in alert_by_handle.items():
+            presence = str(getattr(state, 'Presence', ''))
+            ack_str  = str(pm_types.AlertSignalPresence.ACK)
+            off_str  = str(pm_types.AlertSignalPresence.OFF)
+            on_str   = str(pm_types.AlertSignalPresence.ON)
+
+            if presence == ack_str:
+                # Signal just went Ack — start the countdown
+                if handle not in self._ack_timestamps:
+                    self._ack_timestamps[handle] = now
+                    self.logger.info(
+                        f'[Ack-timeout] {handle}: Ack recorded — '
+                        f'will re-raise in {self.ACK_TIMEOUT_SEC:.0f}s if not cleared.'
+                    )
+            elif presence in (off_str, on_str):
+                # Condition cleared or already re-raised — remove timer
+                if handle in self._ack_timestamps:
+                    self._ack_timestamps.pop(handle)
+                    self.logger.info(f'[Ack-timeout] {handle}: timer cleared (Presence={presence}).')
+
         if not self.qtDeviceHandler:
             return
-        now = time.monotonic()
         if now - self._last_ui_update_ts >= 0.2:
             self._last_ui_update_ts = now
             self.qtDeviceHandler.scheduleUpdate()
+
+    # =========================================================================
+    # DEV-31: Remote alarm acknowledgement
+    # =========================================================================
+    # Ack-timeout helper: re-raise a previously silenced alarm
+    # =========================================================================
+    def _reactivate_alarm(self, operation_handle: str, alert_signal_handle: str):
+        """
+        Sends SetAlertState(Presence=On) to the provider for a signal that has
+        been in Ack state beyond ACK_TIMEOUT_SEC.  Called from asyncio.to_thread()
+        inside the monitoring loop so it does not block the event loop.
+        """
+        try:
+            with self.data_lock:
+                if not self.consumer or not self.mdib:
+                    return
+                proposed = self.mdib.xtra.mk_proposed_state(alert_signal_handle)
+                proposed.Presence = pm_types.AlertSignalPresence.ON
+
+            if self.consumer.set_service_client:
+                future = self.consumer.set_service_client.set_alert_state(
+                    operation_handle, proposed
+                )
+                future.result(timeout=5)
+                self.logger.info(
+                    f'[Ack-timeout] {alert_signal_handle}: successfully re-raised to On.'
+                )
+        except Exception as e:
+            self.logger.error(f'_reactivate_alarm error: {e}')
 
     # =========================================================================
     # DEV-31: Remote alarm acknowledgement

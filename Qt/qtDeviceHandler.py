@@ -135,6 +135,11 @@ class QtDeviceHandler(QObject):
         Automatically locates the SetAlertStateOperation and AlertSignalState
         handles in the MDIB and calls acknowledge_alarm() on DeviceHandler,
         which sends SetAlertState(Presence=Ack) to the provider.
+
+        IMPORTANT: the SetAlertStateOperationDescriptor has an OperationTarget
+        that points to a specific AlertSignal handle.  We must use the operation
+        whose OperationTarget matches the active signal — otherwise the provider
+        rejects the call (wrong operation for the wrong target).
         """
         if not self._device:
             return
@@ -143,14 +148,7 @@ class QtDeviceHandler(QObject):
                 if not self._device.mdib:
                     return
 
-                # Find the SetAlertState operation handle
-                op_handle = None
-                op_states = [s for s in self._device.mdib.states.objects
-                             if s.NODETYPE == pm.SetAlertStateOperationState]
-                if op_states:
-                    op_handle = op_states[0].DescriptorHandle
-
-                # Find an active AlertSignalState (Presence == On)
+                # Step 1 — find the active (Presence=On) AlertSignalState.
                 signal_handle = None
                 alert_signals = [s for s in self._device.mdib.states.objects
                                  if s.NODETYPE == pm.AlertSignalState]
@@ -158,9 +156,25 @@ class QtDeviceHandler(QObject):
                     if str(sig.Presence) == str(pm_types.AlertSignalPresence.ON):
                         signal_handle = sig.DescriptorHandle
                         break
-                # Fallback: use the first signal if no active one is found
+                # Fallback: first signal if none is active
                 if not signal_handle and alert_signals:
                     signal_handle = alert_signals[0].DescriptorHandle
+
+                # Step 2 — find the SetAlertStateOperationDescriptor whose
+                # OperationTarget == signal_handle.  This guarantees we call the
+                # correct operation entry point for the active signal.
+                op_handle = None
+                if signal_handle:
+                    op_descs = self._device.mdib.descriptions.NODETYPE.get(
+                        pm.SetAlertStateOperationDescriptor, []
+                    )
+                    for op in op_descs:
+                        if op.OperationTarget == signal_handle:
+                            op_handle = op.Handle
+                            break
+                    # Fallback: first available operation
+                    if not op_handle and op_descs:
+                        op_handle = op_descs[0].Handle
 
             if op_handle and signal_handle:
                 self._device.logger.info(
