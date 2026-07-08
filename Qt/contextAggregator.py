@@ -1,7 +1,8 @@
 import logging
 import threading
+import time
 import uuid
-from typing import Optional, Tuple, Set, Dict
+from typing import Any, Optional, Tuple, Set, Dict
 
 from fhirData import FHIRPatientData
 
@@ -32,6 +33,117 @@ class SmartAlertAggregator:
 
         # FHIR cache: patient_id -> FHIRPatientData (populated on first access)
         self._fhir_cache: Dict[str, FHIRPatientData] = {}
+
+        # In-Memory physiological state graph, indexed by semantic concept codes.
+        # Structure: ensemble_uuid -> concept_code -> {"value": float, "timestamp": float}
+        # This allows cross-device alarm validation without relying on local handles.
+        self._physiological_graph: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        # Timestamp of the last console graph dump (monotonic).
+        # Used to rate-limit dump output: at most once per GRAPH_DUMP_INTERVAL_SEC.
+        self._last_graph_dump_ts: float = 0.0
+        self.GRAPH_DUMP_INTERVAL_SEC: float = 2.0
+
+    def update_metric_state(self, ensemble_uuid: str, concept_code: str, value: float) -> None:
+        """
+        Writes a metric reading into the physiological graph under the given
+        ensemble and semantic concept code.
+
+        Thread safety: protected by self.lock.
+        Called from DeviceHandler.on_metric_update() (sdc11073 notification thread).
+        """
+        with self.lock:
+            if ensemble_uuid not in self._physiological_graph:
+                self._physiological_graph[ensemble_uuid] = {}
+                self.logger.info(
+                    f'[PhysGraph] New ensemble entry created: {ensemble_uuid[:8]}...'
+                )
+            self._physiological_graph[ensemble_uuid][concept_code] = {
+                'value': value,
+                'timestamp': time.time(),
+            }
+        self.logger.debug(
+            f'[PhysGraph] Write: ensemble={ensemble_uuid[:8]} '
+            f'concept={concept_code!r} value={value:.4g}'
+        )
+
+        # -- Rate-limited console dump ----------------------------------------
+        # Print the full graph snapshot to console at most once per
+        # GRAPH_DUMP_INTERVAL_SEC to keep output readable during high-freq updates.
+        now = time.monotonic()
+        if now - self._last_graph_dump_ts >= self.GRAPH_DUMP_INTERVAL_SEC:
+            self._last_graph_dump_ts = now
+            self.logger.info(self.dump_physiological_graph())
+
+    def get_metric_state(
+        self,
+        ensemble_uuid: str,
+        concept_code: str,
+        max_age_sec: float = 15.0,
+    ) -> Optional[float]:
+        """
+        Returns the most recent cached value for the given ensemble and concept code,
+        or None if the cached value is older than max_age_sec (stale data guard).
+
+        Thread safety: protected by self.lock.
+
+        Parameters:
+          ensemble_uuid -- UUID of the ensemble to query.
+          concept_code  -- BICEPS/LOINC semantic code of the metric.
+          max_age_sec   -- maximum acceptable age in seconds (default 15 s).
+
+        Returns:
+          float -- the cached metric value.
+          None  -- entry absent or older than max_age_sec.
+        """
+        with self.lock:
+            entry = (
+                self._physiological_graph
+                .get(ensemble_uuid, {})
+                .get(concept_code)
+            )
+            if entry is None:
+                self.logger.debug(
+                    f'[PhysGraph] Miss: ensemble={ensemble_uuid[:8]} '
+                    f'concept={concept_code!r} (no entry)'
+                )
+                return None
+            age = time.time() - entry['timestamp']
+            if age > max_age_sec:
+                self.logger.warning(
+                    f'[PhysGraph] Stale: ensemble={ensemble_uuid[:8]} '
+                    f'concept={concept_code!r} age={age:.1f}s > max={max_age_sec}s — returning None'
+                )
+                return None
+            self.logger.debug(
+                f'[PhysGraph] Hit:  ensemble={ensemble_uuid[:8]} '
+                f'concept={concept_code!r} value={entry["value"]:.4g} age={age:.1f}s'
+            )
+            return entry['value']
+
+    def dump_physiological_graph(self) -> str:
+        """
+        Returns a human-readable snapshot of the physiological graph.
+        Useful for diagnostic logging and debugging cross-device validation.
+
+        Thread safety: protected by self.lock.
+        """
+        lines: list[str] = ['[PhysGraph] ── Snapshot ──────────────────────────────']
+        with self.lock:
+            if not self._physiological_graph:
+                lines.append('[PhysGraph]   (empty)')
+            for ens_uuid, concepts in self._physiological_graph.items():
+                now = time.time()
+                lines.append(f'[PhysGraph]   Ensemble {ens_uuid[:8]}...')
+                for code, entry in sorted(concepts.items()):
+                    age = now - entry['timestamp']
+                    stale = ' ⚠ STALE' if age > 15.0 else ''
+                    lines.append(
+                        f'[PhysGraph]     {code:<30} = {entry["value"]:>10.4g}'
+                        f'  (age={age:.1f}s{stale})'
+                    )
+        lines.append('[PhysGraph] ────────────────────────────────────────────────')
+        return '\n'.join(lines)
 
     def _extract_patient_and_room(self, device_handler: 'DeviceHandler') -> Tuple[Optional[str], Optional[str]]:
         """

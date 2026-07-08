@@ -47,19 +47,66 @@ def activate_alarm(provider):
         tr.get_state('al_condition_temperature').Presence = True
         tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.ON
 
-    print('[Provider] 🔴 Alarm ON — temperature=50 (threshold: 45)', flush=True)
+    print('[Provider] 🔴 Alarm ON  — temperature=50 (threshold: 45)', flush=True)
+
+
+def deactivate_alarm(provider):
+    """Set temperature alarm OFF (value within normal range)."""
+    with provider.mdib.metric_state_transaction() as tr:
+        tr.get_state('temperature').MetricValue.Value = Decimal('36')  # normal
+
+    with provider.mdib.alert_state_transaction() as tr:
+        tr.get_state('al_condition_temperature').Presence = False
+        tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.OFF
+
+    print('[Provider] 🟢 Alarm OFF — temperature=36 (normal)',       flush=True)
 
 
 async def main(provider):
-    activate_alarm(provider)
+    alarm_on = False
+    TOGGLE_INTERVAL = 10  # seconds between each ON/OFF flip
+    elapsed = 0
 
     while True:
+        # Toggle alarm every TOGGLE_INTERVAL seconds
+        if elapsed % TOGGLE_INTERVAL == 0:
+            alarm_on = not alarm_on
+            if alarm_on:
+                activate_alarm(provider)
+            else:
+                deactivate_alarm(provider)
+
         n = sum(
             len(getattr(mgr, '_subscriptions', None).objects)
             for mgr in getattr(provider, '_subscriptions_managers', {}).values()
             if getattr(mgr, '_subscriptions', None) is not None
         )
-        print("aboba")
+
+        from sdc11073.xml_types import pm_qnames as pm
+        patients = provider.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
+        given_names = [p.CoreData.Givenname for p in patients if p.CoreData and p.CoreData.Givenname]
+
+        locations = provider.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
+        rooms = [l.LocationDetail.Room for l in locations if getattr(l, "LocationDetail", None)]
+
+        ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+        ens_info_list = []
+        for e in ensembles:
+            if getattr(e, "Identification", None) and len(e.Identification) > 0:
+                ident = e.Identification[0]
+                ident_name_str = "None"
+                if getattr(ident, "IdentifierName", None):
+                    ident_name = ident.IdentifierName[0] if isinstance(ident.IdentifierName,
+                                                                       list) else ident.IdentifierName
+                    ident_name_str = str(getattr(ident_name, "text", ident_name))
+                ens_info_list.append(f"Root:{ident.Root} | Ext:{ident.Extension} | Name:{ident_name_str}")
+            else:
+                ens_info_list.append(None)
+        workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
+        print(
+            f"[Context] Patients={given_names} | Rooms={rooms}  | "
+            f"Ensembles={ens_info_list}%")
+        elapsed += 1
         await asyncio.sleep(1)
 
 

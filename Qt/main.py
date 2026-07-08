@@ -100,7 +100,17 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # STEP 0b: Configure sdc11073 logging
     # ------------------------------------------------------------------
+    # basic_logging_setup configures sdc11073's internal loggers.
+    # We pass WARNING to suppress the verbose sdc11073 internals (SOAP,
+    # discovery, subscription details) on the console.
+    # IMPORTANT: after this call we explicitly restore our own
+    # 'sdc.consumer' logger to DEBUG so that deviceHandler.py / contextAggregator.py
+    # INFO and DEBUG messages are still written to sdc_consumer.log.
     basic_logging_setup(level=logging.WARNING)
+
+    # Restore our consumer logger level: basic_logging_setup may have
+    # reconfigured the 'sdc' hierarchy and overridden our DEBUG level.
+    logging.getLogger('sdc.consumer').setLevel(logging.DEBUG)
 
     # -- Session separator in the log file --------------------------------
     _ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')

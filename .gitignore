@@ -159,3 +159,7 @@ Qt/uml/
 *.pickle
 asyncua/binary_address_space.pickle
 
+test.txt
+myProvider.txt
+myMDIB.xml
+myConsumer.txt

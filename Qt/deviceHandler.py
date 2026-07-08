@@ -63,14 +63,22 @@ def _setup_module_logger() -> logging.Logger:
       - File (RotatingFileHandler): DEBUG -- full format with logger name
         File: Qt/logs/sdc_consumer.log
         Rotation: 5 MB x 5 backup copies -> sdc_consumer.log.1 ... .5
+
+    NOTE: sdc11073's basic_logging_setup() may reconfigure the 'sdc' logger
+    hierarchy after this function runs.  main.py calls
+    logging.getLogger('sdc.consumer').setLevel(logging.DEBUG) afterwards to
+    guarantee our level is preserved.
     """
     logger = logging.getLogger('sdc.consumer')
+
+    # Always enforce DEBUG on this logger so that basic_logging_setup()
+    # called later in main.py cannot raise the effective level to WARNING.
+    logger.setLevel(logging.DEBUG)
 
     # Avoid adding handlers more than once (if module is imported multiple times)
     if logger.handlers:
         return logger
 
-    logger.setLevel(logging.DEBUG)
 
     # -- Console (INFO+) -------------------------------------------------------
     # Short format: time + level + message. INFO and above only, to avoid
@@ -283,6 +291,12 @@ class DeviceHandler(threading.Thread):
         # This prevents a silenced alarm from being forgotten indefinitely.
         self._ack_timestamps: dict[str, float] = {}
         self.ACK_TIMEOUT_SEC: float = 30.0
+
+        # Semantic mapping: descriptor Handle -> BICEPS concept code.
+        # Populated once in _worker_logic() after init_mdib(), under data_lock.
+        # Used in on_metric_update() for cross-device physiological graph updates
+        # without acquiring data_lock (states are already delivered as arguments).
+        self._handle_to_concept: dict[str, str] = {}
 
 
     # =========================================================================
@@ -527,6 +541,65 @@ class DeviceHandler(threading.Thread):
                 self.logger.info(
                     f'[DIAG] context_service_client available: {_has_ctx_svc}'
                 )
+
+                # ------------------------------------------------------------------
+                # STEP 2a: Build handle -> semantic concept code mapping
+                # ------------------------------------------------------------------
+                # Iterates all NumericMetricDescriptors in the MDIB and extracts
+                # the BICEPS/LOINC concept code from Type.Code (primary) or from
+                # Type.ConceptDescription[0].text (fallback).
+                # The resulting dict is used in on_metric_update() to feed the
+                # physiological state graph by semantic code, not by local handle.
+                # Must be inside `with self.data_lock:` because MDIB is being read.
+                for _desc in self.mdib.descriptions.NODETYPE.get(
+                    pm.NumericMetricDescriptor, []
+                ):
+                    try:
+                        _concept_code: str | None = None
+                        _type = getattr(_desc, 'Type', None)
+                        if _type is not None:
+                            _concept_code = getattr(_type, 'Code', None)
+                            if not _concept_code:
+                                _cd_list = getattr(_type, 'ConceptDescription', None) or []
+                                if _cd_list:
+                                    _concept_code = getattr(_cd_list[0], 'text', None)
+                        # Last resort: use the Handle itself as concept code.
+                        # Happens when the descriptor has no <pm:Type> element.
+                        # Guarantees the graph is populated even with incomplete MDIBs.
+                        if not _concept_code:
+                            _concept_code = _desc.Handle
+                        if _concept_code:
+                            self._handle_to_concept[_desc.Handle] = str(_concept_code)
+                            self.logger.debug(
+                                f'[SemanticMap]   handle={_desc.Handle!r} '
+                                f'→ concept={_concept_code!r}'
+                            )
+                    except Exception:
+                        pass
+                self.logger.info(
+                    f'[SemanticMap] Mapped {len(self._handle_to_concept)} '
+                    f'NumericMetricDescriptor handle(s) to concept codes.'
+                )
+                # Log all alert descriptors available in MDIB for reference
+                _al_cond_descs = self.mdib.descriptions.NODETYPE.get(pm.AlertConditionDescriptor, [])
+                _al_sig_descs  = self.mdib.descriptions.NODETYPE.get(pm.AlertSignalDescriptor, [])
+                self.logger.info(
+                    f'[AlarmMap] MDIB contains {len(_al_cond_descs)} AlertCondition '
+                    f'and {len(_al_sig_descs)} AlertSignal descriptor(s).'
+                )
+                for _acd in _al_cond_descs:
+                    _code = getattr(getattr(_acd, 'Type', None), 'Code', 'N/A')
+                    self.logger.debug(
+                        f'[AlarmMap]   Condition: handle={_acd.Handle!r} '
+                        f'code={_code!r}'
+                    )
+                for _asd in _al_sig_descs:
+                    _code = getattr(getattr(_asd, 'Type', None), 'Code', 'N/A')
+                    _mani = getattr(_asd, 'Manifestation', 'N/A')
+                    self.logger.debug(
+                        f'[AlarmMap]   Signal:    handle={_asd.Handle!r} '
+                        f'code={_code!r} manifestation={_mani!r}'
+                    )
 
                 # ------------------------------------------------------------------
                 # STEP 2b: Location filter (if target_room is set)
@@ -1130,8 +1203,45 @@ class DeviceHandler(threading.Thread):
     def on_metric_update(self, metrics_by_handle):
         """
         Called by sdc11073 from its notification thread on EpisodicMetricReport.
-        Triggers a rate-limited (1 Hz) UI refresh via QtDeviceHandler.scheduleUpdate().
+
+        Phase 1 — Physiological graph update (no data_lock):
+          The updated state objects are already delivered as arguments, so
+          acquiring data_lock here is FORBIDDEN (would cause a deadlock with
+          the lock held in _worker_logic during MDIB initialisation).
+          Instead, _handle_to_concept (built once under data_lock at startup)
+          is used for lock-free handle -> concept_code lookup.
+
+        Phase 2 — Rate-limited UI refresh (1 Hz):
+          Calls QtDeviceHandler.scheduleUpdate() at most once per second to
+          avoid flooding the main thread with repaints during waveform data.
         """
+        # -- Phase 1: Update physiological state graph ----------------------------
+        aggregator = getattr(self.manager, 'aggregator', None)
+        if aggregator is not None and self.ensemble_uuid:
+            for state in metrics_by_handle.values():
+                try:
+                    mv = getattr(state, 'MetricValue', None)
+                    if mv is None:
+                        continue
+                    value = getattr(mv, 'Value', None)
+                    if value is None:
+                        continue
+                    concept_code = self._handle_to_concept.get(
+                        getattr(state, 'DescriptorHandle', '')
+                    )
+                    if concept_code:
+                        aggregator.update_metric_state(
+                            self.ensemble_uuid, concept_code, float(value)
+                        )
+                        self.logger.debug(
+                            f'[PhysGraph] {concept_code}={float(value):.4g} '
+                            f'handle={state.DescriptorHandle!r} '
+                            f'ensemble={self.ensemble_uuid[:8]}'
+                        )
+                except Exception:
+                    pass
+
+        # -- Phase 2: Rate-limited UI refresh -------------------------------------
         if not self.qtDeviceHandler:
             return
         now = time.monotonic()
@@ -1145,35 +1255,109 @@ class DeviceHandler(threading.Thread):
     def on_alert_update(self, alert_by_handle):
         """
         Called by sdc11073 from its notification thread on EpisodicAlertReport.
-        Triggers an immediate UI refresh (0.2 s anti-spam cooldown) because alarm
-        state changes must reach the UI without noticeable delay.
+        Triggers an immediate UI refresh (0.2 s anti-spam cooldown).
 
-        Also tracks Ack timestamps for the re-raise timeout mechanism:
-          On  → Ack : record timestamp in _ack_timestamps
-          Ack → Off : clear timestamp (condition resolved)
-          Ack → On  : clear timestamp (already re-raised)
+        Handles two fundamentally different Presence types:
+          AlertConditionState.Presence  -> Python bool  (True / False)
+          AlertSignalState.Presence     -> AlertSignalPresence enum (On / Off / Ack / Latch)
+
+        All alarm transitions (ON, OFF, ACK) are logged at WARNING so they
+        are always visible regardless of log-level filter.
         """
         now = time.monotonic()
 
         for handle, state in alert_by_handle.items():
-            presence = str(getattr(state, 'Presence', ''))
-            ack_str  = str(pm_types.AlertSignalPresence.ACK)
-            off_str  = str(pm_types.AlertSignalPresence.OFF)
-            on_str   = str(pm_types.AlertSignalPresence.ON)
+            raw_presence = getattr(state, 'Presence', None)
 
-            if presence == ack_str:
-                # Signal just went Ack — start the countdown
-                if handle not in self._ack_timestamps:
-                    self._ack_timestamps[handle] = now
-                    self.logger.info(
-                        f'[Ack-timeout] {handle}: Ack recorded — '
-                        f'will re-raise in {self.ACK_TIMEOUT_SEC:.0f}s if not cleared.'
+            # -- Alert type label -------------------------------------------------
+            node_type  = getattr(state, 'NODETYPE', None)
+            node_name  = getattr(node_type, 'localname', '') if node_type else ''
+            type_label = ('Condition' if 'Condition' in node_name
+                          else 'Signal' if 'Signal' in node_name
+                          else 'Alert')
+
+            # -- Non-blocking concept-code hint (safe in notification thread) -----
+            _desc_handle  = getattr(state, 'DescriptorHandle', handle)
+            _concept_hint = ''
+            if self.data_lock.acquire(blocking=False):
+                try:
+                    if self.mdib:
+                        _desc = self.mdib.descriptions.handle.get_one(
+                            _desc_handle, allow_none=True
+                        )
+                        if _desc:
+                            _code = getattr(getattr(_desc, 'Type', None), 'Code', None)
+                            if _code:
+                                _concept_hint = f' code={_code!r}'
+                except Exception:
+                    pass
+                finally:
+                    self.data_lock.release()
+
+            _ens = f' ensemble={self.ensemble_uuid[:8]}' if self.ensemble_uuid else ''
+            _dev = self.epr[-12:]
+
+            # ==================================================================
+            # BRANCH A: AlertConditionState — Presence is Python bool
+            # ==================================================================
+            if isinstance(raw_presence, bool):
+                if raw_presence:
+                    self.logger.warning(
+                        f'[ALARM] 🔴 ON  | {type_label} handle={handle!r}'
+                        f'{_concept_hint}{_ens} | device={_dev}'
                     )
-            elif presence in (off_str, on_str):
-                # Condition cleared or already re-raised — remove timer
-                if handle in self._ack_timestamps:
-                    self._ack_timestamps.pop(handle)
-                    self.logger.info(f'[Ack-timeout] {handle}: timer cleared (Presence={presence}).')
+                else:
+                    self.logger.warning(
+                        f'[ALARM] 🟢 OFF | {type_label} handle={handle!r}'
+                        f'{_concept_hint}{_ens} | device={_dev}'
+                    )
+
+            # ==================================================================
+            # BRANCH B: AlertSignalState — Presence is AlertSignalPresence enum
+            # ==================================================================
+            else:
+                ack_str  = str(pm_types.AlertSignalPresence.ACK)
+                off_str  = str(pm_types.AlertSignalPresence.OFF)
+                on_str   = str(pm_types.AlertSignalPresence.ON)
+                presence = str(raw_presence) if raw_presence is not None else ''
+
+                if presence == on_str:
+                    self.logger.warning(
+                        f'[ALARM] 🔴 ON  | {type_label} handle={handle!r}'
+                        f'{_concept_hint}{_ens} | device={_dev}'
+                    )
+                elif presence == off_str:
+                    self.logger.warning(
+                        f'[ALARM] 🟢 OFF | {type_label} handle={handle!r}'
+                        f'{_concept_hint}{_ens} | device={_dev}'
+                    )
+                elif presence == ack_str:
+                    self.logger.warning(
+                        f'[ALARM] 🔕 ACK | {type_label} handle={handle!r}'
+                        f'{_concept_hint}{_ens} | device={_dev}'
+                    )
+                else:
+                    # Latch or unknown — still log at INFO so it is always visible
+                    self.logger.info(
+                        f'[ALARM] ❓ {presence!r} | {type_label} handle={handle!r}'
+                        f'{_concept_hint}{_ens} | device={_dev}'
+                    )
+
+                # -- Ack-timeout tracking (signals only) ----------------------
+                if presence == ack_str:
+                    if handle not in self._ack_timestamps:
+                        self._ack_timestamps[handle] = now
+                        self.logger.warning(
+                            f'[Ack-timeout] {handle}: countdown started — '
+                            f'will re-raise in {self.ACK_TIMEOUT_SEC:.0f}s if not cleared.'
+                        )
+                elif presence in (off_str, on_str):
+                    if handle in self._ack_timestamps:
+                        held_sec = now - self._ack_timestamps.pop(handle)
+                        self.logger.warning(
+                            f'[Ack-timeout] {handle}: timer cleared '
+                            f'(Presence={presence}, held Ack for {held_sec:.1f}s).'
+                        )
 
         if not self.qtDeviceHandler:
             return
