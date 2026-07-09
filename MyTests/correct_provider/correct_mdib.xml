@@ -26,10 +26,16 @@
                 <pm:Vmd Handle="vmd_1">
                     <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_temperature">
                         <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_temperature" Kind="Phy" Priority="None">
+                            <pm:Type Code="MDC_ALERT_TEMP_HIGH" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">High Temperature Alert</pm:ConceptDescription>
+                            </pm:Type>
                             <pm:Source>temperature</pm:Source>
                         </pm:AlertCondition>
                         <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="al_signal_temperature" ConditionSignaled="al_condition_temperature"
                                         Manifestation="Aud" SignalDelegationSupported="true" Latching="true">
+                            <pm:Type Code="MDC_ALERT_TEMP_HIGH" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">High Temperature Alert Signal</pm:ConceptDescription>
+                            </pm:Type>
                         </pm:AlertSignal>
                     </pm:AlertSystem>
                     <pm:Sco Handle="sco_1">
@@ -130,8 +136,17 @@
                         <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="example">
                         </pm:Identification>
                     </pm:Patient>
-                    <pm:DangerCode Code=" ">
-                        <pm:ConceptDescription></pm:ConceptDescription>
+                    <!--
+                        DangerCode: SNOMED CT 40275004 = Contact dermatitis
+                        This patient is temperature-sensitive.
+                        clinical_focus rule maps 40275004 →
+                            critical_concepts: [MDC_ALERT_TEMP_HIGH, 8310-5]
+                        Expected consumer behavior:
+                          [PRIORITY CLINICAL FOCUS] when temperature alarm fires
+                          [TOPOLOGY AUDIT] checks that 8310-5 sensor is present
+                    -->
+                    <pm:DangerCode Code="40275004" CodingSystem="http://snomed.info/sct">
+                        <pm:ConceptDescription Lang="en">Contact dermatitis (temperature-sensitive patient)</pm:ConceptDescription>
                     </pm:DangerCode>
                     <pm:RelevantClinicalInfo>
                         <pm:Criticality>Hi</pm:Criticality>

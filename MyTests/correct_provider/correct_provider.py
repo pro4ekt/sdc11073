@@ -38,20 +38,37 @@ class MySdcProvider(SdcProvider):
         )
 
 
-def activate_alarm(provider):
-    """Set temperature alarm ON (value far above threshold)."""
+# =============================================================================
+# RuleEngine test scenarios
+# =============================================================================
+# Patient in MDIB has DangerCode = SNOMED:40275004 (Contact dermatitis).
+# rules.json clinical_focus maps 40275004 →
+#     critical_concepts: ["MDC_ALERT_TEMP_HIGH", "8310-5"]
+#
+# Expected consumer behavior:
+#   Alarm ON  → [PRIORITY CLINICAL FOCUS] [ALARM] 🔴 ON   (MDC_ALERT_TEMP_HIGH is critical)
+#   Alarm OFF → [ALARM] 🟢 OFF                            (still logged, no priority tag)
+#   Topology  → [TOPOLOGY AUDIT] All required sensors present  (8310-5 is in PhysGraph)
+# =============================================================================
+
+def alarm_on(provider):
+    """Fire the temperature alarm with elevated value (genuine reading > threshold)."""
     with provider.mdib.metric_state_transaction() as tr:
-        tr.get_state('temperature').MetricValue.Value = Decimal('50')  # threshold: 45
+        tr.get_state('temperature').MetricValue.Value = Decimal('50')  # > upper bound 45
 
     with provider.mdib.alert_state_transaction() as tr:
         tr.get_state('al_condition_temperature').Presence = True
         tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.ON
 
-    print('[Provider] 🔴 Alarm ON  — temperature=50 (threshold: 45)', flush=True)
+    print(
+        '[Provider] 🔴 ALARM ON  | temp=50°C\n'
+        '           Consumer should log: [PRIORITY CLINICAL FOCUS] [ALARM] 🔴 ON',
+        flush=True,
+    )
 
 
-def deactivate_alarm(provider):
-    """Set temperature alarm OFF (value within normal range)."""
+def alarm_off(provider):
+    """Clear the temperature alarm, return metric to normal range."""
     with provider.mdib.metric_state_transaction() as tr:
         tr.get_state('temperature').MetricValue.Value = Decimal('36')  # normal
 
@@ -59,53 +76,68 @@ def deactivate_alarm(provider):
         tr.get_state('al_condition_temperature').Presence = False
         tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.OFF
 
-    print('[Provider] 🟢 Alarm OFF — temperature=36 (normal)',       flush=True)
+    print(
+        '[Provider] 🟢 ALARM OFF | temp=36°C\n'
+        '           Consumer should log: [ALARM] 🟢 OFF (no priority tag)',
+        flush=True,
+    )
 
 
 async def main(provider):
-    alarm_on = False
-    TOGGLE_INTERVAL = 10  # seconds between each ON/OFF flip
-    elapsed = 0
+    TOGGLE_INTERVAL = 10   # seconds between ON ↔ OFF
+    elapsed  = 0
+    alarm_active = False
 
     while True:
-        # Toggle alarm every TOGGLE_INTERVAL seconds
         if elapsed % TOGGLE_INTERVAL == 0:
-            alarm_on = not alarm_on
-            if alarm_on:
-                activate_alarm(provider)
+            alarm_active = not alarm_active
+            if alarm_active:
+                alarm_on(provider)
             else:
-                deactivate_alarm(provider)
+                alarm_off(provider)
 
-        n = sum(
-            len(getattr(mgr, '_subscriptions', None).objects)
-            for mgr in getattr(provider, '_subscriptions_managers', {}).values()
-            if getattr(mgr, '_subscriptions', None) is not None
+        # Status line
+        from sdc11073.xml_types import pm_qnames as pm
+        patients  = provider.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
+        locations = provider.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
+        ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+
+        given_names = [p.CoreData.Givenname for p in patients if p.CoreData and p.CoreData.Givenname]
+        rooms       = [l.LocationDetail.Room for l in locations if getattr(l, 'LocationDetail', None)]
+        ens_list    = []
+        for e in ensembles:
+            if getattr(e, 'Identification', None) and e.Identification:
+                ens_list.append(f'Ext:{e.Identification[0].Extension}')
+            else:
+                ens_list.append('(none)')
+
+        # -- DangerCodes from WorkflowContextState --------------------------------
+        workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
+        danger_codes = []
+        for wf in workflows:
+            wd = getattr(wf, 'WorkflowDetail', None)
+            if not wd:
+                continue
+            raw = getattr(wd, 'DangerCode', None)
+            if raw is None:
+                continue
+            # DangerCode can be a single object or a list
+            items = raw if isinstance(raw, list) else [raw]
+            for dc in items:
+                code   = getattr(dc, 'Code', None) or ''
+                system = getattr(dc, 'CodingSystem', None) or ''
+                code_str = f'{system}:{code}' if system else code
+                if code.strip():
+                    danger_codes.append(code_str)
+
+        state_str = '🔴 ON' if alarm_active else '🟢 OFF'
+        print(
+            f'[t={elapsed:>4}s | alarm={state_str}] '
+            f'Patients={given_names} | Rooms={rooms} | Ensembles={ens_list}\n'
+            f'           DangerCodes in MDIB ({len(danger_codes)}): {danger_codes}',
+            flush=True,
         )
 
-        from sdc11073.xml_types import pm_qnames as pm
-        patients = provider.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
-        given_names = [p.CoreData.Givenname for p in patients if p.CoreData and p.CoreData.Givenname]
-
-        locations = provider.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
-        rooms = [l.LocationDetail.Room for l in locations if getattr(l, "LocationDetail", None)]
-
-        ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
-        ens_info_list = []
-        for e in ensembles:
-            if getattr(e, "Identification", None) and len(e.Identification) > 0:
-                ident = e.Identification[0]
-                ident_name_str = "None"
-                if getattr(ident, "IdentifierName", None):
-                    ident_name = ident.IdentifierName[0] if isinstance(ident.IdentifierName,
-                                                                       list) else ident.IdentifierName
-                    ident_name_str = str(getattr(ident_name, "text", ident_name))
-                ens_info_list.append(f"Root:{ident.Root} | Ext:{ident.Extension} | Name:{ident_name_str}")
-            else:
-                ens_info_list.append(None)
-        workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
-        print(
-            f"[Context] Patients={given_names} | Rooms={rooms}  | "
-            f"Ensembles={ens_info_list}%")
         elapsed += 1
         await asyncio.sleep(1)
 
@@ -134,7 +166,10 @@ if __name__ == '__main__':
     discovery.start()
     provider.start_all()
     provider.publish()
-    print('Provider started. Alarm is permanently ON.')
+    print('Provider started — RuleEngine Priority + Topology Audit test.')
+    print('Patient DangerCode: SNOMED:40275004 (Contact dermatitis)')
+    print('Expected: [PRIORITY CLINICAL FOCUS] prefix on temperature alarms.')
+    print()
 
     try:
         asyncio.run(main(provider))

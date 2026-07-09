@@ -721,6 +721,43 @@ class DeviceHandler(threading.Thread):
                     )
 
             # ------------------------------------------------------------------
+            # STEP 3c: Snapshot initial alert states (fix: missed initial ON)
+            # ------------------------------------------------------------------
+            # on_alert_update fires only on EpisodicAlertReport (state *change*).
+            # If the provider already had an alarm ON at the moment of init_mdib(),
+            # the initial state is loaded into the MDIB silently — no report fires,
+            # so the consumer never logs the alarm.
+            # Fix: read current alert states from MDIB right now and feed them
+            # into on_alert_update as a synthetic "initial snapshot" report.
+            # This ensures the log always starts with the real device state.
+            try:
+                _initial_alerts = {}
+                with self.data_lock:
+                    if self.mdib:
+                        # alert_by_handle (ObservableProperty) is None until the first
+                        # EpisodicAlertReport arrives — cannot use it for initial snapshot.
+                        # Instead read directly from mdib.states (StatesLookup),
+                        # which is populated by init_mdib() via GetMdib.
+                        _alert_nodetypes = (
+                            pm.AlertConditionState,
+                            pm.AlertSignalState,
+                            pm.AlertSystemState,
+                        )
+                        for _s in self.mdib.states.objects:
+                            if _s.NODETYPE in _alert_nodetypes:
+                                _initial_alerts[_s.DescriptorHandle] = _s
+                if _initial_alerts:
+                    self.logger.info(
+                        f'[InitSnapshot] Replaying {len(_initial_alerts)} '
+                        f'initial alert state(s) from MDIB...'
+                    )
+                    self.on_alert_update(_initial_alerts)
+                else:
+                    self.logger.debug('[InitSnapshot] No alert states found in MDIB after init_mdib().')
+            except Exception as _snap_err:
+                self.logger.warning(f'[InitSnapshot] Failed to read initial alert states: {_snap_err}')
+
+            # ------------------------------------------------------------------
             # STEP 4: Create Qt object and move it to the UI thread
             # ------------------------------------------------------------------
             self.qtDeviceHandler = QtDeviceHandler(self)
@@ -1197,6 +1234,29 @@ class DeviceHandler(threading.Thread):
         except Exception as exc:
             self.logger.error(f'apply_fhir_contexts: SOAP call failed -- {exc}')
 
+        # ------------------------------------------------------------------
+        # Topology audit: check if ensemble has all required sensors for
+        # patient's clinical focus diagnoses (called after FHIR data is set)
+        # ------------------------------------------------------------------
+        if self.ensemble_uuid:
+            _aggregator = getattr(self.manager, 'aggregator', None)
+            if _aggregator is not None:
+                try:
+                    _missing = _aggregator.audit_topology(self.ensemble_uuid)
+                    if _missing:
+                        self.logger.warning(
+                            f'[TOPOLOGY AUDIT] Missing required sensors for patient\'s '
+                            f'clinical focus: {_missing} '
+                            f'(ensemble={self.ensemble_uuid[:8]}..., device={self.epr[-12:]})'
+                        )
+                    else:
+                        self.logger.info(
+                            f'[TOPOLOGY AUDIT] All required sensors present for patient\'s '
+                            f'clinical focus (ensemble={self.ensemble_uuid[:8]}...).'
+                        )
+                except Exception as _audit_err:
+                    self.logger.warning(f'[TOPOLOGY AUDIT] audit_topology raised: {_audit_err}')
+
     # =========================================================================
     # Callback: metric updates
     # =========================================================================
@@ -1277,8 +1337,9 @@ class DeviceHandler(threading.Thread):
                           else 'Alert')
 
             # -- Non-blocking concept-code hint (safe in notification thread) -----
-            _desc_handle  = getattr(state, 'DescriptorHandle', handle)
-            _concept_hint = ''
+            _desc_handle   = getattr(state, 'DescriptorHandle', handle)
+            _alert_concept: str | None = None   # raw concept code for rule engine
+            _concept_hint  = ''
             if self.data_lock.acquire(blocking=False):
                 try:
                     if self.mdib:
@@ -1288,7 +1349,8 @@ class DeviceHandler(threading.Thread):
                         if _desc:
                             _code = getattr(getattr(_desc, 'Type', None), 'Code', None)
                             if _code:
-                                _concept_hint = f' code={_code!r}'
+                                _alert_concept = str(_code)
+                                _concept_hint  = f' code={_code!r}'
                 except Exception:
                     pass
                 finally:
@@ -1298,12 +1360,43 @@ class DeviceHandler(threading.Thread):
             _dev = self.epr[-12:]
 
             # ==================================================================
+            # FIX 1: Skip AlertSystemState — it has no meaningful Presence field
+            # (Presence is None / empty string). Logging it as ❓ is pure noise.
+            # AlertSystemDescriptor manages the system activation, not individual
+            # alarm conditions or signals — there is nothing to escalate here.
+            # ==================================================================
+            if type_label == 'Alert' and raw_presence is None:
+                continue
+
+            # ==================================================================
+            # PRIORITY CHECK — is this alert clinically critical for patient?
+            # Applied only to ON / ACK states (OFF = alarm cleared, no escalation).
+            # ==================================================================
+            _aggregator = getattr(self.manager, 'aggregator', None)
+            _is_priority = False
+            _is_active = (
+                raw_presence is True                                        # Condition ON
+                or str(raw_presence) == str(pm_types.AlertSignalPresence.ON)   # Signal ON
+                or str(raw_presence) == str(pm_types.AlertSignalPresence.ACK)  # Signal ACK
+            )
+            if _is_active and _aggregator is not None and self.ensemble_uuid and _alert_concept:
+                try:
+                    _is_priority = _aggregator.check_alert_priority(
+                        self.ensemble_uuid, _alert_concept
+                    )
+                except Exception as _re:
+                    self.logger.warning(f'[PRIORITY CHECK] check_alert_priority raised: {_re}')
+
+            # FIX 2: Priority prefix only on active states (ON / ACK), never on OFF
+            _priority_prefix = '[PRIORITY CLINICAL FOCUS] ' if _is_priority else ''
+
+            # ==================================================================
             # BRANCH A: AlertConditionState — Presence is Python bool
             # ==================================================================
             if isinstance(raw_presence, bool):
                 if raw_presence:
                     self.logger.warning(
-                        f'[ALARM] 🔴 ON  | {type_label} handle={handle!r}'
+                        f'{_priority_prefix}[ALARM] 🔴 ON  | {type_label} handle={handle!r}'
                         f'{_concept_hint}{_ens} | device={_dev}'
                     )
                 else:
@@ -1323,7 +1416,7 @@ class DeviceHandler(threading.Thread):
 
                 if presence == on_str:
                     self.logger.warning(
-                        f'[ALARM] 🔴 ON  | {type_label} handle={handle!r}'
+                        f'{_priority_prefix}[ALARM] 🔴 ON  | {type_label} handle={handle!r}'
                         f'{_concept_hint}{_ens} | device={_dev}'
                     )
                 elif presence == off_str:
@@ -1333,12 +1426,12 @@ class DeviceHandler(threading.Thread):
                     )
                 elif presence == ack_str:
                     self.logger.warning(
-                        f'[ALARM] 🔕 ACK | {type_label} handle={handle!r}'
+                        f'{_priority_prefix}[ALARM] 🔕 ACK | {type_label} handle={handle!r}'
                         f'{_concept_hint}{_ens} | device={_dev}'
                     )
                 else:
-                    # Latch or unknown — still log at INFO so it is always visible
-                    self.logger.info(
+                    # Latch or truly unknown non-empty state — log at DEBUG to avoid noise
+                    self.logger.debug(
                         f'[ALARM] ❓ {presence!r} | {type_label} handle={handle!r}'
                         f'{_concept_hint}{_ens} | device={_dev}'
                     )

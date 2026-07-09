@@ -5,6 +5,7 @@ import uuid
 from typing import Any, Optional, Tuple, Set, Dict
 
 from fhirData import FHIRPatientData
+from ruleEvaluator import RuleEvaluator
 
 # TYPE_CHECKING guard to avoid circular imports when annotating DeviceHandler
 from typing import TYPE_CHECKING
@@ -43,6 +44,10 @@ class SmartAlertAggregator:
         # Used to rate-limit dump output: at most once per GRAPH_DUMP_INTERVAL_SEC.
         self._last_graph_dump_ts: float = 0.0
         self.GRAPH_DUMP_INTERVAL_SEC: float = 2.0
+
+        # Clinical suppression rule engine.
+        # Loaded once from rules.json; read-only → no extra locking needed.
+        self.rule_engine = RuleEvaluator('rules.json')
 
     def update_metric_state(self, ensemble_uuid: str, concept_code: str, value: float) -> None:
         """
@@ -144,6 +149,127 @@ class SmartAlertAggregator:
                     )
         lines.append('[PhysGraph] ────────────────────────────────────────────────')
         return '\n'.join(lines)
+
+    def _collect_patient_danger_codes(self, ensemble_uuid: str) -> Set[str]:
+        """
+        Helper: collect and normalise FHIR danger codes for the patient bound to
+        ensemble_uuid.  MUST be called with self.lock already held.
+
+        Returns an empty set if the patient or FHIR data is unavailable.
+        """
+        patient_danger_codes: Set[str] = set()
+
+        # Reverse-lookup: ensemble_uuid → patient_id
+        patient_id: Optional[str] = None
+        for (pid, _room), eid in self._active_ensembles.items():
+            if eid == ensemble_uuid:
+                patient_id = pid
+                break
+
+        if patient_id and patient_id in self._fhir_cache:
+            fhir_data = self._fhir_cache[patient_id]
+            try:
+                raw_codes = fhir_data.get_danger_codes() or []
+                for dc in raw_codes:
+                    code   = dc.get('code', '') or ''
+                    system = dc.get('system', '') or ''
+                    if not code:
+                        continue
+                    patient_danger_codes.add(code)
+                    if system:
+                        patient_danger_codes.add(f'{system}:{code}')
+                    if 'snomed' in system.lower():
+                        patient_danger_codes.add(f'SNOMED:{code}')
+            except Exception as _exc:
+                self.logger.debug(
+                    f'[Aggregator] _collect_patient_danger_codes: '
+                    f'FHIR code extraction failed: {_exc}'
+                )
+
+        return patient_danger_codes
+
+    def check_alert_priority(
+        self,
+        ensemble_uuid: Optional[str],
+        alert_concept: Optional[str],
+    ) -> bool:
+        """
+        Returns True if alert_concept is a clinical priority for the patient
+        bound to ensemble_uuid (based on FHIR danger codes and clinical_focus rules).
+
+        Thread safety: collects danger codes under self.lock, evaluates outside.
+
+        Parameters:
+          ensemble_uuid -- UUID of the ensemble the alerting device belongs to.
+          alert_concept -- BICEPS/LOINC/MDC concept code of the triggered alert.
+
+        Returns:
+          True  -- alert is a clinical priority → escalate with [PRIORITY] prefix.
+          False -- not a priority (or insufficient context).
+        """
+        if not ensemble_uuid or not alert_concept:
+            return False
+
+        with self.lock:
+            patient_danger_codes = self._collect_patient_danger_codes(ensemble_uuid)
+
+        # Evaluate outside lock (pure computation)
+        return self.rule_engine.is_priority_alert(alert_concept, patient_danger_codes)
+
+    def audit_topology(
+        self,
+        ensemble_uuid: str,
+    ) -> list[str]:
+        """
+        Checks whether the ensemble has all required sensors for the patient's
+        clinical focus diagnoses.
+
+        FIX — Race condition avoidance:
+          _physiological_graph is populated lazily (only when the first metric
+          value arrives via on_metric_update). At the moment audit_topology is
+          called (right after apply_fhir_contexts), the graph may still be empty
+          even though the device is connected and its descriptors are known.
+
+          Solution: collect available concept codes from DeviceHandler._handle_to_concept
+          (populated immediately at MDIB load time) instead of from the graph.
+          This reflects the DECLARED sensor capabilities of all devices in the
+          ensemble, not just what has been received so far.
+
+        Algorithm:
+          Under self.lock:
+            1. Look up all EPRs for this ensemble in _ensemble_devices.
+            2. For each EPR, find the DeviceHandler in _manager.devices.
+            3. Collect all values from handler._handle_to_concept (concept codes).
+            4. Collect patient danger codes from FHIR cache.
+          Outside lock:
+            5. Call rule_engine.get_missing_concepts().
+
+        Returns:
+          list[str] -- missing concept codes (empty = topology complete).
+        """
+        with self.lock:
+            # -- 1-3. Collect declared concept codes from all ensemble devices ----
+            available_concepts: Set[str] = set()
+            eprs = self._ensemble_devices.get(ensemble_uuid, set())
+            manager_devices: dict = getattr(self._manager, 'devices', {})
+
+            for epr in eprs:
+                handler = manager_devices.get(epr)
+                if handler is None:
+                    continue
+                handle_to_concept: dict = getattr(handler, '_handle_to_concept', {})
+                available_concepts.update(handle_to_concept.values())
+
+            # -- 4. Patient danger codes from FHIR cache --------------------------
+            patient_danger_codes = self._collect_patient_danger_codes(ensemble_uuid)
+
+        self.logger.debug(
+            f'[Aggregator] audit_topology: ensemble={ensemble_uuid[:8]}... '
+            f'available_concepts={sorted(available_concepts)}'
+        )
+
+        # -- 5. Evaluate outside lock (pure computation) -------------------------
+        return self.rule_engine.get_missing_concepts(available_concepts, patient_danger_codes)
 
     def _extract_patient_and_room(self, device_handler: 'DeviceHandler') -> Tuple[Optional[str], Optional[str]]:
         """
