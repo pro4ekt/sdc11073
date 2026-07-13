@@ -39,102 +39,189 @@ class MySdcProvider(SdcProvider):
 
 
 # =============================================================================
-# RuleEngine test scenarios
+# DSP SignalProcessor Test Scenarios
 # =============================================================================
-# Patient in MDIB has DangerCode = SNOMED:40275004 (Contact dermatitis).
-# rules.json clinical_focus maps 40275004 →
-#     critical_concepts: ["MDC_ALERT_TEMP_HIGH", "8310-5"]
 #
-# Expected consumer behavior:
-#   Alarm ON  → [PRIORITY CLINICAL FOCUS] [ALARM] 🔴 ON   (MDC_ALERT_TEMP_HIGH is critical)
-#   Alarm OFF → [ALARM] 🟢 OFF                            (still logged, no priority tag)
-#   Topology  → [TOPOLOGY AUDIT] All required sensors present  (8310-5 is in PhysGraph)
+# The consumer's SignalProcessor validates alarms by computing dx/dt on the
+# metric buffer (LOINC 8310-5, temperature).
+# Limit for 8310-5: MAX_ROC = 0.5 °C/s
+#
+# Three scenarios repeat in a 70-second cycle:
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ Phase 1 — WARMUP          (t=  0..19, 20s)                             │
+# │   temp = 36.0 °C (stable).  No alarm.                                  │
+# │   Purpose: fill the _physiological_graph deque with stable history.    │
+# │   Consumer: PhysGraph updates visible, no alarm logs.                  │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │ Phase 2 — ARTIFACT TEST   (t= 20..34, 15s)                             │
+# │   t=20: temperature 36→200 °C in ONE step + alarm ON.                  │
+# │   RoC = |200-36| / 1s = 164 °C/s  >> limit=0.5 °C/s                   │
+# │   Expected consumer: [DSP FILTER] Artifact detected  →  alarm LOST.    │
+# │   t=28: temp back to 36 °C + alarm OFF.                                │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │ Phase 3 — REAL ALARM TEST (t= 35..69, 35s)                             │
+# │   t=35..54: temp rises 36 + (t-35)*0.1 °C/s (0.1 °C per second).      │
+# │   t=50: alarm ON.  Buffer at this moment:                               │
+# │     [..., (37.4, t49), (37.5, t50)]                                    │
+# │     RoC = 0.1 / 1s = 0.1 °C/s  << limit=0.5 °C/s                      │
+# │   Expected consumer: 🔴 ON  (alarm escalated).                          │
+# │   t=65: temp back to 36 °C + alarm OFF.                                │
+# │   Expected consumer: 🟢 OFF.                                            │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# Bonus edge cases embedded in the cycle:
+#   • Phase 2, t=20: metric update and alarm fire in same second.
+#     Tests that SDC Pub/Sub ordering (metric before alert) is preserved.
+#   • Phase 3, t=35: alarm fires while buffer has only recovery readings
+#     (36 °C from phase 2 end). RoC = 0 → passes.
+#   • No humidity alarm is fired, so humidity stays silent the whole time.
 # =============================================================================
 
-def alarm_on(provider):
-    """Fire the temperature alarm with elevated value (genuine reading > threshold)."""
-    with provider.mdib.metric_state_transaction() as tr:
-        tr.get_state('temperature').MetricValue.Value = Decimal('50')  # > upper bound 45
+CYCLE_SEC       = 70   # total cycle duration (seconds)
+WARMUP_END      = 20   # Phase 1: 0..19
+ARTIFACT_ON     = 20   # Phase 2 start: jump temp + fire alarm
+ARTIFACT_OFF    = 28   # Phase 2: clear alarm + restore temp
+RISE_START      = 35   # Phase 3: begin gradual temperature rise
+REAL_ALARM_ON   = 50   # Phase 3: fire alarm (temp ~37.5 °C, rising steadily)
+REAL_ALARM_OFF  = 65   # Phase 3: clear alarm + restore temp
 
+
+# ---------------------------------------------------------------------------
+# Primitive metric / alert helpers
+# ---------------------------------------------------------------------------
+
+def _set_temperature(provider, value: Decimal) -> None:
+    """Write a single temperature metric sample (generates EpisodicMetricReport)."""
+    with provider.mdib.metric_state_transaction() as tr:
+        tr.get_state('temperature').MetricValue.Value = value
+
+
+def _alarm_on(provider) -> None:
+    """Fire the temperature alarm (generates EpisodicAlertReport)."""
     with provider.mdib.alert_state_transaction() as tr:
         tr.get_state('al_condition_temperature').Presence = True
         tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.ON
 
-    print(
-        '[Provider] 🔴 ALARM ON  | temp=50°C\n'
-        '           Consumer should log: [PRIORITY CLINICAL FOCUS] [ALARM] 🔴 ON',
-        flush=True,
-    )
 
-
-def alarm_off(provider):
-    """Clear the temperature alarm, return metric to normal range."""
-    with provider.mdib.metric_state_transaction() as tr:
-        tr.get_state('temperature').MetricValue.Value = Decimal('36')  # normal
-
+def _alarm_off(provider) -> None:
+    """Clear the temperature alarm (generates EpisodicAlertReport)."""
     with provider.mdib.alert_state_transaction() as tr:
         tr.get_state('al_condition_temperature').Presence = False
         tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.OFF
 
-    print(
-        '[Provider] 🟢 ALARM OFF | temp=36°C\n'
-        '           Consumer should log: [ALARM] 🟢 OFF (no priority tag)',
-        flush=True,
-    )
 
+# ---------------------------------------------------------------------------
+# Main test loop
+# ---------------------------------------------------------------------------
 
-async def main(provider):
-    TOGGLE_INTERVAL = 10   # seconds between ON ↔ OFF
-    elapsed  = 0
+async def main(provider):  # noqa: C901
+    elapsed      = 0
     alarm_active = False
 
+    _SEP = '─' * 70
+
+    print(f'\n{_SEP}')
+    print('  DSP SignalProcessor integration test  —  70-second cycle')
+    print(f'{_SEP}')
+    print('  Phase 1 WARMUP     t= 0-19  :  36°C stable, buffer fills')
+    print('  Phase 2 ARTIFACT   t=20-34  :  36→200°C jump + alarm ON')
+    print('                                 Expected: [DSP FILTER] SUPPRESSED')
+    print('  Phase 3 REAL ALARM t=35-69  :  slow rise 0.1°C/s, alarm at t=50')
+    print('                                 Expected: 🔴 ON escalated')
+    print(f'{_SEP}\n')
+
     while True:
-        if elapsed % TOGGLE_INTERVAL == 0:
-            alarm_active = not alarm_active
-            if alarm_active:
-                alarm_on(provider)
+        t = elapsed % CYCLE_SEC
+
+        # ==================================================================
+        # STEP 1: Compute the temperature value for this tick
+        # ==================================================================
+        if t < WARMUP_END:
+            # Phase 1: stable baseline — fills the sliding-window buffer
+            temp = Decimal('36.0')
+
+        elif t < ARTIFACT_OFF:
+            # Phase 2: artifact window
+            if t == ARTIFACT_ON:
+                # Instantaneous jump: impossible RoC for any sensor
+                temp = Decimal('200.0')
             else:
-                alarm_off(provider)
+                temp = Decimal('36.0')
 
-        # Status line
-        from sdc11073.xml_types import pm_qnames as pm
-        patients  = provider.mdib.context_states.NODETYPE.get(pm.PatientContextState, [])
-        locations = provider.mdib.context_states.NODETYPE.get(pm.LocationContextState, [])
-        ensembles = provider.mdib.context_states.NODETYPE.get(pm.EnsembleContextState, [])
+        elif t < RISE_START:
+            # Recovery between phases
+            temp = Decimal('36.0')
 
-        given_names = [p.CoreData.Givenname for p in patients if p.CoreData and p.CoreData.Givenname]
-        rooms       = [l.LocationDetail.Room for l in locations if getattr(l, 'LocationDetail', None)]
-        ens_list    = []
-        for e in ensembles:
-            if getattr(e, 'Identification', None) and e.Identification:
-                ens_list.append(f'Ext:{e.Identification[0].Extension}')
-            else:
-                ens_list.append('(none)')
+        elif t < REAL_ALARM_OFF:
+            # Phase 3: physiologically plausible slow rise (0.1 °C/s)
+            rise = Decimal(str((t - RISE_START) * 0.1))
+            temp = Decimal('36.0') + rise
 
-        # -- DangerCodes from WorkflowContextState --------------------------------
-        workflows = provider.mdib.context_states.NODETYPE.get(pm.WorkflowContextState, [])
-        danger_codes = []
-        for wf in workflows:
-            wd = getattr(wf, 'WorkflowDetail', None)
-            if not wd:
-                continue
-            raw = getattr(wd, 'DangerCode', None)
-            if raw is None:
-                continue
-            # DangerCode can be a single object or a list
-            items = raw if isinstance(raw, list) else [raw]
-            for dc in items:
-                code   = getattr(dc, 'Code', None) or ''
-                system = getattr(dc, 'CodingSystem', None) or ''
-                code_str = f'{system}:{code}' if system else code
-                if code.strip():
-                    danger_codes.append(code_str)
+        else:
+            # Post-alarm cooldown: restore baseline
+            temp = Decimal('36.0')
 
-        state_str = '🔴 ON' if alarm_active else '🟢 OFF'
+        # ==================================================================
+        # STEP 2: Send metric update BEFORE any alarm state change.
+        # SDC guarantees metric report arrives before alert report because
+        # transactions are sequential on the same provider connection.
+        # The consumer's _physiological_graph is updated FIRST so the
+        # SignalProcessor has the latest reading in the buffer.
+        # ==================================================================
+        _set_temperature(provider, temp)
+
+        # ==================================================================
+        # STEP 3: Alarm state transitions (only on boundary ticks)
+        # ==================================================================
+        if t == ARTIFACT_ON and not alarm_active:
+            alarm_active = True
+            _alarm_on(provider)
+            print(f'\n{_SEP}')
+            print(f'[t={elapsed:>3}s] 🧪 ARTIFACT TEST')
+            print(f'         Temp jumped: 36.0 → 200.0 °C  (RoC ≈ 164 °C/s >> limit 0.5)')
+            print(f'         Alarm ON fired.')
+            print(f'         ✗ Consumer MUST log: [DSP FILTER] Artifact detected')
+            print(f'         ✗ Consumer must NOT log: 🔴 ON')
+            print(f'{_SEP}\n')
+
+        elif t == ARTIFACT_OFF and alarm_active:
+            alarm_active = False
+            _alarm_off(provider)
+            print(f'[t={elapsed:>3}s] Phase 2 end — temp restored to 36°C, alarm OFF.')
+
+        elif t == REAL_ALARM_ON and not alarm_active:
+            alarm_active = True
+            _alarm_on(provider)
+            roc_actual = 0.1  # 0.1 °C/s
+            print(f'\n{_SEP}')
+            print(f'[t={elapsed:>3}s] 🧪 REAL ALARM TEST')
+            print(f'         Temp now: {float(temp):.2f} °C  (risen 0.1°C/s for {t - RISE_START}s)')
+            print(f'         Actual RoC ≈ {roc_actual:.2f} °C/s  <<  limit 0.5 °C/s')
+            print(f'         Alarm ON fired.')
+            print(f'         ✓ Consumer MUST log: 🔴 ON  (real clinical event)')
+            print(f'         ✓ Consumer must NOT suppress this alarm')
+            print(f'{_SEP}\n')
+
+        elif t == REAL_ALARM_OFF and alarm_active:
+            alarm_active = False
+            _alarm_off(provider)
+            print(f'[t={elapsed:>3}s] Phase 3 end — temp restored, alarm OFF.')
+            print(f'         ✓ Consumer MUST log: 🟢 OFF\n')
+
+        # ==================================================================
+        # STEP 4: Per-second status line
+        # ==================================================================
+        phase = (
+            'WARMUP   ' if t < WARMUP_END else
+            'ARTIFACT ' if t < ARTIFACT_OFF else
+            'RECOVERY ' if t < RISE_START else
+            'REAL ALRM' if t < REAL_ALARM_OFF else
+            'COOLDOWN '
+        )
+        alarm_str = '🔴 ON ' if alarm_active else '🟢 OFF'
         print(
-            f'[t={elapsed:>4}s | alarm={state_str}] '
-            f'Patients={given_names} | Rooms={rooms} | Ensembles={ens_list}\n'
-            f'           DangerCodes in MDIB ({len(danger_codes)}): {danger_codes}',
+            f'[t={elapsed:>3}s | {phase} | alarm={alarm_str}]  temp={float(temp):>6.2f}°C',
             flush=True,
         )
 
@@ -142,11 +229,15 @@ async def main(provider):
         await asyncio.sleep(1)
 
 
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
 NETWORK_ADAPTER = 'Wi-Fi'
-MDIB_FILE = 'correct_mdib.xml'
+MDIB_FILE       = 'correct_mdib.xml'
 
 if __name__ == '__main__':
-    my_uuid = uuid.UUID('ba8ad49f-e25b-43ad-870b-c1bdba91d431')
+    my_uuid   = uuid.UUID('ba8ad49f-e25b-43ad-870b-c1bdba91d431')
     mdib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), MDIB_FILE)
 
     mdib       = ProviderMdib.from_mdib_file(mdib_path)
@@ -156,24 +247,24 @@ if __name__ == '__main__':
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     discovery  = WSDiscoverySingleAdapter(NETWORK_ADAPTER)
 
-    provider = MySdcProvider(ws_discovery=discovery, epr=my_uuid,
-                             this_model=model, this_device=device,
-                             device_mdib_container=mdib,
-                             specific_components=components,
-                             ssl_context_container=None)
+    provider = MySdcProvider(
+        ws_discovery=discovery,
+        epr=my_uuid,
+        this_model=model,
+        this_device=device,
+        device_mdib_container=mdib,
+        specific_components=components,
+        ssl_context_container=None,
+    )
     provider.set_used_compression()
 
     discovery.start()
     provider.start_all()
     provider.publish()
-    print('Provider started — RuleEngine Priority + Topology Audit test.')
-    print('Patient DangerCode: SNOMED:40275004 (Contact dermatitis)')
-    print('Expected: [PRIORITY CLINICAL FOCUS] prefix on temperature alarms.')
-    print()
 
     try:
         asyncio.run(main(provider))
     except KeyboardInterrupt:
         provider.stop_all()
         discovery.stop()
-        print('Stopped.')
+        print('\nStopped.')
