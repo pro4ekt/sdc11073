@@ -370,6 +370,43 @@ class SmartAlertAggregator:
         with self.lock:
             return ensemble_uuid in self._escalated_ensembles
 
+    def clear_alarm(self, ensemble_uuid: Optional[str], alert_key: str) -> None:
+        """
+        Explicitly remove a cleared alarm from the TTL cache.
+
+        Called by DeviceHandler.on_alert_update() when an AlertConditionState
+        transitions to Presence=False (alarm OFF).
+
+        Without this, a suppressed alarm that goes OFF would stay in
+        _active_alarms for up to ALARM_TTL_SEC (10 s).  During that window, a
+        new alarm on another device would wrongly include the dead alarm in the
+        Bayesian ensemble fusion, artificially inflating the risk score.
+
+        Side-effect: if removing this alarm empties _active_alarms for the
+        ensemble, the ensemble is removed from _escalated_ensembles (crisis
+        fully resolved).
+
+        Thread safety: protected by self.lock.
+        """
+        if not ensemble_uuid:
+            return
+        with self.lock:
+            ensemble_cache = self._active_alarms.get(ensemble_uuid)
+            if ensemble_cache and alert_key in ensemble_cache:
+                del ensemble_cache[alert_key]
+                self.logger.debug(
+                    f'[ActiveAlarms] Cleared (alarm OFF): ensemble={ensemble_uuid[:8]} '
+                    f'alert={alert_key!r}'
+                )
+            # If all alarms for this ensemble are now gone → crisis resolved
+            if not self._active_alarms.get(ensemble_uuid):
+                if ensemble_uuid in self._escalated_ensembles:
+                    self._escalated_ensembles.discard(ensemble_uuid)
+                    self.logger.info(
+                        f'[Escalation] Crisis resolved: ensemble={ensemble_uuid[:8]} '
+                        f'— all alarms cleared, escalation state reset.'
+                    )
+
     def _propagate_escalation_to_devices(self, ensemble_uuid: str) -> None:
         """
         When the Bayesian pipeline first confirms a crisis, propagate the

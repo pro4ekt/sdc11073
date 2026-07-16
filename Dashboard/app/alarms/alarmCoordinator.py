@@ -196,7 +196,7 @@ class ClinicalRiskFilter:
     def compute_risk(
         self,
         evidences: list[DeviceAlertEvidence],   # ALL devices in the ensemble
-        prior: float = 0.005,                   # Prior: 0.5% baseline ICU crisis prevalence
+        prior: float = 0.01,                   # Prior: 0.5% baseline ICU crisis prevalence
     ) -> float:
         """
         Computes ensemble risk score via BICEPS-scaled Bayesian Sensor Fusion.

@@ -735,8 +735,16 @@ class DeviceHandler(threading.Thread):
             # ── Condition suppression tracking ────────────────────────────────
             # When a Condition clears, always remove from _pipeline_suppressed so
             # the next ON event gets a fresh evaluation.
+            # Also explicitly remove from the aggregator's TTL cache (_active_alarms)
+            # so the dead alarm is not included in Bayesian fusion for the next
+            # alarm that fires in the same ensemble.
             if type_label == 'Condition' and not is_active:
                 self._pipeline_suppressed.discard(handle)
+                if aggregator is not None and self.ensemble_uuid:
+                    try:
+                        aggregator.clear_alarm(self.ensemble_uuid, handle)
+                    except Exception as _e:
+                        self.logger.debug(f'[DSP FILTER] clear_alarm failed: {_e}')
 
             # DSP filter (IHE-PCD ACM Alarm Coordinator — Stage 1 + Stage 2)
             if is_active and type_label == 'Condition' and aggregator is not None and self.ensemble_uuid:
