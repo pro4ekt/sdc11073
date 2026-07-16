@@ -1,0 +1,52 @@
+{
+  "_comment": "IHE-PCD ACM Clinical Device Database — Consumer-side calibration data.",
+  "_version": "2.0.0",
+  "_updated": "2026-07-15",
+
+  "roc_limits": {
+    "_comment": "Physiological dx/dt limits (units/s) keyed by LOINC/MDC concept code. Stage 1 (HardwareArtifactFilter).",
+    "8310-5":  0.5,
+    "59408-5": 3.0,
+    "8867-4":  10.0,
+    "2345-7":  5.0,
+    "12812-6": 5.0,
+    "68480-6": 5.0,
+    "20053-5": 50.0,
+    "8775-2":  100.0
+  },
+
+  "device_profiles": {
+    "_comment": "Bayesian reliability priors: Manufacturer -> ModelName -> ConceptCode -> {sensitivity, false_alarm_rate}. Stage 2 (ClinicalRiskFilter). prior=0.005.",
+    "Draeger": {
+      "Infinity Monitor": {
+        "_comment": "Bedside patient monitor — HR channel. LR+ = 0.99/0.15 = 6.60. Phase 3 risk = P*×10.0.",
+        "8867-4": { "sensitivity": 0.99, "false_alarm_rate": 0.15 }
+      },
+      "Evita Ventilator": {
+        "_comment": "Mechanical ventilator — airway pressure. LR+ = 0.98/0.10 = 9.80.",
+        "20053-5": { "sensitivity": 0.98, "false_alarm_rate": 0.10 }
+      }
+    },
+    "BBraun": {
+      "Space Perfusor": {
+        "_comment": "Syringe infusion pump — line pressure. LR+ = 0.95/0.08 = 11.875.",
+        "8775-2": { "sensitivity": 0.95, "false_alarm_rate": 0.08 }
+      }
+    },
+    "Acme Medical": {
+      "_comment": "Legacy single-device test harness (correct_provider.py / provider_ensemble.py).",
+      "PatientMonitor Pro 3000": {
+        "8867-4":  { "sensitivity": 0.88, "false_alarm_rate": 0.08 },
+        "59408-5": { "sensitivity": 0.74, "false_alarm_rate": 0.18 },
+        "8310-5":  { "sensitivity": 0.82, "false_alarm_rate": 0.10 },
+        "12812-6": { "sensitivity": 0.70, "false_alarm_rate": 0.20 }
+      },
+      "CardioMon 100": {
+        "8867-4": { "sensitivity": 0.88, "false_alarm_rate": 0.08 }
+      },
+      "OxiPro 200": {
+        "59408-5": { "sensitivity": 0.74, "false_alarm_rate": 0.18 }
+      }
+    }
+  }
+}

@@ -1,3 +1,52 @@
+"""
+correct_provider.py — IHE-PCD ACM AlarmCoordinator Test Harness
+===============================================================
+Emulates an ICU bedside monitor (Acme Medical / PatientMonitor Pro 3000).
+
+DPWS metadata
+  Manufacturer : "Acme Medical"
+  ModelName    : "PatientMonitor Pro 3000"
+  These values are used by the consumer's ClinicalRiskFilter to look up
+  _DEVICE_PROFILES and compute calibrated LR+ ratios.
+
+Simulation — 45-second cycle with 4 phases
+───────────────────────────────────────────
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Phase 0 — BASELINE         (t=  0.. 4,  5s)                                 │
+│   HR=80 bpm, SpO2=98%.  All alarms OFF.                                     │
+│   Purpose: fill the _physiological_graph deque with stable history.         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phase 1 — HARDWARE ARTIFACT TEST  (t=  5.. 9,  5s)                          │
+│   t=5: HR jumps 80→150 bpm in ONE step.                                     │
+│        RoC = |150-80| / 1s = 70 bpm/s  >>  Stage 1 limit = 10 bpm/s        │
+│        al_hr_hi (Priority=Hi) fired.                                        │
+│   Expected consumer: Stage 1 SUPPRESSES alarm.                              │
+│   t=10: HR restored to 80, alarm OFF.                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phase 2 — WEAK ALARM / LOW RISK TEST  (t= 15..24, 10s)                      │
+│   t=15..19: SpO2 falls 2%/s: 98→96→94→92→90.                               │
+│   t=20: SpO2=88%, RoC=2 %/s  <  Stage 1 limit=3 %/s.  Stage 1 passes.     │
+│          al_spo2_lo (Priority=Me) fired.                                    │
+│          Stage 2: Posterior_P≈0.804, P_total=6.0  →  risk≈4.83 < 5.0       │
+│   Expected consumer: Stage 2 SUPPRESSES alarm.                              │
+│   t=25: SpO2→98%, alarm OFF.                                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phase 3 — SENSOR FUSION CRISIS  (t= 30..39, 10s)                            │
+│   t=30..34: HR rises +10/s (80→90→100→110→120), SpO2 falls (98→…→88).     │
+│   t=35: HR=130 bpm, SpO2=85%.  Both alarms fired simultaneously.            │
+│          al_hr_hi  (Hi):  RoC=10 NOT>10  →  Stage 1 passes.                │
+│                            risk = 0.917 × 10.0 = 9.17  ≥ 5.0  → ESCALATE  │
+│          al_spo2_lo(Me):  RoC=3  NOT>3   →  Stage 1 passes.                │
+│                            risk = 0.804 ×  6.0 = 4.83  < 5.0  → SUPPRESS  │
+│   t=40: all vitals restored, all alarms OFF.                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Risk maths assume ClinicalRiskFilter._DEVICE_PROFILES contains calibrated
+entries for "Acme Medical" / "PatientMonitor Pro 3000":
+  8867-4  sensitivity=0.88, FAR=0.08  →  LR+ = 11.0
+  59408-5 sensitivity=0.74, FAR=0.18  →  LR+ ≈ 4.11
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -38,190 +87,206 @@ class MySdcProvider(SdcProvider):
         )
 
 
-# =============================================================================
-# DSP SignalProcessor Test Scenarios
-# =============================================================================
-#
-# The consumer's SignalProcessor validates alarms by computing dx/dt on the
-# metric buffer (LOINC 8310-5, temperature).
-# Limit for 8310-5: MAX_ROC = 0.5 °C/s
-#
-# Three scenarios repeat in a 70-second cycle:
-#
-# ┌─────────────────────────────────────────────────────────────────────────┐
-# │ Phase 1 — WARMUP          (t=  0..19, 20s)                             │
-# │   temp = 36.0 °C (stable).  No alarm.                                  │
-# │   Purpose: fill the _physiological_graph deque with stable history.    │
-# │   Consumer: PhysGraph updates visible, no alarm logs.                  │
-# ├─────────────────────────────────────────────────────────────────────────┤
-# │ Phase 2 — ARTIFACT TEST   (t= 20..34, 15s)                             │
-# │   t=20: temperature 36→200 °C in ONE step + alarm ON.                  │
-# │   RoC = |200-36| / 1s = 164 °C/s  >> limit=0.5 °C/s                   │
-# │   Expected consumer: [DSP FILTER] Artifact detected  →  alarm LOST.    │
-# │   t=28: temp back to 36 °C + alarm OFF.                                │
-# ├─────────────────────────────────────────────────────────────────────────┤
-# │ Phase 3 — REAL ALARM TEST (t= 35..69, 35s)                             │
-# │   t=35..54: temp rises 36 + (t-35)*0.1 °C/s (0.1 °C per second).      │
-# │   t=50: alarm ON.  Buffer at this moment:                               │
-# │     [..., (37.4, t49), (37.5, t50)]                                    │
-# │     RoC = 0.1 / 1s = 0.1 °C/s  << limit=0.5 °C/s                      │
-# │   Expected consumer: 🔴 ON  (alarm escalated).                          │
-# │   t=65: temp back to 36 °C + alarm OFF.                                │
-# │   Expected consumer: 🟢 OFF.                                            │
-# └─────────────────────────────────────────────────────────────────────────┘
-#
-# Bonus edge cases embedded in the cycle:
-#   • Phase 2, t=20: metric update and alarm fire in same second.
-#     Tests that SDC Pub/Sub ordering (metric before alert) is preserved.
-#   • Phase 3, t=35: alarm fires while buffer has only recovery readings
-#     (36 °C from phase 2 end). RoC = 0 → passes.
-#   • No humidity alarm is fired, so humidity stays silent the whole time.
-# =============================================================================
+# ── Timing constants (seconds within each CYCLE_SEC-second loop) ──────────────
 
-CYCLE_SEC       = 70   # total cycle duration (seconds)
-WARMUP_END      = 20   # Phase 1: 0..19
-ARTIFACT_ON     = 20   # Phase 2 start: jump temp + fire alarm
-ARTIFACT_OFF    = 28   # Phase 2: clear alarm + restore temp
-RISE_START      = 35   # Phase 3: begin gradual temperature rise
-REAL_ALARM_ON   = 50   # Phase 3: fire alarm (temp ~37.5 °C, rising steadily)
-REAL_ALARM_OFF  = 65   # Phase 3: clear alarm + restore temp
+CYCLE_SEC         = 45   # total cycle length
+
+ARTIFACT_START    = 5    # Phase 1: HR jumps to 150 + al_hr_hi ON
+ARTIFACT_END      = 10   # Phase 1: HR returns to 80 + al_hr_hi OFF
+
+SPO2_RISE_START   = 15   # Phase 2: SpO2 begins to fall (2%/s)
+SPO2_ALARM_ON     = 20   # Phase 2: SpO2=88%, fire al_spo2_lo
+SPO2_RESTORE      = 25   # Phase 2: SpO2→98%, al_spo2_lo OFF
+
+FUSION_RISE_START = 30   # Phase 3: gradual change starts (HR↑, SpO2↓)
+FUSION_ALARM_ON   = 35   # Phase 3: crisis values + both alarms ON
+FUSION_RESTORE    = 40   # Phase 3: restore all, both alarms OFF
 
 
-# ---------------------------------------------------------------------------
-# Primitive metric / alert helpers
-# ---------------------------------------------------------------------------
+# ── Vitals computation ────────────────────────────────────────────────────────
 
-def _set_temperature(provider, value: Decimal) -> None:
-    """Write a single temperature metric sample (generates EpisodicMetricReport)."""
+def _compute_vitals(t: int) -> tuple[int, int]:
+    """
+    Return (hr_bpm, spo2_pct) for cycle position t.
+
+    Phase 1 (5..9)  — HR spike artifact:
+      HR=150, SpO2=98
+
+    Phase 2 (15..24) — SpO2 slow drop:
+      t=15..19: SpO2 = 98 − (t−15)×2   →  98, 96, 94, 92, 90
+      t=20..24: SpO2 = 88 (alarm window)
+
+    Phase 3 (30..39) — Fusion crisis:
+      t=30..34: HR = 80 + (t−30)×10    →  80, 90, 100, 110, 120
+                SpO2 = 98 − int((t−30)×2.6)  →  98, 96, 93, 91, 88
+      t=35..39: HR=130, SpO2=85 (alarm window)
+    """
+    hr, spo2 = 80, 98
+
+    if ARTIFACT_START <= t < ARTIFACT_END:
+        hr = 150
+
+    elif SPO2_RISE_START <= t < SPO2_RESTORE:
+        if t < SPO2_ALARM_ON:
+            spo2 = 98 - (t - SPO2_RISE_START) * 2
+        else:
+            spo2 = 88
+
+    elif FUSION_RISE_START <= t < FUSION_RESTORE:
+        steps = t - FUSION_RISE_START
+        if t < FUSION_ALARM_ON:
+            hr   = 80 + steps * 10
+            spo2 = 98 - int(steps * 2.6)
+        else:
+            hr   = 130
+            spo2 = 85
+
+    return hr, spo2
+
+
+def _phase_name(t: int) -> str:
+    if t < ARTIFACT_START:                        return 'BASELINE      '
+    if t < ARTIFACT_END:                          return 'ARTIFACT      '
+    if t < SPO2_RISE_START:                       return 'RECOVERY-1    '
+    if t < SPO2_RESTORE:                          return 'WEAK-ALARM    '
+    if t < FUSION_RISE_START:                     return 'RECOVERY-2    '
+    if t < FUSION_RESTORE:                        return 'FUSION-CRISIS '
+    return                                               'COOLDOWN      '
+
+
+# ── MDIB helpers ──────────────────────────────────────────────────────────────
+
+def _set_vitals(provider, hr_val: Decimal, spo2_val: Decimal) -> None:
+    """Write HR + SpO2 metrics in a single transaction (one EpisodicMetricReport)."""
     with provider.mdib.metric_state_transaction() as tr:
-        tr.get_state('temperature').MetricValue.Value = value
+        tr.get_state('hr_metric').MetricValue.Value   = hr_val
+        tr.get_state('spo2_metric').MetricValue.Value = spo2_val
 
 
-def _alarm_on(provider) -> None:
-    """Fire the temperature alarm (generates EpisodicAlertReport)."""
+def _hr_alarm_on(provider) -> None:
     with provider.mdib.alert_state_transaction() as tr:
-        tr.get_state('al_condition_temperature').Presence = True
-        tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.ON
+        tr.get_state('al_hr_hi').Presence        = True
+        tr.get_state('al_signal_hr_hi').Presence = AlertSignalPresence.ON
 
 
-def _alarm_off(provider) -> None:
-    """Clear the temperature alarm (generates EpisodicAlertReport)."""
+def _hr_alarm_off(provider) -> None:
     with provider.mdib.alert_state_transaction() as tr:
-        tr.get_state('al_condition_temperature').Presence = False
-        tr.get_state('al_signal_temperature').Presence = AlertSignalPresence.OFF
+        tr.get_state('al_hr_hi').Presence        = False
+        tr.get_state('al_signal_hr_hi').Presence = AlertSignalPresence.OFF
 
 
-# ---------------------------------------------------------------------------
-# Main test loop
-# ---------------------------------------------------------------------------
+def _spo2_alarm_on(provider) -> None:
+    with provider.mdib.alert_state_transaction() as tr:
+        tr.get_state('al_spo2_lo').Presence        = True
+        tr.get_state('al_signal_spo2_lo').Presence = AlertSignalPresence.ON
 
-async def main(provider):  # noqa: C901
-    elapsed      = 0
-    alarm_active = False
 
-    _SEP = '─' * 70
+def _spo2_alarm_off(provider) -> None:
+    with provider.mdib.alert_state_transaction() as tr:
+        tr.get_state('al_spo2_lo').Presence        = False
+        tr.get_state('al_signal_spo2_lo').Presence = AlertSignalPresence.OFF
 
-    print(f'\n{_SEP}')
-    print('  DSP SignalProcessor integration test  —  70-second cycle')
-    print(f'{_SEP}')
-    print('  Phase 1 WARMUP     t= 0-19  :  36°C stable, buffer fills')
-    print('  Phase 2 ARTIFACT   t=20-34  :  36→200°C jump + alarm ON')
-    print('                                 Expected: [DSP FILTER] SUPPRESSED')
-    print('  Phase 3 REAL ALARM t=35-69  :  slow rise 0.1°C/s, alarm at t=50')
-    print('                                 Expected: 🔴 ON escalated')
-    print(f'{_SEP}\n')
+
+# ── Simulation loop ───────────────────────────────────────────────────────────
+
+async def main(provider) -> None:  # noqa: C901
+    elapsed   = 0
+    hr_alarm  = False
+    spo2_alarm = False
+    SEP = '─' * 74
+
+    print(f'\n{SEP}')
+    print('  IHE-PCD ACM  AlarmCoordinator Test Harness  —  45-second cycle')
+    print(f'  Device: Acme Medical / PatientMonitor Pro 3000')
+    print(f'{SEP}')
+    print('  Phase 0  t= 0- 4  BASELINE          HR=80  SpO2=98%  (fill buffer)')
+    print('  Phase 1  t= 5- 9  ARTIFACT          HR jumps 80→150 (RoC=70>>10)')
+    print('                                       ✗ Stage 1 MUST suppress al_hr_hi')
+    print('  Phase 2  t=15-24  WEAK ALARM         SpO2 slow drop to 88%')
+    print('                                       ✗ Stage 2 MUST suppress al_spo2_lo (risk≈4.83<5.0)')
+    print('  Phase 3  t=30-39  FUSION CRISIS      HR→130 + SpO2→85% simultaneously')
+    print('                                       ✗ Stage 2 MUST suppress  al_spo2_lo (risk≈4.83<5.0)')
+    print('                                       ✓ Stage 2 MUST escalate  al_hr_hi   (risk≈9.17≥5.0)')
+    print(f'{SEP}\n')
 
     while True:
         t = elapsed % CYCLE_SEC
+        hr_val, spo2_val = _compute_vitals(t)
 
-        # ==================================================================
-        # STEP 1: Compute the temperature value for this tick
-        # ==================================================================
-        if t < WARMUP_END:
-            # Phase 1: stable baseline — fills the sliding-window buffer
-            temp = Decimal('36.0')
+        # ── Step 1: Send metric updates BEFORE alarm state changes ────────────
+        # SDC pub/sub: consumer receives EpisodicMetricReport first, then
+        # EpisodicAlertReport — ensuring the physiological graph is current
+        # before AlarmCoordinator.evaluate() runs.
+        _set_vitals(provider, Decimal(str(hr_val)), Decimal(str(spo2_val)))
 
-        elif t < ARTIFACT_OFF:
-            # Phase 2: artifact window
-            if t == ARTIFACT_ON:
-                # Instantaneous jump: impossible RoC for any sensor
-                temp = Decimal('200.0')
-            else:
-                temp = Decimal('36.0')
+        # ── Step 2: Alarm state transitions (boundary ticks only) ─────────────
 
-        elif t < RISE_START:
-            # Recovery between phases
-            temp = Decimal('36.0')
+        # Phase 1 — Artifact: instantaneous HR spike
+        if t == ARTIFACT_START and not hr_alarm:
+            hr_alarm = True
+            _hr_alarm_on(provider)
+            print(f'\n{SEP}')
+            print(f'[t={elapsed:>3}s] 🧪 PHASE 1 — HARDWARE ARTIFACT TEST')
+            print(f'         HR:  80 → 150 bpm  (RoC = 70 bpm/s  >>  limit = 10 bpm/s)')
+            print(f'         al_hr_hi (Priority=Hi) fired.')
+            print(f'         ✗ Consumer Stage 1 MUST log: [Stage1] ARTIFACT (RoC)')
+            print(f'         ✗ Consumer must NOT escalate al_hr_hi')
+            print(f'{SEP}\n')
 
-        elif t < REAL_ALARM_OFF:
-            # Phase 3: physiologically plausible slow rise (0.1 °C/s)
-            rise = Decimal(str((t - RISE_START) * 0.1))
-            temp = Decimal('36.0') + rise
+        elif t == ARTIFACT_END and hr_alarm:
+            hr_alarm = False
+            _hr_alarm_off(provider)
+            print(f'[t={elapsed:>3}s] Phase 1 end — HR restored to 80 bpm, al_hr_hi OFF.')
 
-        else:
-            # Post-alarm cooldown: restore baseline
-            temp = Decimal('36.0')
+        # Phase 2 — Weak alarm: SpO2 slow drop
+        elif t == SPO2_ALARM_ON and not spo2_alarm:
+            spo2_alarm = True
+            _spo2_alarm_on(provider)
+            print(f'\n{SEP}')
+            print(f'[t={elapsed:>3}s] 🧪 PHASE 2 — WEAK ALARM / LOW RISK TEST')
+            print(f'         SpO2 = {spo2_val}%  (fell 2%/s for 5s,  RoC=2  <  limit=3)')
+            print(f'         al_spo2_lo (Priority=Me) fired.')
+            print(f'         ✗ Consumer Stage 2 MUST suppress:')
+            print(f'           risk = Posterior_P(≈0.804) × P_total(6.0) ≈ 4.83  <  5.0')
+            print(f'{SEP}\n')
 
-        # ==================================================================
-        # STEP 2: Send metric update BEFORE any alarm state change.
-        # SDC guarantees metric report arrives before alert report because
-        # transactions are sequential on the same provider connection.
-        # The consumer's _physiological_graph is updated FIRST so the
-        # SignalProcessor has the latest reading in the buffer.
-        # ==================================================================
-        _set_temperature(provider, temp)
+        elif t == SPO2_RESTORE and spo2_alarm:
+            spo2_alarm = False
+            _spo2_alarm_off(provider)
+            print(f'[t={elapsed:>3}s] Phase 2 end — SpO2 restored to 98%, al_spo2_lo OFF.')
 
-        # ==================================================================
-        # STEP 3: Alarm state transitions (only on boundary ticks)
-        # ==================================================================
-        if t == ARTIFACT_ON and not alarm_active:
-            alarm_active = True
-            _alarm_on(provider)
-            print(f'\n{_SEP}')
-            print(f'[t={elapsed:>3}s] 🧪 ARTIFACT TEST')
-            print(f'         Temp jumped: 36.0 → 200.0 °C  (RoC ≈ 164 °C/s >> limit 0.5)')
-            print(f'         Alarm ON fired.')
-            print(f'         ✗ Consumer MUST log: [DSP FILTER] Artifact detected')
-            print(f'         ✗ Consumer must NOT log: 🔴 ON')
-            print(f'{_SEP}\n')
+        # Phase 3 — Sensor Fusion Crisis: both alarms fire together
+        elif t == FUSION_ALARM_ON and not hr_alarm and not spo2_alarm:
+            hr_alarm   = True
+            spo2_alarm = True
+            _hr_alarm_on(provider)    # al_hr_hi  (Hi)  — Stage 2 ESCALATES
+            _spo2_alarm_on(provider)  # al_spo2_lo(Me)  — Stage 2 SUPPRESSES
+            print(f'\n{SEP}')
+            print(f'[t={elapsed:>3}s] 🧪 PHASE 3 — SENSOR FUSION CRISIS')
+            print(f'         HR = {hr_val} bpm   (rose +10/s for 5s,  RoC=10  NOT>10)')
+            print(f'         SpO2 = {spo2_val}%  (fell ~2.6%/s for 5s,  RoC=3  NOT>3)')
+            print(f'         Both al_hr_hi (Hi) and al_spo2_lo (Me) fired simultaneously.')
+            print(f'         ✗ Consumer Stage 2 MUST suppress  al_spo2_lo:')
+            print(f'           risk = 0.804 × 6.0 = 4.83  <  5.0')
+            print(f'         ✓ Consumer Stage 2 MUST escalate  al_hr_hi:')
+            print(f'           risk = 0.917 × 10.0 = 9.17  ≥  5.0')
+            print(f'{SEP}\n')
 
-        elif t == ARTIFACT_OFF and alarm_active:
-            alarm_active = False
-            _alarm_off(provider)
-            print(f'[t={elapsed:>3}s] Phase 2 end — temp restored to 36°C, alarm OFF.')
+        elif t == FUSION_RESTORE and (hr_alarm or spo2_alarm):
+            hr_alarm   = False
+            spo2_alarm = False
+            _hr_alarm_off(provider)
+            _spo2_alarm_off(provider)
+            print(f'[t={elapsed:>3}s] Phase 3 end — HR=80, SpO2=98%, all alarms OFF.\n')
 
-        elif t == REAL_ALARM_ON and not alarm_active:
-            alarm_active = True
-            _alarm_on(provider)
-            roc_actual = 0.1  # 0.1 °C/s
-            print(f'\n{_SEP}')
-            print(f'[t={elapsed:>3}s] 🧪 REAL ALARM TEST')
-            print(f'         Temp now: {float(temp):.2f} °C  (risen 0.1°C/s for {t - RISE_START}s)')
-            print(f'         Actual RoC ≈ {roc_actual:.2f} °C/s  <<  limit 0.5 °C/s')
-            print(f'         Alarm ON fired.')
-            print(f'         ✓ Consumer MUST log: 🔴 ON  (real clinical event)')
-            print(f'         ✓ Consumer must NOT suppress this alarm')
-            print(f'{_SEP}\n')
-
-        elif t == REAL_ALARM_OFF and alarm_active:
-            alarm_active = False
-            _alarm_off(provider)
-            print(f'[t={elapsed:>3}s] Phase 3 end — temp restored, alarm OFF.')
-            print(f'         ✓ Consumer MUST log: 🟢 OFF\n')
-
-        # ==================================================================
-        # STEP 4: Per-second status line
-        # ==================================================================
-        phase = (
-            'WARMUP   ' if t < WARMUP_END else
-            'ARTIFACT ' if t < ARTIFACT_OFF else
-            'RECOVERY ' if t < RISE_START else
-            'REAL ALRM' if t < REAL_ALARM_OFF else
-            'COOLDOWN '
-        )
-        alarm_str = '🔴 ON ' if alarm_active else '🟢 OFF'
+        # ── Step 3: Per-second status line ────────────────────────────────────
+        alarms: list[str] = []
+        if hr_alarm:   alarms.append('HR🔴')
+        if spo2_alarm: alarms.append('SpO2🔴')
+        alarm_str = ','.join(alarms) if alarms else '🟢 none'
         print(
-            f'[t={elapsed:>3}s | {phase} | alarm={alarm_str}]  temp={float(temp):>6.2f}°C',
+            f'[t={elapsed:>3}s | {_phase_name(t)} | alarms={alarm_str:<12}]'
+            f'  HR={hr_val:>3} bpm  SpO2={spo2_val:>2}%',
             flush=True,
         )
 
@@ -229,9 +294,7 @@ async def main(provider):  # noqa: C901
         await asyncio.sleep(1)
 
 
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+# ── Entrypoint ────────────────────────────────────────────────────────────────
 
 NETWORK_ADAPTER = 'Wi-Fi'
 MDIB_FILE       = 'correct_mdib.xml'
@@ -240,10 +303,21 @@ if __name__ == '__main__':
     my_uuid   = uuid.UUID('ba8ad49f-e25b-43ad-870b-c1bdba91d431')
     mdib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), MDIB_FILE)
 
-    mdib       = ProviderMdib.from_mdib_file(mdib_path)
-    model      = ThisModelType(model_name='MockModel', manufacturer='MockManufacturer',
-                               manufacturer_url='http://mockurl.com')
-    device     = ThisDeviceType(friendly_name='MockProvider', serial_number='123456')
+    mdib = ProviderMdib.from_mdib_file(mdib_path)
+
+    # DPWS device identification — consumed by ClinicalRiskFilter._DEVICE_PROFILES
+    # Key: manufacturer='Acme Medical', model='PatientMonitor Pro 3000'
+    model = ThisModelType(
+        manufacturer='Acme Medical',
+        manufacturer_url='https://acme-medical.example.com',
+        model_name='PatientMonitor Pro 3000',
+        model_number='PPM-3000-REV-B',
+    )
+    device = ThisDeviceType(
+        friendly_name='ICU Bedside Monitor (AlarmCoordinator Test)',
+        serial_number='ACM-001-TEST',
+    )
+
     components = SdcProviderComponents(role_provider_class=ExtendedProduct)
     discovery  = WSDiscoverySingleAdapter(NETWORK_ADAPTER)
 

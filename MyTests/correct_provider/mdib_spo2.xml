@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mdib_spo2.xml — MDIB for "Acme Medical / OxiPro 200" (Dedicated SpO2 Monitor)
+  IHE-PCD ACM Ensemble Test Harness — provider_ensemble.py
+
+  Ensemble key: patient_id="test-patient-1"  room="ICU-1"
+  Both mdib_hr.xml and mdib_spo2.xml share IDENTICAL patient + location contexts
+  so the SmartAlertAggregator binds them into ONE ensemble.
+
+  Alert:   al_spo2_lo  (Priority="Me")  Source: spo2_metric (LOINC 59408-5)
+  Profile: OxiPro 200  sens=0.74, FAR=0.18  →  LR+≈4.11
+  Stage 2: Posterior_P≈0.804  risk=4.83 <5.0  →  SUPPRESS
+-->
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension"
+    SequenceId="1">
+    <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+            <pm:Mds Handle="mds_spo2">
+                <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="mds_al_sys_spo2"/>
+
+                <pm:Sco Handle="sco_mds_spo2">
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor"
+                                  Handle="opSetPatCtx"
+                                  OperationTarget="PC.spo2"
+                                  Retriggerable="true"/>
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor"
+                                  Handle="set_ensemble_context_op"
+                                  OperationTarget="ens_ctx_spo2"
+                                  Retriggerable="true"/>
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor"
+                                  Handle="set_workflow_context_op"
+                                  OperationTarget="wf_ctx_spo2"
+                                  Retriggerable="true"/>
+                </pm:Sco>
+
+                <!-- DPWS device identity — matched against ClinicalRiskFilter._DEVICE_PROFILES -->
+                <pm:MetaData>
+                    <pm:Manufacturer>Acme Medical</pm:Manufacturer>
+                    <pm:ModelName>OxiPro 200</pm:ModelName>
+                </pm:MetaData>
+
+                <pm:SystemContext Handle="sys_ctx_spo2">
+                    <pm:PatientContext  xsi:type="pm:PatientContextDescriptor"  Handle="PC.spo2"/>
+                    <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_ctx_spo2"/>
+                    <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_ctx_spo2"/>
+                    <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="wf_ctx_spo2"/>
+                </pm:SystemContext>
+
+                <!-- VMD: SpO2 / Pulse Oximeter -->
+                <pm:Vmd Handle="vmd_spo2">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_sys_spo2">
+                        <!-- All AlertConditions MUST precede AlertSignals (BICEPS schema) -->
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor"
+                                           Handle="al_spo2_lo" Kind="Phy" Priority="Me">
+                            <pm:Type Code="MDC_ALERT_SPO2_LOW" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Hypoxia Alert</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Source>spo2_metric</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor"
+                                        Handle="al_signal_spo2_lo"
+                                        ConditionSignaled="al_spo2_lo"
+                                        Manifestation="Aud"
+                                        SignalDelegationSupported="true"
+                                        Latching="true">
+                            <pm:Type Code="MDC_ALERT_SPO2_LOW" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Hypoxia Signal</pm:ConceptDescription>
+                            </pm:Type>
+                        </pm:AlertSignal>
+                    </pm:AlertSystem>
+
+                    <pm:Channel Handle="ch_spo2">
+                        <!-- SpO2 — LOINC 59408-5, RoC limit = 3 %/s -->
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor"
+                                   Handle="spo2_metric"
+                                   MetricCategory="Msrmt"
+                                   MetricAvailability="Cont"
+                                   Resolution="1">
+                            <pm:Type Code="59408-5" CodingSystem="urn:oid:2.16.840.1.113883.6.1">
+                                <pm:ConceptDescription Lang="en">Oxygen Saturation SpO2 (%)</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Unit Code="%"/>
+                            <pm:TechnicalRange Lower="50" Upper="100"/>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+            </pm:Mds>
+        </pm:MdDescription>
+
+        <pm:MdState>
+            <!-- ═══════════════════════════════════════════════════════════════
+                 ENSEMBLE KEY — must match mdib_hr.xml exactly:
+                   patient Extension = "test-patient-1"
+                   location Room     = "ICU-1"
+                 SmartAlertAggregator uses (patient_id, room) as ensemble key.
+            ════════════════════════════════════════════════════════════════ -->
+            <pm:State xsi:type="pm:PatientContextState"
+                      DescriptorHandle="PC.spo2"
+                      Handle="PC.spo2.state"
+                      ContextAssociation="Assoc">
+                <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="test-patient-1">
+                    <pm:IdentifierName/>
+                </pm:Identification>
+                <pm:CoreData>
+                    <pm:Givenname>Test</pm:Givenname>
+                    <pm:Familyname>Patient</pm:Familyname>
+                </pm:CoreData>
+            </pm:State>
+
+            <pm:State xsi:type="pm:LocationContextState"
+                      DescriptorHandle="loc_ctx_spo2"
+                      Handle="loc_ctx_spo2.state"
+                      ContextAssociation="Assoc">
+                <pm:LocationDetail Room="ICU-1" Facility="TestHospital" Bed="Bed-A"/>
+            </pm:State>
+
+            <pm:State xsi:type="pm:EnsembleContextState"
+                      DescriptorHandle="ens_ctx_spo2"
+                      Handle="ens_ctx_spo2.state"
+                      ContextAssociation="No">
+                <pm:Identification Root="00000000-0000-0000-0000-000000000000" Extension="unbound">
+                    <pm:IdentifierName/>
+                </pm:Identification>
+            </pm:State>
+
+            <pm:State xsi:type="pm:WorkflowContextState"
+                      DescriptorHandle="wf_ctx_spo2"
+                      Handle="wf_ctx_spo2.state"
+                      ContextAssociation="Assoc">
+                <pm:WorkflowDetail>
+                    <pm:Patient>
+                        <!-- Extension must match PatientContextState.Extension above -->
+                        <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="test-patient-1"/>
+                    </pm:Patient>
+                </pm:WorkflowDetail>
+            </pm:State>
+
+            <!-- VMD and alert system states -->
+            <pm:State xsi:type="pm:VmdState"            DescriptorHandle="vmd_spo2"          ActivationState="On"/>
+            <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="mds_al_sys_spo2"   ActivationState="On"/>
+            <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="al_sys_spo2"       ActivationState="On"/>
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_spo2_lo"        ActivationState="On" Presence="false"/>
+            <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="al_signal_spo2_lo" ActivationState="On" Presence="Off"/>
+
+            <!-- Operation states -->
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="opSetPatCtx"             OperatingMode="En"/>
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_ensemble_context_op"  OperatingMode="En"/>
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_workflow_context_op"  OperatingMode="En"/>
+
+            <!-- SpO2 metric initial value -->
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="spo2_metric">
+                <pm:MetricValue Value="98"><pm:MetricQuality Validity="Vld"/></pm:MetricValue>
+                <pm:PhysiologicalRange Lower="80" Upper="100"/>
+            </pm:State>
+        </pm:MdState>
+    </msg:Mdib>
+</msg:GetMdibResponse>
+

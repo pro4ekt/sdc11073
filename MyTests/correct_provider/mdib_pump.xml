@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mdib_pump.xml — B.Braun Space Perfusor (Line Pressure channel)
+  IHE-PCD ACM 3-node ICU Ensemble Test Harness
+
+  Ensemble key: patient_id="test-patient-1"  room="ICU-1"
+  DPWS: Manufacturer="BBraun"  ModelName="Space Perfusor"
+
+  Alert:   al_pump_occ  (Priority="Hi")  Source: line_pressure (LOINC 8775-2)
+  Profile: sens=0.95, FAR=0.08  →  LR+ = 11.875
+  RoC limit: 100.0 mmHg/s
+-->
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension"
+    SequenceId="1">
+    <msg:Mdib MdibVersion="1" SequenceId="1">
+        <pm:MdDescription DescriptionVersion="1">
+            <pm:Mds Handle="mds_pump">
+                <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="mds_al_sys_pump"/>
+
+                <pm:Sco Handle="sco_mds_pump">
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor"
+                                  Handle="opSetPatCtx"
+                                  OperationTarget="PC.pump"
+                                  Retriggerable="true"/>
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor"
+                                  Handle="set_ensemble_context_op"
+                                  OperationTarget="ens_ctx_pump"
+                                  Retriggerable="true"/>
+                    <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor"
+                                  Handle="set_workflow_context_op"
+                                  OperationTarget="wf_ctx_pump"
+                                  Retriggerable="true"/>
+                </pm:Sco>
+
+                <pm:MetaData>
+                    <pm:Manufacturer>BBraun</pm:Manufacturer>
+                    <pm:ModelName>Space Perfusor</pm:ModelName>
+                </pm:MetaData>
+
+                <pm:SystemContext Handle="sys_ctx_pump">
+                    <pm:PatientContext  xsi:type="pm:PatientContextDescriptor"  Handle="PC.pump"/>
+                    <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="loc_ctx_pump"/>
+                    <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="ens_ctx_pump"/>
+                    <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="wf_ctx_pump"/>
+                </pm:SystemContext>
+
+                <pm:Clock Handle="clock_pump">
+                    <pm:TimeProtocol Code="532225">
+                        <pm:ConceptDescription Lang="en-us">NTPv4</pm:ConceptDescription>
+                    </pm:TimeProtocol>
+                </pm:Clock>
+
+                <pm:Vmd Handle="vmd_pump">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_sys_pump">
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor"
+                                           Handle="al_pump_occ" Kind="Phy" Priority="Hi">
+                            <pm:Type Code="MDC_ALERT_LINE_PRES_HIGH" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Line Pressure / Occlusion Alert</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Source>line_pressure</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor"
+                                        Handle="al_signal_pump_occ"
+                                        ConditionSignaled="al_pump_occ"
+                                        Manifestation="Aud"
+                                        SignalDelegationSupported="true"
+                                        Latching="true">
+                            <pm:Type Code="MDC_ALERT_LINE_PRES_HIGH" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Line Pressure Signal</pm:ConceptDescription>
+                            </pm:Type>
+                        </pm:AlertSignal>
+                    </pm:AlertSystem>
+
+                    <pm:Channel Handle="ch_pump">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor"
+                                   Handle="line_pressure"
+                                   MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Type Code="8775-2" CodingSystem="urn:oid:2.16.840.1.113883.6.1">
+                                <pm:ConceptDescription Lang="en">Infusion Line Pressure (mmHg)</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Unit Code="mmHg"/>
+                            <pm:TechnicalRange Lower="0" Upper="500"/>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+            </pm:Mds>
+        </pm:MdDescription>
+
+        <pm:MdState>
+            <!-- ENSEMBLE KEY — identical in all 3 MDIBs -->
+            <pm:State xsi:type="pm:PatientContextState"
+                      DescriptorHandle="PC.pump"
+                      Handle="PC.pump.state"
+                      ContextAssociation="Assoc">
+                <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="test-patient-1">
+                    <pm:IdentifierName/>
+                </pm:Identification>
+                <pm:CoreData>
+                    <pm:Givenname>Test</pm:Givenname>
+                    <pm:Familyname>Patient</pm:Familyname>
+                </pm:CoreData>
+            </pm:State>
+
+            <pm:State xsi:type="pm:LocationContextState"
+                      DescriptorHandle="loc_ctx_pump"
+                      Handle="loc_ctx_pump.state"
+                      ContextAssociation="Assoc">
+                <pm:LocationDetail Room="ICU-1" Facility="TestHospital" Bed="Bed-A"/>
+            </pm:State>
+
+            <pm:State xsi:type="pm:EnsembleContextState"
+                      DescriptorHandle="ens_ctx_pump"
+                      Handle="ens_ctx_pump.state"
+                      ContextAssociation="No">
+                <pm:Identification Root="00000000-0000-0000-0000-000000000000" Extension="unbound">
+                    <pm:IdentifierName/>
+                </pm:Identification>
+            </pm:State>
+
+            <pm:State xsi:type="pm:WorkflowContextState"
+                      DescriptorHandle="wf_ctx_pump"
+                      Handle="wf_ctx_pump.state"
+                      ContextAssociation="Assoc">
+                <pm:WorkflowDetail>
+                    <pm:Patient>
+                        <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="test-patient-1"/>
+                    </pm:Patient>
+                </pm:WorkflowDetail>
+            </pm:State>
+
+            <pm:State xsi:type="pm:VmdState"            DescriptorHandle="vmd_pump"          ActivationState="On"/>
+            <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="mds_al_sys_pump"    ActivationState="On"/>
+            <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="al_sys_pump"        ActivationState="On"/>
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_pump_occ"        ActivationState="On" Presence="false"/>
+            <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="al_signal_pump_occ" ActivationState="On" Presence="Off"/>
+
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="opSetPatCtx"             OperatingMode="En"/>
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_ensemble_context_op" OperatingMode="En"/>
+            <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_workflow_context_op" OperatingMode="En"/>
+
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="line_pressure">
+                <pm:MetricValue Value="120"><pm:MetricQuality Validity="Vld"/></pm:MetricValue>
+                <pm:PhysiologicalRange Lower="0" Upper="400"/>
+            </pm:State>
+        </pm:MdState>
+    </msg:Mdib>
+</msg:GetMdibResponse>
+

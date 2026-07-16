@@ -23,6 +23,7 @@
                     </pm:TimeProtocol>
                 </pm:Clock>
 
+                <!-- VMD 1: Temperature / Device-Health (SenseHat) -->
                 <pm:Vmd Handle="vmd_1">
                     <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_temperature">
                         <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_temperature" Kind="Phy" Priority="None">
@@ -78,6 +79,7 @@
                     </pm:Channel>
                 </pm:Vmd>
 
+                <!-- VMD 2: Humidity sensor -->
                 <pm:Vmd Handle="vmd_2">
                     <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_humidity">
                         <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="al_condition_humidity" Kind="Phy" Priority="None">
@@ -104,8 +106,80 @@
                         </pm:Metric>
                     </pm:Channel>
                 </pm:Vmd>
+
+                <!-- ═══════════════════════════════════════════════════════
+                     VMD 3 — Vital Signs Monitor
+                     IHE-PCD ACM AlarmCoordinator test target
+
+                     al_hr_hi  (Priority="Hi")  Tachycardia
+                       Source: hr_metric  LOINC 8867-4  RoC limit = 10 bpm/s
+                       Acme profile: sensitivity=0.88, FAR=0.08  LR+=11.0
+                       Stage 2: Posterior_P≈0.917  risk=9.17  ≥5.0 → ESCALATE
+
+                     al_spo2_lo (Priority="Me")  Hypoxia
+                       Source: spo2_metric LOINC 59408-5  RoC limit = 3 %/s
+                       Acme profile: sensitivity=0.74, FAR=0.18  LR+≈4.11
+                       Stage 2: Posterior_P≈0.804  risk=4.83  <5.0 → SUPPRESS
+                ════════════════════════════════════════════════════════════ -->
+                <pm:Vmd Handle="vmd_vitals">
+                    <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_vitals">
+                        <!-- Conditions MUST precede Signals (BICEPS schema order) -->
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor"
+                                           Handle="al_hr_hi" Kind="Phy" Priority="Hi">
+                            <pm:Type Code="MDC_ALERT_HR_HIGH" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Tachycardia Alert</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Source>hr_metric</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor"
+                                           Handle="al_spo2_lo" Kind="Phy" Priority="Me">
+                            <pm:Type Code="MDC_ALERT_SPO2_LOW" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Hypoxia Alert</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Source>spo2_metric</pm:Source>
+                        </pm:AlertCondition>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor"
+                                        Handle="al_signal_hr_hi"
+                                        ConditionSignaled="al_hr_hi"
+                                        Manifestation="Aud" SignalDelegationSupported="true" Latching="true">
+                            <pm:Type Code="MDC_ALERT_HR_HIGH" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Tachycardia Signal</pm:ConceptDescription>
+                            </pm:Type>
+                        </pm:AlertSignal>
+                        <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor"
+                                        Handle="al_signal_spo2_lo"
+                                        ConditionSignaled="al_spo2_lo"
+                                        Manifestation="Aud" SignalDelegationSupported="true" Latching="true">
+                            <pm:Type Code="MDC_ALERT_SPO2_LOW" CodingSystem="urn:oid:1.2.3.4.5">
+                                <pm:ConceptDescription Lang="en">Hypoxia Signal</pm:ConceptDescription>
+                            </pm:Type>
+                        </pm:AlertSignal>
+                    </pm:AlertSystem>
+                    <pm:Channel Handle="vitals_channel">
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor"
+                                   Handle="hr_metric"
+                                   MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Type Code="8867-4" CodingSystem="urn:oid:2.16.840.1.113883.6.1">
+                                <pm:ConceptDescription Lang="en">Heart Rate (bpm)</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Unit Code="bpm"/>
+                            <pm:TechnicalRange Lower="20" Upper="300"/>
+                        </pm:Metric>
+                        <pm:Metric xsi:type="pm:NumericMetricDescriptor"
+                                   Handle="spo2_metric"
+                                   MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1">
+                            <pm:Type Code="59408-5" CodingSystem="urn:oid:2.16.840.1.113883.6.1">
+                                <pm:ConceptDescription Lang="en">Oxygen Saturation SpO2 (%)</pm:ConceptDescription>
+                            </pm:Type>
+                            <pm:Unit Code="%"/>
+                            <pm:TechnicalRange Lower="50" Upper="100"/>
+                        </pm:Metric>
+                    </pm:Channel>
+                </pm:Vmd>
+
             </pm:Mds>
         </pm:MdDescription>
+
         <pm:MdState>
             <pm:State xsi:type="pm:PatientContextState" DescriptorHandle="PC.mds0" Handle="Patient_Context" ContextAssociation="Assoc">
                 <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="example">
@@ -136,15 +210,6 @@
                         <pm:Identification Root="1.2.840.10004.20701.1.1" Extension="example">
                         </pm:Identification>
                     </pm:Patient>
-                    <!--
-                        DangerCode: SNOMED CT 40275004 = Contact dermatitis
-                        This patient is temperature-sensitive.
-                        clinical_focus rule maps 40275004 →
-                            critical_concepts: [MDC_ALERT_TEMP_HIGH, 8310-5]
-                        Expected consumer behavior:
-                          [PRIORITY CLINICAL FOCUS] when temperature alarm fires
-                          [TOPOLOGY AUDIT] checks that 8310-5 sensor is present
-                    -->
                     <pm:DangerCode Code="40275004" CodingSystem="http://snomed.info/sct">
                         <pm:ConceptDescription Lang="en">Contact dermatitis (temperature-sensitive patient)</pm:ConceptDescription>
                     </pm:DangerCode>
@@ -160,55 +225,64 @@
                 </pm:WorkflowDetail>
             </pm:State>
 
+            <!-- VMD 1 states -->
             <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_1" ActivationState="On" />
-            <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_2" ActivationState="On" />
-
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_temperature" ActivationState="On" />
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_temperature" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_temperature" ActivationState="On" Presence="Off" />
 
+            <!-- VMD 2 states -->
+            <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_2" ActivationState="On" />
             <pm:State xsi:type="pm:AlertSystemState"  DescriptorHandle="al_system_humidity" ActivationState="On" />
             <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_condition_humidity" ActivationState="On" Presence="false" />
             <pm:State xsi:type="pm:AlertSignalState" DescriptorHandle="al_signal_humidity" ActivationState="On" Presence="Off" />
 
+            <!-- VMD 3 (vmd_vitals) states -->
+            <pm:State xsi:type="pm:VmdState" DescriptorHandle="vmd_vitals" ActivationState="On" />
+            <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="al_system_vitals"    ActivationState="On" />
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_hr_hi"            ActivationState="On" Presence="false" />
+            <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="al_signal_hr_hi"     ActivationState="On" Presence="Off" />
+            <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="al_spo2_lo"          ActivationState="On" Presence="false" />
+            <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="al_signal_spo2_lo"   ActivationState="On" Presence="Off" />
+
+            <!-- Sco / operation states -->
             <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="opSetPatCtx" OperatingMode="En" />
             <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_ensemble_context_op" OperatingMode="En" />
             <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="set_workflow_context_op" OperatingMode="En" />
             <pm:State xsi:type="pm:ActivateOperationState" DescriptorHandle="actop.mds0_sco_0" OperatingMode="En" />
             <pm:State xsi:type="pm:SetValueOperationState" DescriptorHandle="numeric.ch0.vmd1_sco_0" OperatingMode="En" />
             <pm:State xsi:type="pm:SetStringOperationState" DescriptorHandle="string.ch0.vmd1_sco_0" OperatingMode="En" />
-
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="temperature_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="temperature_threshold_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="humidity_threshold_control" OperatingMode="En" />
 
+            <!-- Metric states -->
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">
-                <pm:MetricValue Value="0">
-                    <pm:MetricQuality Validity="Vld" />
-                </pm:MetricValue>
+                <pm:MetricValue Value="0"><pm:MetricQuality Validity="Vld" /></pm:MetricValue>
             </pm:State>
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_health">
-                <pm:MetricValue Value="0">
-                    <pm:MetricQuality Validity="Vld" />
-                </pm:MetricValue>
+                <pm:MetricValue Value="0"><pm:MetricQuality Validity="Vld" /></pm:MetricValue>
             </pm:State>
             <pm:State xsi:type="pm:EnumStringMetricState" DescriptorHandle="system_statemachine">
-                <pm:MetricValue Value="Idle">
-                    <pm:MetricQuality Validity="Vld" />
-                </pm:MetricValue>
+                <pm:MetricValue Value="Idle"><pm:MetricQuality Validity="Vld" /></pm:MetricValue>
             </pm:State>
-            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="humidity" >
-                <pm:MetricValue Value="0">
-                    <pm:MetricQuality Validity="Vld" />
-                </pm:MetricValue>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="humidity">
+                <pm:MetricValue Value="0"><pm:MetricQuality Validity="Vld" /></pm:MetricValue>
                 <pm:PhysiologicalRange Lower="18" Upper="35"></pm:PhysiologicalRange>
             </pm:State>
-            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temperature" >
-                <pm:MetricValue Value="0">
-                    <pm:MetricQuality Validity="Vld" />
-                </pm:MetricValue>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="temperature">
+                <pm:MetricValue Value="36"><pm:MetricQuality Validity="Vld" /></pm:MetricValue>
                 <pm:PhysiologicalRange Lower="30" Upper="45"></pm:PhysiologicalRange>
+            </pm:State>
+            <!-- VMD 3 vital signs -->
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="hr_metric">
+                <pm:MetricValue Value="80"><pm:MetricQuality Validity="Vld" /></pm:MetricValue>
+                <pm:PhysiologicalRange Lower="40" Upper="180"/>
+            </pm:State>
+            <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="spo2_metric">
+                <pm:MetricValue Value="98"><pm:MetricQuality Validity="Vld" /></pm:MetricValue>
+                <pm:PhysiologicalRange Lower="80" Upper="100"/>
             </pm:State>
         </pm:MdState>
     </msg:Mdib>
