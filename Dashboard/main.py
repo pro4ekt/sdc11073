@@ -132,12 +132,20 @@ if __name__ == "__main__":
     app = QGuiApplication(effective_argv)
 
     # ------------------------------------------------------------------
+    # STEP 1b: Create PatientOverviewModel (must exist before Manager so
+    #          the aggregator can call updateEnsemble from worker threads)
+    # ------------------------------------------------------------------
+    from app.patientOverviewModel import PatientOverviewModel
+    overview_model = PatientOverviewModel()
+
+    # ------------------------------------------------------------------
     # STEP 2: Create Manager and start network discovery
     # ------------------------------------------------------------------
     manager = SdcMyConsumer(
         target_room=target_room,
         override_ip=override_ip,
         tls_mode=tls_mode,
+        overview_model=overview_model,
     )
     manager.start()
 
@@ -150,6 +158,8 @@ if __name__ == "__main__":
 
     engine.rootContext().setContextProperty("sdcManager", manager)
     engine.rootContext().setContextProperty("fhirData", None)
+    # PatientOverview.qml reads patientOverview_model.patients
+    engine.rootContext().setContextProperty("patientOverview_model", overview_model)
 
     qml_file = os.path.join(os.path.dirname(__file__), "qml", "Main.qml")
     engine.load(qml_file)

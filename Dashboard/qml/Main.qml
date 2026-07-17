@@ -15,13 +15,25 @@ Window {
         visible: false
     }
 
+    // ── NEW: Patient-level overview — default landing screen ──────────────────
+    PatientOverview {
+        id: patientOverview
+        anchors.fill: parent
+        mainPage: mainPage
+        visible: true
+    }
+
     MainPage {
         id: mainPage
         anchors.fill: parent
         deviceModel: deviceModel
         devicePage: devicePage
-        visible: true
+        patientOverview: patientOverview   // back-reference for "← Patients" button
+        visible: false                     // now hidden until drill-down
     }
+
+    // Shared ListModel — owned here so both PatientOverview and MainPage can reach it
+    ListModel { id: deviceModel }
 
     DevicePage {
         id: devicePage

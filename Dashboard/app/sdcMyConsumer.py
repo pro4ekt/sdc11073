@@ -29,7 +29,7 @@ class SdcMyConsumer(QObject):
     roomChanged = Signal(str, arguments=['room'])
     availableRoomsChanged = Signal()
     def __init__(self, target_room: str | None = None, override_ip: str | None = None,
-                 tls_mode: str = 'auto'):
+                 tls_mode: str = 'auto', overview_model=None):
         super().__init__()
         self.tls_mode: str = tls_mode
         self.target_room: str | None = target_room
@@ -37,7 +37,7 @@ class SdcMyConsumer(QObject):
         self.override_ip: str | None = override_ip
         self.devices = {}
         self.lock = threading.Lock()
-        self.aggregator = SmartAlertAggregator(self)
+        self.aggregator = SmartAlertAggregator(self, overview_model=overview_model)
         self.discovery = None
         self._location_rejected: set[str] = set()
         self._rejected_room_map: dict[str, str] = {}

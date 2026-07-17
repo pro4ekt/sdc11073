@@ -63,6 +63,7 @@ class QtDeviceHandler(QObject):
 
     patientNameChanged  = Signal()   # Patient name changed
     patientRoomChanged  = Signal()   # Patient room/ward changed
+    patientIdChanged    = Signal()   # Patient identifier changed (Identification.Extension)
     deviceNameChanged   = Signal()   # Device name changed
     deviceValueChanged  = Signal()   # Displayed metric value changed
     alarmStatusChanged  = Signal()   # Alarm status changed (Off/On/Ack/Latch/COMM_FAILURE)
@@ -93,6 +94,7 @@ class QtDeviceHandler(QObject):
         # Initial property values (shown before the first successful update_data())
         self._patientRoom  = "Unknown"
         self._patientName  = "Unknown"
+        self._patientId    = ""          # Identification.Extension (same key as SmartAlertAggregator)
         self._deviceName   = "SDC Device"
         self._deviceValue  = "---"
         self._alarmStatus  = ""
@@ -253,6 +255,27 @@ class QtDeviceHandler(QObject):
                 family = patients[0].CoreData.Familyname or ""
                 # strip() removes extra spaces when one field is empty
                 self._patientName = f"{given} {family}".strip() or "Unknown"
+
+            # patientId — canonical identifier used by SmartAlertAggregator for ensemble
+            # keying. Priority chain mirrors _extract_patient_and_room():
+            #   1. PatientContextState.Identification[0].Extension
+            #   2. Fallback: CoreData Givenname+Familyname (same as patientName)
+            # This guarantees filterPatient in QML matches modelData.patientName in
+            # PatientOverview (which comes from the same chain in the aggregator).
+            if patients:
+                _pid = ""
+                _ids = getattr(patients[0], 'Identification', None) or []
+                for _ident in _ids:
+                    _ext = getattr(_ident, 'Extension', None)
+                    if _ext:
+                        _pid = str(_ext)
+                        break
+                if not _pid:
+                    # Fallback: same value as patientName so the key always resolves
+                    _pid = self._patientName
+                if _pid != self._patientId:
+                    self._patientId = _pid
+                    self.patientIdChanged.emit()
 
             # ------------------------------------------------------------------
             # 3. DEVICE NAME (priority chain)
@@ -619,6 +642,15 @@ class QtDeviceHandler(QObject):
     def patientName(self):
         """Patient name: '{Givenname} {Familyname}' or 'Unknown'."""
         return self._patientName
+
+    @Property(str, notify=patientIdChanged)
+    def patientId(self):
+        """
+        Canonical patient identifier — mirrors SmartAlertAggregator._extract_patient_and_room().
+        Priority: PatientContextState.Identification[0].Extension → fallback to patientName.
+        Used by MainPage.qml as the foreign key for drill-down filtering.
+        """
+        return self._patientId
 
     @Property(str, notify=patientRoomChanged)
     def patientRoom(self):

@@ -4,157 +4,198 @@ import QtQuick.Effects
 
 Item {
     id: mainPage
-    // Changed from 'var' to ListModel so we can append to it directly here
     property ListModel deviceModel: ListModel {}
     property var devicePage
     property string loginName: ""
 
+    // ── Patient drill-down filter (set by PatientOverview on card click) ───────
+    // "" means "show all patients"; set to patientname to show one patient only.
+    property string filterPatient: ""
+
+    // Reference back to PatientOverview for the Back button
+    property var patientOverview
+
+    // ── Master source-of-truth array — NEVER cleared by filter operations ─────
+    // Each element is a plain JS object identical to what was appended to deviceModel.
+    property var masterDeviceArray: []
+
     anchors.fill: parent
 
+    // ─────────────────────────────────────────────────────────────────────────
     // LINK TO PYTHON BACKEND
+    // ─────────────────────────────────────────────────────────────────────────
     Connections {
-        target: sdcManager // This is the context property set in main.py
+        target: sdcManager
 
-        // Signal handler for deviceConnected(QtDeviceHandler device)
         function onDeviceConnected(device) {
             console.log("QML: New device connected: " + device.patientName + " [" + device.epr + "]")
 
-            // Append data from the Python object to our QML model
-            deviceModel.append({
-                "epr": device.epr, // Store UUID to identify this item later
-                "devicename": device.deviceName, // CHANGED: Bind to actual property
-                "patientname": device.patientName,
-                "room": device.patientRoom,
-                "value": device.deviceValue,
-                "alarm": device.alarmStatus,
-                "priority": device.priority,
-                "deviceObj": device, // Store the Python Object for live updates via Connections
-                "timeout": "0"
-            })
-            // Trigger sort when new device appears
-            sortTimer.restart()
+            var entry = {
+                "epr":          device.epr,
+                "devicename":   device.deviceName,
+                "patientname":  device.patientName,
+                "patientid":    device.patientId,    // canonical ID — matches PatientOverviewModel key
+                "room":         device.patientRoom,
+                "value":        device.deviceValue,
+                "alarm":        device.alarmStatus,
+                "priority":     device.priority,
+                "deviceObj":    device,
+                "timeout":      "0"
+            }
+
+            // 1. Push into master array (permanent for the session)
+            var arr = mainPage.masterDeviceArray
+            arr.push(entry)
+            mainPage.masterDeviceArray = arr   // reassign to notify QML bindings
+
+            // 2. Rebuild proxy model respecting current filters
+            applyFilters()
         }
 
-        // Signal handler for deviceDisconnected(str epr)
         function onDeviceDisconnected(epr) {
             console.log("QML: Device disconnected: " + epr)
-            for (var i = 0; i < deviceModel.count; ++i) {
-                if (deviceModel.get(i).epr === epr) {
-                    deviceModel.remove(i)
-                    break // Stop after removing found item
-                }
-            }
+
+            // Remove from master array (device truly gone from network)
+            mainPage.masterDeviceArray = mainPage.masterDeviceArray.filter(
+                function(e) { return e.epr !== epr }
+            )
+
+            // Rebuild proxy
+            applyFilters()
         }
 
-        // Signal handler for roomChanged(str room)
-        // Вызывается из sdcManager.switchRoom().
-        //
-        // ЛОГИКА (НЕ делать .clear() — это баг):
-        //   • room === "" (All Rooms):
-        //       Ничего не удаляем. Текущие устройства остаются в модели.
-        //       Ранее отфильтрованные переподключатся и придут через deviceConnected.
-        //
-        //   • room === "Room_X" (конкретная комната):
-        //       Немедленно убираем из модели устройства из ДРУГИХ комнат.
-        //       Устройства из нужной комнаты остаются — они всё ещё подключены,
-        //       повторного deviceConnected не будет.
-        //       Python остановит лишние устройства → deviceDisconnected придёт позже,
-        //       но устройства уже удалены из модели — дубликата удаления не будет.
+        // Room filter change — no longer destructive; just re-applies filters
         function onRoomChanged(room) {
             console.log("QML: Room switched to: '" + room + "'")
-            if (room === "") {
-                // Режим "Все комнаты" — ничего не трогаем
-                return
-            }
-            // Удаляем карточки, чья комната не совпадает с выбранной.
-            // Идём с конца, чтобы remove(i) не сбивал индексы.
-            var i = deviceModel.count - 1
-            while (i >= 0) {
-                if (deviceModel.get(i).room !== room) {
-                    deviceModel.remove(i)
-                }
-                i--
-            }
+            applyFilters()
         }
     }
 
-    // Timer to debounce sorting so UI doesn't stutter on multiple rapid updates
+    // ─────────────────────────────────────────────────────────────────────────
+    // applyFilters() — single source of truth for what appears in deviceModel
+    // ─────────────────────────────────────────────────────────────────────────
+    function applyFilters() {
+        var activeRoom    = (sdcManager && sdcManager.currentRoom) ? sdcManager.currentRoom : ""
+        var activePatient = mainPage.filterPatient   // "" = no patient filter
+
+        deviceModel.clear()
+
+        for (var i = 0; i < mainPage.masterDeviceArray.length; i++) {
+            var e = mainPage.masterDeviceArray[i]
+
+            var roomMatch    = (activeRoom    === "") || (e.room      === activeRoom)
+            var patientMatch = (activePatient === "") || (e.patientid === activePatient)
+
+            if (roomMatch && patientMatch) {
+                deviceModel.append(e)   // deviceObj Python reference is preserved
+            }
+        }
+
+        sortTimer.restart()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Sorting (unchanged logic, now called from applyFilters)
+    // ─────────────────────────────────────────────────────────────────────────
     Timer {
         id: sortTimer
-        interval: 100 // Wait 100ms after last update then sort
+        interval: 100
         repeat: false
         onTriggered: sortByPriority()
     }
 
-    //функция сортировки по приоритету
     function sortByPriority() {
-        let items = [];
-
-        // Manual copy to preserve deviceObj reference (JSON.stringify destroys Python objects)
+        let items = []
         for (let i = 0; i < deviceModel.count; i++) {
-            let item = deviceModel.get(i);
+            let item = deviceModel.get(i)
             items.push({
-                "epr": item.epr,
-                "devicename": item.devicename,
-                "patientname": item.patientname,
-                "room": item.room,
-                "value": item.value,
-                "alarm": item.alarm,
-                "priority": item.priority,
-                "deviceObj": item.deviceObj, // Keep the connection target alive!
-                "timeout": item.timeout
-            });
+                "epr":          item.epr,
+                "devicename":   item.devicename,
+                "patientname":  item.patientname,
+                "patientid":    item.patientid,
+                "room":         item.room,
+                "value":        item.value,
+                "alarm":        item.alarm,
+                "priority":     item.priority,
+                "deviceObj":    item.deviceObj,
+                "timeout":      item.timeout
+            })
         }
 
         items.sort((a, b) => {
-            // Priority levels for alarm status
             let getAlarmRank = (status) => {
-                if (status === "COMM_FAILURE") return 4;
-                if (status === "On") return 3;
-                if (status === "Ack") return 2;
-                if (status === "Latch") return 1;
-                return 0; // "Off" or other
-            };
-
-            let rankA = getAlarmRank(a.alarm);
-            let rankB = getAlarmRank(b.alarm);
-
-            if (rankA !== rankB) {
-                return rankB - rankA; // Higher severity alarm first
+                if (status === "COMM_FAILURE") return 4
+                if (status === "On")           return 3
+                if (status === "Ack")          return 2
+                if (status === "Latch")        return 1
+                return 0
             }
+            let rankA = getAlarmRank(a.alarm)
+            let rankB = getAlarmRank(b.alarm)
+            if (rankA !== rankB) return rankB - rankA
+            return parseInt(b.priority) - parseInt(a.priority)
+        })
 
-            return parseInt(b.priority) - parseInt(a.priority);
-        });
-
-        // Re-populate the models
-        deviceModel.clear();
-        for (let item of items) {
-            deviceModel.append(item);
-        }
+        deviceModel.clear()
+        for (let item of items) deviceModel.append(item)
     }
 
-    // ---------------- TOP BAR ----------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // TOP BAR
+    // ─────────────────────────────────────────────────────────────────────────
     Rectangle {
         width: parent.width
         height: parent.height * 0.15
-        anchors.top: parent
         color: "#515c80"
 
-        // текст в TOP BAR
-        Text {
+        // ── Back button (visible only in drill-down mode) ──────────────────
+        Button {
+            id: backButton
+            visible: mainPage.filterPatient !== ""
+            text: "← Patients"
+            width: 140
+            height: 36
             anchors.left: parent.left
-            anchors.leftMargin: 25
+            anchors.leftMargin: 20
             anchors.verticalCenter: parent.verticalCenter
-            text: loginName + "Patients(Devices)"
+
+            background: Rectangle {
+                radius: 6
+                color: "#3a5f9c"
+                border.color: "#9ab0d9"
+                border.width: 2
+            }
+            contentItem: Text {
+                text: backButton.text
+                color: "white"
+                font.pixelSize: 15
+                font.family: "Tahoma"
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            onClicked: {
+                mainPage.filterPatient = ""   // clear patient filter first
+                applyFilters()                // rebuild proxy with no patient filter
+                mainPage.visible = false
+                if (mainPage.patientOverview)
+                    mainPage.patientOverview.visible = true
+            }
+        }
+
+        // Title — shifts right when back button visible
+        Text {
+            anchors.left: backButton.visible ? backButton.right : parent.left
+            anchors.leftMargin: backButton.visible ? 20 : 25
+            anchors.verticalCenter: parent.verticalCenter
+            text: mainPage.filterPatient !== ""
+                  ? loginName + "Devices"
+                  : loginName + "Patients (Devices)"
             color: "white"
             font.pixelSize: 32
             font.family: "Tahoma"
         }
 
-        // ── ROOM SWITCHER ──────────────────────────────────────────────────────
-        // Динамически генерируется из sdcManager.availableRooms.
-        // Кнопка «All» сбрасывает фильтр; кнопки с именами комнат переключают комнату.
-        // Активная кнопка подсвечивается синей рамкой.
+        // ── ROOM SWITCHER ──────────────────────────────────────────────────
         Row {
             id: roomSwitcherRow
             anchors.centerIn: parent
@@ -168,7 +209,6 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
             }
 
-            // Кнопка «All» — снять фильтр, показать все устройства
             Button {
                 id: allRoomsBtn
                 text: "All"
@@ -179,8 +219,7 @@ Item {
 
                 background: Rectangle {
                     radius: 6
-                    color: (!sdcManager || sdcManager.currentRoom === "")
-                           ? "#3a5f9c" : "#404c6e"
+                    color: (!sdcManager || sdcManager.currentRoom === "") ? "#3a5f9c" : "#404c6e"
                     border.color: "#9ab0d9"
                     border.width: (!sdcManager || sdcManager.currentRoom === "") ? 2 : 0
                 }
@@ -194,7 +233,6 @@ Item {
                 }
             }
 
-            // Динамические кнопки комнат — появляются по мере подключения устройств
             Repeater {
                 model: sdcManager ? sdcManager.availableRooms : []
                 delegate: Button {
@@ -207,8 +245,7 @@ Item {
 
                     background: Rectangle {
                         radius: 6
-                        color: (sdcManager && sdcManager.currentRoom === modelData)
-                               ? "#3a5f9c" : "#404c6e"
+                        color: (sdcManager && sdcManager.currentRoom === modelData) ? "#3a5f9c" : "#404c6e"
                         border.color: "#9ab0d9"
                         border.width: (sdcManager && sdcManager.currentRoom === modelData) ? 2 : 0
                     }
@@ -223,7 +260,7 @@ Item {
                 }
             }
         }
-        // ── END ROOM SWITCHER ──────────────────────────────────────────────────
+        // ── END ROOM SWITCHER ──────────────────────────────────────────────
 
         Popup {
             id: pop
@@ -231,15 +268,10 @@ Item {
             focus: true
             width: 300
             height: 160
-
-            // Центрирование по mainPage
             x: (mainPage.width - width) / 2
             y: (mainPage.height - height) / 2
 
-            background: Rectangle {
-                color: "#515c80"
-                radius: 10
-            }
+            background: Rectangle { color: "#515c80"; radius: 10 }
 
             Text {
                 id: msg
@@ -250,17 +282,13 @@ Item {
                 anchors.top: parent.top
                 anchors.topMargin: 30
             }
-
             Button {
-                id: okBtn
                 text: "OK"
                 width: 120
                 height: 40
-
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.top: msg.bottom
                 anchors.topMargin: 30
-
                 onClicked: pop.close()
             }
         }
@@ -271,29 +299,24 @@ Item {
             anchors.rightMargin: 230
             anchors.verticalCenter: parent.verticalCenter
             text: "Call Help"
-
             background: Rectangle {
-                    radius: 8
-                    gradient: gradOff2
-                    Gradient {
-                        id: gradOff2
-                        GradientStop { position: 0.0; color: "#5e6ea5" }
-                        GradientStop { position: 1.0; color: "#7487c4" }
-                    }
-
-
+                radius: 8
+                gradient: gradOff2
+                Gradient {
+                    id: gradOff2
+                    GradientStop { position: 0.0; color: "#5e6ea5" }
+                    GradientStop { position: 1.0; color: "#7487c4" }
                 }
+            }
             contentItem: Text {
-                    text: myButton.text
-                    color: "white"
-                    font.pixelSize: 22
-                    font.family: "Tahoma"
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-            onClicked: {
-                    pop.open()
-                }
+                text: myButton.text
+                color: "white"
+                font.pixelSize: 22
+                font.family: "Tahoma"
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            onClicked: pop.open()
         }
 
         Button {
@@ -302,44 +325,30 @@ Item {
             anchors.rightMargin: 400
             anchors.verticalCenter: parent.verticalCenter
             text: "Pause"
-
             background: Rectangle {
-                    radius: 8
-                    gradient: gradOff3
-                    Gradient {
-                        id: gradOff3
-                        GradientStop { position: 0.0; color: "#5e6ea5" }
-                        GradientStop { position: 1.0; color: "#7487c4" }
-                    }
-
+                radius: 8
+                gradient: gradOff3
+                Gradient {
+                    id: gradOff3
+                    GradientStop { position: 0.0; color: "#5e6ea5" }
+                    GradientStop { position: 1.0; color: "#7487c4" }
                 }
+            }
             contentItem: Text {
-                    text: myButton2.text
-                    color: "white"
-                    font.pixelSize: 22
-                    font.family: "Tahoma"
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-            onClicked: {
-                    pop.open()
-                }
+                text: myButton2.text
+                color: "white"
+                font.pixelSize: 22
+                font.family: "Tahoma"
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            onClicked: pop.open()
         }
-
-        /*
-        //  картинка Login
-        Image {
-            width: 40
-            height: 40
-            anchors.right: parent.right
-            anchors.rightMargin: parent.width * 0.02
-            anchors.verticalCenter: parent.verticalCenter
-            source: "../img/login.jpg"
-        }
-        */
     }
 
-    // ---------------- CONTENT AREA ----------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // CONTENT AREA
+    // ─────────────────────────────────────────────────────────────────────────
     Rectangle {
         id: contentArea
         anchors.top: parent.top
@@ -349,13 +358,13 @@ Item {
         anchors.right: parent.right
         color: "#191d2c"
         clip: true
-        //flickable block с ScrollBar
+
         Flickable {
             id: flick
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             anchors.topMargin: parent.height * 0.05
-            anchors.bottomMargin: parent.height*0.05
+            anchors.bottomMargin: parent.height * 0.05
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.leftMargin: parent.width * 0.02
@@ -364,95 +373,52 @@ Item {
             contentHeight: column.height
             clip: true
 
-            onMovementStarted: {
-                scrollBar.opacity = 1
-                hideTimer.restart()
-            }
-
+            onMovementStarted: { scrollBar.opacity = 1; hideTimer.restart() }
             onMovementEnded: hideTimer.restart()
-            //Column с кнопками
+
             Column {
                 id: column
                 width: flick.width
                 spacing: 16
-                //Repeater где добавляются все элементы
+
                 Repeater {
                     model: deviceModel
                     delegate: Rectangle {
                         id: delegateButton
 
-                        // LIVE UPDATES: Listen to the specific python object for this row
                         Connections {
                             target: model.deviceObj
-                            function onDeviceValueChanged() { model.value = target.deviceValue }
-                            function onPatientNameChanged() { model.patientname = target.patientName }
-                            function onPatientRoomChanged() { model.room = target.patientRoom }
-                            function onDeviceNameChanged() { model.devicename = target.deviceName }
-                            // ADDED: Listen for live Alarm and Priority updates AND trigger Sort
-                            function onAlarmStatusChanged() {
-                                model.alarm = target.alarmStatus;
-                                sortTimer.restart();
-                            }
-                            function onPriorityChanged() {
-                                model.priority = target.priority;
-                                sortTimer.restart();
-                            }
+                            function onDeviceValueChanged()  { model.value       = target.deviceValue }
+                            function onPatientNameChanged()  { model.patientname = target.patientName }
+                            function onPatientIdChanged()    { model.patientid   = target.patientId   }
+                            function onPatientRoomChanged()  { model.room        = target.patientRoom }
+                            function onDeviceNameChanged()   { model.devicename  = target.deviceName  }
+                            function onAlarmStatusChanged()  { model.alarm       = target.alarmStatus; sortTimer.restart() }
+                            function onPriorityChanged()     { model.priority    = target.priority;    sortTimer.restart() }
                         }
 
                         width: column.width
-                        height: 80 // Reverted to a smaller/standard size or use: width * 0.15 if you had relative
+                        height: 80
                         radius: 20
 
-                        // Fix: use model.alarm from the ListModel (transparent for active / muted / failed alarms to show gradient)
-                        color: (model.alarm === "On" || model.alarm === "Ack" || model.alarm === "COMM_FAILURE") ? "transparent" : "#5e6ea5"
+                        color: (model.alarm === "On" || model.alarm === "Ack" || model.alarm === "COMM_FAILURE")
+                               ? "transparent" : "#5e6ea5"
 
-                        // Выбираем градиент в зависимости от Alarm (On -> red, Ack -> yellow, COMM_FAILURE -> gray/red, Off -> blue)
-                        gradient: model.alarm === "On" ? gradOn
-                                  : (model.alarm === "Ack" ? gradAck
-                                  : (model.alarm === "COMM_FAILURE" ? gradComm : gradOff))
+                        gradient: model.alarm === "On"           ? gradOn
+                                : (model.alarm === "Ack"         ? gradAck
+                                : (model.alarm === "COMM_FAILURE" ? gradComm : gradOff))
 
-                        //Градиент для Alarm On (Мигающая красная тревога)
-                        Gradient {
-                            id: gradOn
-                            GradientStop { position: 0.0; color: "#8c2f2f" }
-                            GradientStop { position: 1.0; color: "#af3c3c" }
-                        }
+                        Gradient { id: gradOn;   GradientStop { position: 0.0; color: "#8c2f2f" } GradientStop { position: 1.0; color: "#af3c3c" } }
+                        Gradient { id: gradAck;  GradientStop { position: 0.0; color: "#bfa11f" } GradientStop { position: 1.0; color: "#ebd234" } }
+                        Gradient { id: gradComm; GradientStop { position: 0.0; color: "#555555" } GradientStop { position: 1.0; color: "#aa3333" } }
+                        Gradient { id: gradOff;  GradientStop { position: 0.0; color: "#5e6ea5" } GradientStop { position: 1.0; color: "#7487c4" } }
 
-                        //Градиент для Alarm Ack (Замученная/квитированная желтая тревога)
-                        Gradient {
-                            id: gradAck
-                            GradientStop { position: 0.0; color: "#bfa11f" }
-                            GradientStop { position: 1.0; color: "#ebd234" }
-                        }
-
-                        //Градиент для COMM_FAILURE (Ошибка коммуникации - серый и темно-красный)
-                        Gradient {
-                            id: gradComm
-                            GradientStop { position: 0.0; color: "#555555" }
-                            GradientStop { position: 1.0; color: "#aa3333" }
-                        }
-
-                        //Градиент для Alarm Off (Состояние нормы)
-                        Gradient {
-                            id: gradOff
-                            GradientStop { position: 0.0; color: "#5e6ea5" }
-                            GradientStop { position: 1.0; color: "#7487c4" }
-                        }
-
-                        // Мигаем если Alarm On, Ack (квитирована) или COMM_FAILURE
                         SequentialAnimation on opacity {
                             running: model.alarm === "On" || model.alarm === "Ack" || model.alarm === "COMM_FAILURE"
                             loops: Animation.Infinite
-
                             NumberAnimation { to: 0.5; duration: 500; easing.type: Easing.InOutQuad }
                             NumberAnimation { to: 1.0; duration: 500; easing.type: Easing.InOutQuad }
-
-                            // FIXED: Reset opacity when alarm stops to prevent "stuck" semi-transparent colors
-                            onRunningChanged: {
-                                if (!running) {
-                                    delegateButton.opacity = 1.0
-                                }
-                            }
+                            onRunningChanged: { if (!running) delegateButton.opacity = 1.0 }
                         }
 
                         Text {
@@ -461,11 +427,9 @@ Item {
                             anchors.leftMargin: 20
                             font.pixelSize: 24
                             font.family: "Tahoma"
-                            // Use 'model.' prefix to be explicit and safe
-                            // ADDED: Showing main value (Alarm metric or Last metric)
-                            text: "Room: " + (model.room ? model.room : "?") + " | " +
-                                  (model.devicename ? model.devicename : "Unknown") + " | " +
-                                  (model.value ? model.value : "---") + " | " +
+                            text: "Room: "       + (model.room       ? model.room       : "?")       + " | " +
+                                  (model.devicename  ? model.devicename  : "Unknown") + " | " +
+                                  (model.value       ? model.value       : "---")     + " | " +
                                   (model.patientname ? model.patientname : "Unknown")
                             color: "white"
                         }
@@ -483,24 +447,22 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             onClicked: {
-                                // Reverted to your original simple check, just ensuring mainPage exists
                                 if (mainPage.devicePage) {
-                                    // PASS THE RAW PYTHON OBJECT DIRECTLY
-                                    // This ensures we get the live 'metrics' list directly from main.py
                                     mainPage.devicePage.setDevice(model.deviceObj)
-
                                     mainPage.visible = false
                                     mainPage.devicePage.visible = true
                                 }
                             }
                         }
                     }
-                 }
+                }
             }
         }
     }
 
-    // ---------------- GLOBAL SCROLLBAR (FIXED RIGHT) ----------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // SCROLLBAR
+    // ─────────────────────────────────────────────────────────────────────────
     Rectangle {
         id: scrollBar
         width: 4
@@ -514,20 +476,15 @@ Item {
         radius: 4
         opacity: 0
 
-        Behavior on opacity {
-            NumberAnimation { duration: 200 }
-        }
+        Behavior on opacity { NumberAnimation { duration: 200 } }
 
         Rectangle {
             id: handle
             width: parent.width
-            height: Math.max(40, parent.height * (flick.height / flick.contentHeight))
-
+            height: Math.max(40, parent.height * (flick.height / Math.max(flick.contentHeight, 1)))
             y: Math.max(0, Math.min(
-                    flick.contentY / flick.contentHeight * (scrollBar.height - height),
-                    scrollBar.height - height
-                ))
-
+                   flick.contentY / Math.max(flick.contentHeight, 1) * (scrollBar.height - height),
+                   scrollBar.height - height))
             color: "#7c7c7c"
             radius: 4
 
@@ -537,15 +494,13 @@ Item {
                 drag.axis: Drag.YAxis
                 drag.minimumY: 0
                 drag.maximumY: scrollBar.height - handle.height
-
                 onPositionChanged: {
-                    flick.contentY =
-                        handle.y / (scrollBar.height - handle.height) * flick.contentHeight
+                    flick.contentY = handle.y / (scrollBar.height - handle.height) * flick.contentHeight
                 }
             }
         }
     }
-    // ---------------- SCROLLBAR AUTO-HIDE TIMER ----------------
+
     Timer {
         id: hideTimer
         interval: 800

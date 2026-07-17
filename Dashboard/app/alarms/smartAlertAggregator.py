@@ -21,9 +21,11 @@ class SmartAlertAggregator:
     Phase 2: (Future) Cross-device alarm validation within an ensemble.
     """
 
-    def __init__(self, manager):
+    def __init__(self, manager, overview_model=None):
         self.logger = logging.getLogger('sdc.consumer.aggregator')
         self._manager = manager  # Reference to SdcMyConsumer
+        # PatientOverviewModel (QObject) — optional; None in unit-test / CLI contexts.
+        self._overview_model = overview_model
 
         # Mutex protecting the aggregator's internal data structures
         self.lock = threading.Lock()
@@ -360,6 +362,14 @@ class SmartAlertAggregator:
             with self.lock:
                 self._escalated_ensembles.add(ensemble_uuid)
             self._propagate_escalation_to_devices(ensemble_uuid)
+            # Notify PatientOverview: crisis confirmed
+            _patient_id, _room = self._reverse_lookup_patient_room(ensemble_uuid)
+            self._notify_overview(ensemble_uuid, _patient_id, _room, True, decision.risk_score)
+        else:
+            # If the ensemble was previously escalated and is now suppressing again,
+            # this path is reached only when ensemble is NOT in _escalated_ensembles
+            # (early-return above would have fired). No state change needed here.
+            pass
 
         return decision.escalate
 
@@ -406,6 +416,9 @@ class SmartAlertAggregator:
                         f'[Escalation] Crisis resolved: ensemble={ensemble_uuid[:8]} '
                         f'— all alarms cleared, escalation state reset.'
                     )
+                    # Notify PatientOverview: crisis over, card returns to normal
+                    _patient_id, _room = self._reverse_lookup_patient_room(ensemble_uuid)
+                    self._notify_overview(ensemble_uuid, _patient_id, _room, False, 0.0)
 
     def _propagate_escalation_to_devices(self, ensemble_uuid: str) -> None:
         """
@@ -454,6 +467,44 @@ class SmartAlertAggregator:
                     self.logger.debug(
                         f'[Escalation]   scheduleUpdate failed for {epr[-12:]}: {exc}'
                     )
+
+    # ── PatientOverviewModel bridge ───────────────────────────────────────────
+
+    def _reverse_lookup_patient_room(self, ensemble_uuid: str) -> tuple[str, str]:
+        """Return (patient_id, room) for an ensemble UUID. Thread-safe."""
+        with self.lock:
+            for (pid, room), eid in self._active_ensembles.items():
+                if eid == ensemble_uuid:
+                    return pid, room
+        return '', ''
+
+    def _notify_overview(
+        self,
+        ensemble_uuid: str,
+        patient_id: str,
+        room: str,
+        is_escalated: bool,
+        risk_score: float,
+    ) -> None:
+        """
+        Push an ensemble summary to PatientOverviewModel (thread-safe via its
+        internal queue + Signal bridge).  No-op when _overview_model is None.
+        """
+        if self._overview_model is None:
+            return
+        with self.lock:
+            device_count = len(self._ensemble_devices.get(ensemble_uuid, set()))
+        try:
+            self._overview_model.updateEnsemble(
+                ensemble_uuid,
+                patient_id,
+                room,
+                device_count,
+                is_escalated,
+                risk_score,
+            )
+        except Exception as exc:
+            self.logger.debug(f'[PatientOverview] updateEnsemble failed: {exc}')
 
     def check_alert_priority(
         self,
@@ -745,6 +796,8 @@ class SmartAlertAggregator:
                 f'[Aggregator] EnsembleContext {ensemble_uuid[:8]}... '
                 f'successfully applied to {device_handler.epr[-12:]}.'
             )
+            # Notify PatientOverview: new/updated ensemble, not yet escalated
+            self._notify_overview(ensemble_uuid, patient_id, room or '', False, 0.0)
         else:
             # SOAP failed -- roll back the local assignment so the device
             # is not considered "bound" until the next successful attempt.
