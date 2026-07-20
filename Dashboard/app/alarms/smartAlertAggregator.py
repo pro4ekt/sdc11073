@@ -75,6 +75,15 @@ class SmartAlertAggregator:
         # DSP signal processor — stateless, no extra locking needed.
         self.alarm_coordinator = AlarmCoordinator()
 
+        # Background Watchdog GC — runs every ALARM_TTL_SEC/2 seconds.
+        # Independently clears stale _active_alarms entries and notifies UI
+        # even when no SDC alarm packets arrive (device went silent).
+        self._stop_gc = threading.Event()
+        self._gc_thread = threading.Thread(
+            target=self._gc_loop, daemon=True, name='AggregatorGC'
+        )
+        self._gc_thread.start()
+
     def update_metric_state(self, ensemble_uuid: str, concept_code: str, value: float) -> None:
         """
         Appends a metric reading into the sliding-window deque for the given
@@ -330,21 +339,9 @@ class SmartAlertAggregator:
             )
             self._active_alarms[ensemble_uuid][alert_key] = (triggering_evidence, now)
 
-            # GC stale entries
-            stale_keys = [
-                k for k, (_, ts) in self._active_alarms[ensemble_uuid].items()
-                if now - ts > self.ALARM_TTL_SEC
-            ]
-            for k in stale_keys:
-                del self._active_alarms[ensemble_uuid][k]
-                self.logger.debug(
-                    f'[ActiveAlarms] TTL expired: ensemble={ensemble_uuid[:8]} '
-                    f'alert={k!r} — removed from cache.'
-                )
-
-            # If all alarms expired → crisis resolved; clear escalation state
-            if not self._active_alarms.get(ensemble_uuid):
-                self._escalated_ensembles.discard(ensemble_uuid)
+            # TTL-GC is now handled exclusively by the background _gc_loop.
+            # Removing stale entries here was unreachable for escalated ensembles
+            # (early-return above) and caused Bug A + Bug B. Watchdog fixes both.
 
             ensemble_evidences: list[DeviceAlertEvidence] = [
                 ev for ev, _ts in self._active_alarms[ensemble_uuid].values()
@@ -400,6 +397,15 @@ class SmartAlertAggregator:
         """
         if not ensemble_uuid:
             return
+
+        # Capture resolution data outside the lock so that _reverse_lookup_patient_room
+        # and _notify_overview (both acquire self.lock internally) are called after
+        # the with-block exits.  threading.Lock() is NOT reentrant — calling them
+        # inside the lock causes a deadlock that silently swallows the notify call.
+        crisis_resolved = False
+        _patient_id = ''
+        _room = ''
+
         with self.lock:
             ensemble_cache = self._active_alarms.get(ensemble_uuid)
             if ensemble_cache and alert_key in ensemble_cache:
@@ -412,13 +418,21 @@ class SmartAlertAggregator:
             if not self._active_alarms.get(ensemble_uuid):
                 if ensemble_uuid in self._escalated_ensembles:
                     self._escalated_ensembles.discard(ensemble_uuid)
+                    crisis_resolved = True
                     self.logger.info(
                         f'[Escalation] Crisis resolved: ensemble={ensemble_uuid[:8]} '
                         f'— all alarms cleared, escalation state reset.'
                     )
-                    # Notify PatientOverview: crisis over, card returns to normal
-                    _patient_id, _room = self._reverse_lookup_patient_room(ensemble_uuid)
-                    self._notify_overview(ensemble_uuid, _patient_id, _room, False, 0.0)
+                    # Inline reverse-lookup while lock is held (avoids re-entrant acquire).
+                    for (pid, room), eid in self._active_ensembles.items():
+                        if eid == ensemble_uuid:
+                            _patient_id, _room = pid, room
+                            break
+
+        # Notify PatientOverview outside the lock — _notify_overview acquires self.lock
+        # for device_count; calling it inside would re-enter and deadlock.
+        if crisis_resolved:
+            self._notify_overview(ensemble_uuid, _patient_id, _room, False, 0.0)
 
     def _propagate_escalation_to_devices(self, ensemble_uuid: str) -> None:
         """
@@ -505,6 +519,68 @@ class SmartAlertAggregator:
             )
         except Exception as exc:
             self.logger.debug(f'[PatientOverview] updateEnsemble failed: {exc}')
+
+    # ── Background Watchdog GC ────────────────────────────────────────────────
+
+    def _gc_loop(self) -> None:
+        """
+        Daemon thread: wakes every ALARM_TTL_SEC/2 seconds and calls
+        _cleanup_stale_alarms(). Runs until _stop_gc is set (on shutdown).
+        """
+        interval = self.ALARM_TTL_SEC / 2.0
+        while not self._stop_gc.wait(timeout=interval):
+            try:
+                self._cleanup_stale_alarms()
+            except Exception as exc:
+                self.logger.debug(f'[AggregatorGC] Unhandled exception: {exc}')
+
+    def _cleanup_stale_alarms(self) -> None:
+        """
+        Scans ALL ensembles in _active_alarms and removes entries whose
+        timestamp is older than ALARM_TTL_SEC.
+
+        If removing stale entries leaves an ensemble empty:
+          - deletes the key from _active_alarms
+          - removes the UUID from _escalated_ensembles
+          - calls _notify_overview(..., False, 0.0) to reset the UI card
+
+        Thread safety: protected by self.lock throughout.
+        Called from both the GC daemon thread and (legacy) check_alert_validity.
+        """
+        now = time.time()
+        resolved_ensembles: list[str] = []
+
+        with self.lock:
+            for ensemble_uuid, alarm_cache in list(self._active_alarms.items()):
+                stale_keys = [
+                    k for k, (_, ts) in alarm_cache.items()
+                    if now - ts > self.ALARM_TTL_SEC
+                ]
+                for k in stale_keys:
+                    del alarm_cache[k]
+                    self.logger.debug(
+                        f'[AggregatorGC] TTL expired: ensemble={ensemble_uuid[:8]} '
+                        f'alert={k!r} — removed.'
+                    )
+
+                if not alarm_cache:
+                    del self._active_alarms[ensemble_uuid]
+                    if ensemble_uuid in self._escalated_ensembles:
+                        self._escalated_ensembles.discard(ensemble_uuid)
+                        resolved_ensembles.append(ensemble_uuid)
+                        self.logger.info(
+                            f'[AggregatorGC] Crisis resolved: ensemble={ensemble_uuid[:8]} '
+                            f'— all alarms TTL-expired, escalation cleared.'
+                        )
+
+        # Notify UI outside the lock (updateEnsemble enqueues into queue.Queue).
+        for ensemble_uuid in resolved_ensembles:
+            patient_id, room = self._reverse_lookup_patient_room(ensemble_uuid)
+            self._notify_overview(ensemble_uuid, patient_id, room, False, 0.0)
+
+    def stop(self) -> None:
+        """Signal the GC daemon thread to exit. Call on application shutdown."""
+        self._stop_gc.set()
 
     def check_alert_priority(
         self,
