@@ -110,6 +110,17 @@ class DeviceHandler(threading.Thread):
         self._artifact_suppressed: set[str] = set()
         self._warning_handles: set[str] = set()
 
+        # Lock protecting _artifact_suppressed and _warning_handles.
+        # Accessed from three threads: sdc11073 notification thread (on_alert_update),
+        # SmartAlertAggregator thread (_propagate_escalation_to_devices), and Qt main
+        # thread (update_data via get_suppression_snapshot).
+        self._suppression_lock: threading.Lock = threading.Lock()
+
+        # Timestamp of the last received EpisodicMetricReport (monotonic clock).
+        # 0.0 = no metric report received yet (device may not publish metrics).
+        # Used by _monitoring_loop to detect silent WS-Events subscription loss.
+        self._last_metric_ts: float = 0.0
+
         # --- Synchronisation ---
         self.data_lock = threading.Lock()
 
@@ -148,6 +159,15 @@ class DeviceHandler(threading.Thread):
         """Delegate to context_ops."""
         context_ops.apply_fhir_contexts(self, fhir_data)
 
+    def get_suppression_snapshot(self) -> tuple[frozenset, frozenset]:
+        """
+        Return thread-safe frozen copies of (_artifact_suppressed, _warning_handles).
+        Called from Qt main thread in update_data(); uses _suppression_lock to
+        prevent torn reads while sdc11073 notification thread updates the sets.
+        """
+        with self._suppression_lock:
+            return frozenset(self._artifact_suppressed), frozenset(self._warning_handles)
+
     # =========================================================================
     # Thread entry point
     # =========================================================================
@@ -164,8 +184,8 @@ class DeviceHandler(threading.Thread):
         finally:
             try:
                 loop.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.warning(f'[Thread] loop.close() raised: {exc}')
             self.manager.remove_device(
                 self.epr,
                 self.error_occurred,
@@ -221,8 +241,11 @@ class DeviceHandler(threading.Thread):
                     self.logger.error(f'Graceful shutdown failed ({e}), forcing stop.')
                     try:
                         self.consumer.stop_all()
-                    except Exception:
-                        pass
+                    except Exception as stop_exc:
+                        self.logger.error(
+                            f'[DEV-49] force stop_all() also failed: {stop_exc} — '
+                            f'sockets may not be released until GC.'
+                        )
 
     # =========================================================================
     # Phase 1: Connect — SdcConsumer + TLS auto-detect / fallback
@@ -558,14 +581,32 @@ class DeviceHandler(threading.Thread):
           Active ping (GetContextStates) every SLEEP_INTERVAL seconds.
           If MAX_MISSED consecutive pings fail → declare the connection lost.
         """
-        SLEEP_INTERVAL = 5.0
-        T_FALLBACK     = 15.0
-        MAX_MISSED     = int(T_FALLBACK / SLEEP_INTERVAL)
-        missed         = 0
+        SLEEP_INTERVAL    = 5.0
+        T_FALLBACK        = 15.0
+        MAX_MISSED        = int(T_FALLBACK / SLEEP_INTERVAL)
+        # 120 s instead of 30 s — prevents false reconnects for devices that publish
+        # slow vital-sign metrics (e.g. SpO₂ at 0.016 Hz = once per 60 s).
+        METRIC_SILENCE_SEC = 120.0
+        missed            = 0
 
         while self.running:
             if not self.consumer.is_connected:
                 self.logger.warning('Connection lost reported by SDC stack.')
+                self.error_occurred = True
+                break
+
+            # ── WS-Events subscription silence detection ─────────────────────
+            # If the device was publishing metrics but has gone silent for
+            # METRIC_SILENCE_SEC, the WS-Events subscription likely expired
+            # (common on exhibition Wi-Fi with NAT table resets).
+            # TCP ping (GetContextStates) stays alive → is_connected remains True,
+            # but metrics freeze.  Force a reconnect to re-subscribe.
+            if (self._last_metric_ts > 0.0
+                    and time.monotonic() - self._last_metric_ts > METRIC_SILENCE_SEC):
+                self.logger.error(
+                    f'[COMM] No EpisodicMetricReport for {METRIC_SILENCE_SEC:.0f}s — '
+                    f'WS-Events subscription may have expired. Forcing reconnect.'
+                )
                 self.error_occurred = True
                 break
 
@@ -673,13 +714,15 @@ class DeviceHandler(threading.Thread):
                     )
                     if concept:
                         aggregator.update_metric_state(self.ensemble_uuid, concept, float(value))
-                        # self.logger.debug(
-                        #     f'[PhysGraph] {concept}={float(value):.4g} '
-                        #     f'handle={state.DescriptorHandle!r} '
-                        #     f'ensemble={self.ensemble_uuid[:8]}'
-                        # )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning(
+                        f'[MetricUpdate] Failed to process metric state '
+                        f'handle={getattr(state, "DescriptorHandle", "?")} : {exc}'
+                    )
+
+        # Update last-metric timestamp on every successful report arrival.
+        # Used by _monitoring_loop to detect silent WS-Events subscription loss.
+        self._last_metric_ts = time.monotonic()
 
         if not self.qtDeviceHandler:
             return
@@ -728,22 +771,23 @@ class DeviceHandler(threading.Thread):
 
             # ── Signal suppression propagation ────────────────────────────────
             # If this Signal's parent Condition is a confirmed hardware artifact
-            # (_artifact_suppressed), hide the signal too (prevents log + UI indicator).
-            # Warning-level conditions (_warning_handles) are intentionally NOT hidden
-            # here — they propagate to update_data() which renders them as Yellow.
-            if type_label == 'Signal' and condition_signaled in self._artifact_suppressed:
-                if is_active:
-                    continue  # Stage 1 artifact — hide signal completely
+            # (_artifact_suppressed), hide the signal too.
+            # Read under _suppression_lock to prevent torn reads from Qt thread.
+            with self._suppression_lock:
+                signal_is_artifact = (
+                    type_label == 'Signal'
+                    and condition_signaled is not None
+                    and condition_signaled in self._artifact_suppressed
+                )
+            if signal_is_artifact and is_active:
+                continue  # Stage 1 artifact — hide signal completely
 
             # ── Condition suppression tracking ────────────────────────────────
-            # When a Condition clears, remove from BOTH sets so the next ON event
-            # gets a fresh pipeline evaluation.
-            # Also explicitly remove from the aggregator's TTL cache (_active_alarms)
-            # so the dead alarm is not included in Bayesian fusion for the next
-            # alarm that fires in the same ensemble.
+            # When a Condition clears, remove from BOTH sets under the lock.
             if type_label == 'Condition' and not is_active:
-                self._artifact_suppressed.discard(handle)
-                self._warning_handles.discard(handle)
+                with self._suppression_lock:
+                    self._artifact_suppressed.discard(handle)
+                    self._warning_handles.discard(handle)
                 if aggregator is not None and self.ensemble_uuid:
                     try:
                         aggregator.clear_alarm(self.ensemble_uuid, handle)
@@ -767,8 +811,9 @@ class DeviceHandler(threading.Thread):
                     )
                     if _result == 'SUPPRESS':
                         # Stage 1: physiological artifact — hide from UI + log
-                        self._artifact_suppressed.add(handle)
-                        self._warning_handles.discard(handle)
+                        with self._suppression_lock:
+                            self._artifact_suppressed.add(handle)
+                            self._warning_handles.discard(handle)
                         self.logger.info(
                             f'[DSP FILTER] Stage 1 artifact suppressed: '
                             f'handle={handle!r} metric={metric_concept!r} '
@@ -777,8 +822,9 @@ class DeviceHandler(threading.Thread):
                         continue
                     elif _result == 'WARN':
                         # Stage 2: real alarm, risk < 5.0 — show Yellow in UI
-                        self._warning_handles.add(handle)
-                        self._artifact_suppressed.discard(handle)
+                        with self._suppression_lock:
+                            self._warning_handles.add(handle)
+                            self._artifact_suppressed.discard(handle)
                         self.logger.info(
                             f'[DSP FILTER] Stage 2 warning alarm: '
                             f'handle={handle!r} metric={metric_concept!r} '
@@ -787,8 +833,9 @@ class DeviceHandler(threading.Thread):
                         # Do NOT continue — let alarm proceed to log/UI as Warning
                     else:
                         # 'ESCALATE': alarm passed both stages or fail-open
-                        self._artifact_suppressed.discard(handle)
-                        self._warning_handles.discard(handle)
+                        with self._suppression_lock:
+                            self._artifact_suppressed.discard(handle)
+                            self._warning_handles.discard(handle)
                 except Exception as e:
                     self.logger.warning(f'[DSP FILTER] check_alert_validity raised: {e}')
 

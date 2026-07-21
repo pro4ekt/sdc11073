@@ -178,15 +178,16 @@ class QtDeviceHandler(QObject):
                     if not op_handle and op_descs:
                         op_handle = op_descs[0].Handle
 
-            if op_handle and signal_handle:
+            if op_handle is not None and signal_handle is not None:
                 self._device.logger.info(
                     f'silenceAlarm: op={op_handle}  signal={signal_handle}'
                 )
                 self._device.acknowledge_alarm(op_handle, signal_handle)
             else:
                 self._device.logger.warning(
-                    f'silenceAlarm: could not find handles '
-                    f'(op={op_handle}, signal={signal_handle})'
+                    f'silenceAlarm: cannot acknowledge — handle(s) not found in MDIB '
+                    f'(op={op_handle!r}, signal={signal_handle!r}). '
+                    f'Device may not publish SetAlertStateOperationDescriptor.'
                 )
         except Exception as e:
             self._device.logger.error(f'silenceAlarm error: {e}', exc_info=True)
@@ -318,11 +319,16 @@ class QtDeviceHandler(QObject):
             active_alert_handles = set()
             new_alarm_status = "Off"  # Initial status -- no alarms
 
-            # Suppression sets from the AlarmCoordinator pipeline.
-            # _artifact_suppressed: Stage 1 RoC artifacts — skip completely.
-            # _warning_handles:     Stage 2 low-risk alarms — render as Yellow.
-            _artifact_suppressed: set = getattr(self._device, '_artifact_suppressed', set())
-            _warning_handles: set = getattr(self._device, '_warning_handles', set())
+            # Thread-safe snapshot of suppression sets from DeviceHandler.
+            # get_suppression_snapshot() acquires _suppression_lock internally,
+            # preventing torn reads while sdc11073 notification thread updates them.
+            _artifact_suppressed: frozenset
+            _warning_handles: frozenset
+            if hasattr(self._device, 'get_suppression_snapshot'):
+                _artifact_suppressed, _warning_handles = self._device.get_suppression_snapshot()
+            else:
+                _artifact_suppressed = frozenset(getattr(self._device, '_artifact_suppressed', ()))
+                _warning_handles = frozenset(getattr(self._device, '_warning_handles', ()))
 
             # Cache aggregator reference and ensemble UUID once for the signal loop.
             _aggregator = getattr(getattr(self._device, 'manager', None), 'aggregator', None)

@@ -69,7 +69,9 @@ class SdcMyConsumer(QObject):
                 for service in services:
                     try:
                         epr = str(service.epr).strip()
-                        if epr in self._location_rejected:
+                        with self.lock:
+                            is_rejected = epr in self._location_rejected
+                        if is_rejected:
                             continue
                         if epr in self._reconnect_cooldown:
                             elapsed = time.monotonic() - self._reconnect_cooldown[epr]
@@ -105,7 +107,8 @@ class SdcMyConsumer(QObject):
                       location_filtered: bool = False):
         epr = str(epr).strip()
         if location_filtered:
-            self._location_rejected.add(epr)
+            with self.lock:
+                self._location_rejected.add(epr)
             _mgr_log.info(
                 f'Device {epr[-12:]} location-rejected '
                 f"(target room: '{self.target_room}'). Will not reconnect this session."

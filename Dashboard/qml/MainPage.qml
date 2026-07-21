@@ -72,34 +72,51 @@ Item {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // applyFilters() — single source of truth for what appears in deviceModel
+    // applyFilters() — filter + sort in a single pass; ONE clear() per call
     // ─────────────────────────────────────────────────────────────────────────
     function applyFilters() {
         var activeRoom    = (sdcManager && sdcManager.currentRoom) ? sdcManager.currentRoom : ""
-        var activePatient = mainPage.filterPatient   // "" = no patient filter
+        var activePatient = mainPage.filterPatient
 
-        deviceModel.clear()
-
+        // Step 1: filter masterDeviceArray into a local JS array,
+        //         syncing live device properties from deviceObj.
+        var filtered = []
         for (var i = 0; i < mainPage.masterDeviceArray.length; i++) {
             var e = mainPage.masterDeviceArray[i]
-
             var roomMatch    = (activeRoom    === "") || (e.room      === activeRoom)
             var patientMatch = (activePatient === "") || (e.patientid === activePatient)
-
             if (roomMatch && patientMatch) {
-                // Sync dynamic fields from the live QtDeviceHandler before appending.
-                // masterDeviceArray holds a static snapshot from onDeviceConnected;
-                // e.deviceObj always reflects the current property values.
                 if (e.deviceObj) {
                     e.alarm    = e.deviceObj.alarmStatus
                     e.value    = e.deviceObj.deviceValue
                     e.priority = e.deviceObj.priority
                 }
-                deviceModel.append(e)   // deviceObj Python reference is preserved
+                filtered.push(e)
             }
         }
 
-        sortTimer.restart()
+        // Step 2: sort the local array (same rank logic as sortByPriority)
+        filtered.sort(function(a, b) {
+            var r = _alarmRank(b.alarm) - _alarmRank(a.alarm)
+            if (r !== 0) return r
+            return parseInt(b.priority) - parseInt(a.priority)
+        })
+
+        // Step 3: ONE clear() + N append() — avoids double-rebuild on navigation
+        deviceModel.clear()
+        for (var j = 0; j < filtered.length; j++) {
+            deviceModel.append(filtered[j])
+        }
+    }
+
+    // Shared rank function used by both applyFilters and sortByPriority
+    function _alarmRank(status) {
+        if (status === "On")           return 6
+        if (status === "Warning")      return 5
+        if (status === "COMM_FAILURE") return 4
+        if (status === "Ack")          return 3
+        if (status === "Latch")        return 2
+        return 1
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -133,16 +150,8 @@ Item {
         items.sort((a, b) => {
             // Bayesian statuses (On, Warning) take absolute priority over
             // network/operator statuses (Ack, Latch).
-            let getAlarmRank = (status) => {
-                if (status === "On")           return 6   // Stage 2 Escalate
-                if (status === "Warning")      return 5   // Stage 2 Warn
-                if (status === "COMM_FAILURE") return 4   // device silent
-                if (status === "Ack")          return 3   // operator ack
-                if (status === "Latch")        return 2   // latched
-                return 1                                  // Off / normal
-            }
-            let rankA = getAlarmRank(a.alarm)
-            let rankB = getAlarmRank(b.alarm)
+            let rankA = _alarmRank(a.alarm)
+            let rankB = _alarmRank(b.alarm)
             if (rankA !== rankB) return rankB - rankA
             return parseInt(b.priority) - parseInt(a.priority)
         })

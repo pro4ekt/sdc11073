@@ -23,12 +23,16 @@ class SmartAlertAggregator:
 
     def __init__(self, manager, overview_model=None):
         self.logger = logging.getLogger('sdc.consumer.aggregator')
-        self._manager = manager  # Reference to SdcMyConsumer
-        # PatientOverviewModel (QObject) — optional; None in unit-test / CLI contexts.
+        self._manager = manager
         self._overview_model = overview_model
 
         # Mutex protecting the aggregator's internal data structures
         self.lock = threading.Lock()
+
+        # Dedicated lock for FHIR cache — prevents duplicate HTTP requests when
+        # multiple devices for the same patient connect simultaneously.
+        # self.lock must NOT be held when performing HTTP fetches (blocks all devices).
+        self._fhir_lock = threading.Lock()
 
         # State Table: (patient_id, room_id) -> ensemble_uuid
         self._active_ensembles: Dict[Tuple[str, str], str] = {}
@@ -105,7 +109,7 @@ class SmartAlertAggregator:
             if concept_code not in self._physiological_graph[ensemble_uuid]:
                 self._physiological_graph[ensemble_uuid][concept_code] = deque(maxlen=15)
             self._physiological_graph[ensemble_uuid][concept_code].append(
-                (value, time.time())
+                (value, time.monotonic())
             )
         # self.logger.debug(
         #     f'[PhysGraph] Write: ensemble={ensemble_uuid[:8]} '
@@ -143,7 +147,7 @@ class SmartAlertAggregator:
                 # )
                 return None
             value, timestamp = buf[-1]
-            age = time.time() - timestamp
+            age = time.monotonic() - timestamp
             if age > max_age_sec:
                 # self.logger.warning(
                 #     f'[PhysGraph] Stale: ensemble={ensemble_uuid[:8]} '
@@ -168,7 +172,7 @@ class SmartAlertAggregator:
             if not self._physiological_graph:
                 lines.append('[PhysGraph]   (empty)')
             for ens_uuid, concepts in self._physiological_graph.items():
-                now = time.time()
+                now = time.monotonic()   # must match the clock used in update_metric_state
                 lines.append(f'[PhysGraph]   Ensemble {ens_uuid[:8]}...')
                 for code, buf in sorted(concepts.items()):
                     if not buf:
@@ -275,7 +279,7 @@ class SmartAlertAggregator:
         if not metric_concept:
             return 'ESCALATE'  # no metric mapping → fail-open
 
-        now = time.time()
+        now = time.monotonic()
 
         with self.lock:
             # ── Early return: ensemble already escalated ──────────────────────────
@@ -484,19 +488,25 @@ class SmartAlertAggregator:
             handler = manager_devices.get(epr)
             if handler is None:
                 continue
-            # Clear BOTH suppression sets so all alarms show as active (Red) after escalation.
+            # Clear BOTH suppression sets under the handler's _suppression_lock so that
+            # update_data() in the Qt thread never sees a torn state during escalation.
+            supp_lock = getattr(handler, '_suppression_lock', None)
             artifact_sup: Optional[set] = getattr(handler, '_artifact_suppressed', None)
             warning_h: Optional[set] = getattr(handler, '_warning_handles', None)
-            if artifact_sup is not None:
-                artifact_sup.clear()
-                self.logger.debug(
-                    f'[Escalation]   Cleared _artifact_suppressed on device {epr[-12:]}'
-                )
-            if warning_h is not None:
-                warning_h.clear()
-                self.logger.debug(
-                    f'[Escalation]   Cleared _warning_handles on device {epr[-12:]}'
-                )
+            if supp_lock is not None:
+                with supp_lock:
+                    if artifact_sup is not None:
+                        artifact_sup.clear()
+                    if warning_h is not None:
+                        warning_h.clear()
+            else:
+                if artifact_sup is not None:
+                    artifact_sup.clear()
+                if warning_h is not None:
+                    warning_h.clear()
+            self.logger.debug(
+                f'[Escalation]   Cleared suppression sets on device {epr[-12:]}'
+            )
             qt_h = getattr(handler, 'qtDeviceHandler', None)
             if qt_h is not None:
                 try:
@@ -563,7 +573,7 @@ class SmartAlertAggregator:
             try:
                 self._cleanup_stale_alarms()
             except Exception as exc:
-                self.logger.debug(f'[AggregatorGC] Unhandled exception: {exc}')
+                self.logger.warning(f'[AggregatorGC] Unhandled exception in GC loop: {exc}')
 
     def _cleanup_stale_alarms(self) -> None:
         """
@@ -578,7 +588,7 @@ class SmartAlertAggregator:
         Thread safety: protected by self.lock throughout.
         Called from both the GC daemon thread and (legacy) check_alert_validity.
         """
-        now = time.time()
+        now = time.monotonic()
         resolved_ensembles: list[str] = []
         # Ensembles where ≥1 alarm was TTL-removed (possibly still non-empty).
         # Used to trigger scheduleUpdate() on member devices so update_data()
@@ -799,67 +809,65 @@ class SmartAlertAggregator:
         Returns a cached FHIRPatientData instance for patient_id, or fetches
         it from the FHIR server on the first call.
 
-        Cache policy: one FHIRPatientData object per patient_id for the
-        lifetime of the aggregator (session-scoped cache).
-
-        Thread safety: self.lock must NOT be held by the caller -- the HTTP
-        request may take several seconds and would block other devices.
+        Thread safety: uses double-checked locking via _fhir_lock to prevent
+        duplicate HTTP requests when multiple devices for the same patient
+        connect simultaneously (e.g., at exhibition power-on).
+        self.lock must NOT be held by the caller (HTTP fetch may take seconds).
         """
-        # -- Cache hit ---------------------------------------------------------
+        # Fast path: GIL-safe dict read (no lock needed for read in CPython)
         if patient_id in self._fhir_cache:
             self.logger.debug(
                 f'[Aggregator] FHIR cache hit for patient_id={patient_id!r}.'
             )
             return self._fhir_cache[patient_id]
 
-        # -- Cache miss: fetch from FHIR server --------------------------------
-        self.logger.info(
-            f'[Aggregator] FHIR cache miss -- fetching data for patient_id={patient_id!r}...'
-        )
-        try:
-            fhir_data = FHIRPatientData()
-            fhir_data.fetch(patient_id)
-            self._fhir_cache[patient_id] = fhir_data
-
-            # Extract and cache FHIR clinical focus rules (from Condition Extensions).
-            # These override rules.json entries for this patient specifically.
-            try:
-                fhir_focus = fhir_data.get_clinical_focus()
-                self._fhir_focus_cache[patient_id] = fhir_focus
-                if fhir_focus:
-                    self.logger.info(
-                        f'[Aggregator] FHIR clinical focus: {len(fhir_focus)} rule(s) '
-                        f'loaded from Condition Extensions for patient_id={patient_id!r}. '
-                        f'These override rules.json entries.'
-                    )
-                    for entry in fhir_focus:
-                        self.logger.debug(
-                            f'[Aggregator]   FHIR rule: danger_code={entry["danger_code"]!r} '
-                            f'sensor={entry.get("critical_sensor_concepts")} '
-                            f'alerts={entry.get("priority_alert_concepts")}'
-                        )
-                else:
-                    self.logger.debug(
-                        f'[Aggregator] No FHIR clinical focus extensions found for '
-                        f'patient_id={patient_id!r} -- using rules.json only.'
-                    )
-            except Exception as _focus_exc:
-                self._fhir_focus_cache[patient_id] = []
-                self.logger.warning(
-                    f'[Aggregator] FHIR clinical focus extraction failed for '
-                    f'patient_id={patient_id!r}: {_focus_exc}'
+        # Slow path: acquire dedicated FHIR lock to serialize concurrent fetches
+        with self._fhir_lock:
+            # Re-check inside the lock (another thread may have fetched while we waited)
+            if patient_id in self._fhir_cache:
+                self.logger.debug(
+                    f'[Aggregator] FHIR cache hit (after lock) for patient_id={patient_id!r}.'
                 )
+                return self._fhir_cache[patient_id]
 
             self.logger.info(
-                f'[Aggregator] FHIR data fetched and cached for patient_id={patient_id!r}.'
+                f'[Aggregator] FHIR cache miss -- fetching data for patient_id={patient_id!r}...'
             )
-            return fhir_data
-        except Exception as exc:
-            self.logger.error(
-                f'[Aggregator] FHIR fetch failed for patient_id={patient_id!r}: {exc}. '
-                f'Proceeding without FHIR data.'
-            )
-            return None
+            try:
+                fhir_data = FHIRPatientData()
+                fhir_data.fetch(patient_id)
+                self._fhir_cache[patient_id] = fhir_data
+
+                try:
+                    fhir_focus = fhir_data.get_clinical_focus()
+                    self._fhir_focus_cache[patient_id] = fhir_focus
+                    if fhir_focus:
+                        self.logger.info(
+                            f'[Aggregator] FHIR clinical focus: {len(fhir_focus)} rule(s) '
+                            f'loaded from Condition Extensions for patient_id={patient_id!r}.'
+                        )
+                    else:
+                        self.logger.debug(
+                            f'[Aggregator] No FHIR clinical focus extensions found for '
+                            f'patient_id={patient_id!r} -- using rules.json only.'
+                        )
+                except Exception as _focus_exc:
+                    self._fhir_focus_cache[patient_id] = []
+                    self.logger.warning(
+                        f'[Aggregator] FHIR clinical focus extraction failed for '
+                        f'patient_id={patient_id!r}: {_focus_exc}'
+                    )
+
+                self.logger.info(
+                    f'[Aggregator] FHIR data fetched and cached for patient_id={patient_id!r}.'
+                )
+                return fhir_data
+            except Exception as exc:
+                self.logger.error(
+                    f'[Aggregator] FHIR fetch failed for patient_id={patient_id!r}: {exc}. '
+                    f'Proceeding without FHIR data.'
+                )
+                return None
 
     def evaluate_and_bind_device(self, device_handler: 'DeviceHandler') -> None:
         """
