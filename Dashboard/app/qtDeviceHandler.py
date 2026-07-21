@@ -318,10 +318,15 @@ class QtDeviceHandler(QObject):
             active_alert_handles = set()
             new_alarm_status = "Off"  # Initial status -- no alarms
 
-            # Alarms suppressed by the AlarmCoordinator pipeline.
-            # _pipeline_suppressed contains AlertCondition DescriptorHandles.
-            # Both the condition and its paired signal must be hidden from the UI.
-            pipeline_suppressed: set = getattr(self._device, '_pipeline_suppressed', set())
+            # Suppression sets from the AlarmCoordinator pipeline.
+            # _artifact_suppressed: Stage 1 RoC artifacts — skip completely.
+            # _warning_handles:     Stage 2 low-risk alarms — render as Yellow.
+            _artifact_suppressed: set = getattr(self._device, '_artifact_suppressed', set())
+            _warning_handles: set = getattr(self._device, '_warning_handles', set())
+
+            # Cache aggregator reference and ensemble UUID once for the signal loop.
+            _aggregator = getattr(getattr(self._device, 'manager', None), 'aggregator', None)
+            _ens_uuid: str | None = getattr(self._device, 'ensemble_uuid', None)
 
             # Collect all AlertSignalState objects from MDIB
             alert_signals = [
@@ -339,21 +344,38 @@ class QtDeviceHandler(QObject):
                 str(pm_types.AlertSignalPresence.OFF):   0,
             }
             highest_priority = 0
+            has_warning_signal = False  # True when ≥1 Warning-level signal is present
 
             for s in alert_signals:
-                # Skip signals whose parent condition was suppressed by the pipeline
                 sig_desc = self._device.mdib.descriptions.handle.get_one(
                     s.DescriptorHandle, allow_none=True
                 )
                 cond_handle = getattr(sig_desc, 'ConditionSignaled', None) if sig_desc else None
-                if cond_handle and str(cond_handle) in pipeline_suppressed:
-                    continue  # pipeline-suppressed — hide from UI
+
+                # Stage 1 artifact — hide completely (RoC exceeded → noise)
+                if cond_handle and str(cond_handle) in _artifact_suppressed:
+                    continue
 
                 presence_str = str(s.Presence)
                 priority = _ALARM_PRIORITY.get(presence_str, 0)
+
+                # TTL cross-reference: skip stale MDIB entries already expired by Watchdog GC
+                if priority > 0 and cond_handle and _aggregator is not None and _ens_uuid:
+                    if not _aggregator.is_alarm_active(_ens_uuid, str(cond_handle)):
+                        continue  # stale MDIB state — alarm TTL-expired in aggregator
+
+                # Stage 2 Warning — real alarm, risk < 5.0; record but don't inflate priority
+                if priority > 0 and cond_handle and str(cond_handle) in _warning_handles:
+                    has_warning_signal = True
+                    continue  # shown as Yellow only when no On/Ack/Latch is present
+
                 if priority > highest_priority:
                     highest_priority = priority
                     new_alarm_status = presence_str
+
+            # Apply Warning only when no higher-priority alarm is active
+            if highest_priority == 0 and has_warning_signal:
+                new_alarm_status = 'Warning'
 
             # ------------------------------------------------------------------
             # 4b. Alert Conditions -> alarm sources (for metric highlighting)
@@ -365,9 +387,11 @@ class QtDeviceHandler(QObject):
             ]
 
             for alert in active_conditions:
-                # Skip conditions suppressed by the pipeline
-                if alert.DescriptorHandle in pipeline_suppressed:
+                # Skip Stage 1 artifacts — they are invisible to the user
+                if alert.DescriptorHandle in _artifact_suppressed:
                     continue
+                # Warning conditions (Stage 2) are intentionally included so the
+                # metric row is highlighted in the DevicePage even at Warning level.
 
                 alert_desc = self._device.mdib.descriptions.handle.get_one(
                     alert.DescriptorHandle, allow_none=True

@@ -97,15 +97,22 @@ Item {
                         height: 130
                         radius: 18
 
-                        // Base colour: red when escalated, blue otherwise
-                        color: modelData.isEscalated ? "transparent" : "#5e6ea5"
+                        // Base colour: tri-state — red / yellow / blue
+                        color: "transparent"
 
-                        gradient: modelData.isEscalated ? gradEscalated : gradNormal
+                        gradient: modelData.isEscalated ? gradEscalated
+                                : modelData.isWarning   ? gradWarning
+                                :                         gradNormal
 
                         Gradient {
                             id: gradEscalated
                             GradientStop { position: 0.0; color: "#8c2f2f" }
                             GradientStop { position: 1.0; color: "#af3c3c" }
+                        }
+                        Gradient {
+                            id: gradWarning
+                            GradientStop { position: 0.0; color: "#8a7010" }
+                            GradientStop { position: 1.0; color: "#bfa11f" }
                         }
                         Gradient {
                             id: gradNormal
@@ -119,10 +126,12 @@ Item {
                             anchors.fill: parent
                             radius: parent.radius
                             color: "transparent"
-                            border.color: "#ff4444"
-                            border.width: modelData.isEscalated ? 3 : 0
+                            border.color: modelData.isEscalated ? "#ff4444"
+                                        : modelData.isWarning   ? "#ebd234"
+                                        :                         "transparent"
+                            border.width: (modelData.isEscalated || modelData.isWarning) ? 3 : 0
 
-                            // Blink the border opacity — GPU-composited, 60 FPS safe
+                            // Blink ONLY when escalated (Red). Warning is static.
                             SequentialAnimation on opacity {
                                 running: modelData.isEscalated
                                 loops:   Animation.Infinite
@@ -146,9 +155,11 @@ Item {
                             anchors.topMargin: 14
                             anchors.right: parent.right
                             anchors.rightMargin: 18
-                            color: modelData.isEscalated ? "#af3c3c" : "#4caf50"
+                            color: modelData.isEscalated ? "#af3c3c"
+                                 : modelData.isWarning   ? "#ebd234"
+                                 :                         "#4caf50"
 
-                            // Pulse the dot when escalated
+                            // Pulse ONLY when escalated (Red). Warning is static.
                             SequentialAnimation on scale {
                                 running: modelData.isEscalated
                                 loops:   Animation.Infinite
@@ -191,9 +202,9 @@ Item {
                                 }
 
                                 Text {
-                                    visible: modelData.isEscalated
+                                    visible: modelData.isEscalated || modelData.isWarning
                                     text: "Risk: " + modelData.riskScore.toFixed(1)
-                                    color: "#ffaaaa"
+                                    color: modelData.isEscalated ? "#ffaaaa" : "#ebd234"
                                     font.pixelSize: 17
                                     font.family: "Tahoma"
                                     font.bold: true
@@ -201,9 +212,11 @@ Item {
                             }
 
                             Text {
-                                visible: modelData.isEscalated
-                                text: "⚠ ESCALATED — Clinical alarm confirmed"
-                                color: "#ffcccc"
+                                visible: modelData.isEscalated || modelData.isWarning
+                                text: modelData.isEscalated
+                                      ? "⚠ ESCALATED — Clinical alarm confirmed"
+                                      : "⚠ WARNING — Risk accumulating"
+                                color: modelData.isEscalated ? "#ffcccc" : "#ebd234"
                                 font.pixelSize: 14
                                 font.family: "Tahoma"
                             }

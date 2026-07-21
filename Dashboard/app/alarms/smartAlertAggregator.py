@@ -250,46 +250,30 @@ class SmartAlertAggregator:
         device_epr: str = '',
         reliability_profile: Optional[DeviceReliabilityProfile] = None,
         roc_limit: Optional[float] = None,
-    ) -> bool:
+    ) -> str:
         """
-        Two-stage alarm pipeline gate for an active alarm (IHE-PCD ACM Alarm Coordinator).
+        Two-stage alarm pipeline gate — returns a tri-state routing decision.
 
-        Stage 1 — HardwareArtifactFilter:
-            Retrieves the metric sliding-window buffer for *metric_concept* from
-            _physiological_graph, copies it under the lock, and delegates to
-            HardwareArtifactFilter.validate() for dx/dt analysis.
-            The RoC limit is taken from *roc_limit* (pre-fetched by DeviceHandler).
+        Stage 1 — HardwareArtifactFilter (dx/dt RoC gate, per-device):
+            If the metric jump is physiologically impossible → ``"SUPPRESS"``.
+            The device-level UI hides the alarm completely (noise/artifact).
 
-        Stage 2 — ClinicalRiskFilter (Bayesian Sensor Fusion):
-            Constructs DeviceAlertEvidence for every device in the ensemble and
-            computes a BICEPS-scaled risk score via the product of Likelihood Ratios.
-            The LR+ values come from *reliability_profile* embedded in each evidence
-            object — this class never queries the database directly.
-            Escalates only when risk_score ≥ ESCALATION_THRESHOLD (5.0).
+        Stage 2 — ClinicalRiskFilter (Bayesian Sensor Fusion, per-ensemble):
+            risk_score ≥ ESCALATION_THRESHOLD (5.0) → ``"ESCALATE"``  (Red)
+            risk_score <  ESCALATION_THRESHOLD       → ``"WARN"``      (Yellow)
 
-        Parameters
-        ----------
-        ensemble_uuid        : UUID of the ensemble containing the device.
-        alert_key            : Alarm handle (for log messages).
-        metric_concept       : LOINC/MDC code of the metric associated with this alarm.
-                               If empty the filter always passes through (fail-open).
-        biceps_priority      : BICEPS AlertCondition.Priority — 'Hi'|'Me'|'Lo'|'None'.
-        manufacturer         : DPWS Manufacturer string (retained for logging).
-        model                : DPWS ModelName string (retained for logging).
-        device_epr           : EPR of the triggering device.
-        reliability_profile  : Pre-fetched DeviceReliabilityProfile (for Stage 2 LR+).
-                               None → fail-safe profile used (LR+ = 1.0, neutral).
-        roc_limit            : Pre-fetched dx/dt limit (for Stage 1).
-                               None → fail-open (concept not calibrated).
+        Fail-open paths (no metric history, unknown concept) → ``"ESCALATE"``
+        so real alarms are never silently swallowed.
 
         Returns
         -------
-        bool
-            True  — AlarmDecision.escalate → forward alarm.
-            False — pipeline suppressed the alarm (artifact or low risk score).
+        str
+            ``"ESCALATE"`` — forward alarm; device + patient card Red.
+            ``"WARN"``     — real alarm, risk < 5.0; device card Yellow.
+            ``"SUPPRESS"`` — Stage 1 artifact; hide completely from UI.
         """
         if not metric_concept:
-            return True  # no metric mapping → fail-open
+            return 'ESCALATE'  # no metric mapping → fail-open
 
         now = time.time()
 
@@ -312,7 +296,7 @@ class SmartAlertAggregator:
                     roc_limit=roc_limit,
                 )
                 self._active_alarms[ensemble_uuid][alert_key] = (ev, now)
-                return True
+                return 'ESCALATE'
 
             buf: Optional[deque] = (
                 self._physiological_graph
@@ -320,7 +304,7 @@ class SmartAlertAggregator:
                 .get(metric_concept)
             )
             if buf is None:
-                return True  # no metric history yet → fail-open
+                return 'ESCALATE'  # no metric history yet → fail-open
             buf_snapshot = deque(buf, maxlen=buf.maxlen)
 
             # ── Active alarm cache (TTL) ──────────────────────────────────────
@@ -351,24 +335,33 @@ class SmartAlertAggregator:
             triggering_evidence, buf_snapshot, ensemble_evidences
         )
 
-        # ── Escalation propagation ────────────────────────────────────────────
-        # When the pipeline first confirms a crisis, mark the ensemble escalated
-        # and immediately clear pipeline-suppression on ALL member devices so the
-        # UI shows all 3 alarms as ON, not just the last-evaluated one.
+        # ── Route based on tri-state decision ────────────────────────────────────
         if decision.escalate:
             with self.lock:
                 self._escalated_ensembles.add(ensemble_uuid)
             self._propagate_escalation_to_devices(ensemble_uuid)
-            # Notify PatientOverview: crisis confirmed
             _patient_id, _room = self._reverse_lookup_patient_room(ensemble_uuid)
-            self._notify_overview(ensemble_uuid, _patient_id, _room, True, decision.risk_score)
-        else:
-            # If the ensemble was previously escalated and is now suppressing again,
-            # this path is reached only when ensemble is NOT in _escalated_ensembles
-            # (early-return above would have fired). No state change needed here.
-            pass
+            self._notify_overview(ensemble_uuid, _patient_id, _room,
+                                  is_escalated=True, risk_score=decision.risk_score,
+                                  is_warning=False)
+            return 'ESCALATE'
 
-        return decision.escalate
+        if decision.suppression_stage == 'HardwareArtifactFilter':
+            # Stage 1: physiological artifact (RoC exceeded) — suppress silently.
+            # Do NOT emit a PatientOverview Warning: noise must not trigger UI state.
+            return 'SUPPRESS'
+
+        # Stage 2: alarm is real but risk < 5.0 → Warning (Yellow).
+        # Only notify when there are active alarms in the cache to avoid spurious
+        # Yellow flash on fail-open paths (empty buffer / fresh device).
+        with self.lock:
+            has_active = bool(self._active_alarms.get(ensemble_uuid))
+        if has_active:
+            _patient_id, _room = self._reverse_lookup_patient_room(ensemble_uuid)
+            self._notify_overview(ensemble_uuid, _patient_id, _room,
+                                  is_escalated=False, risk_score=decision.risk_score,
+                                  is_warning=True)
+        return 'WARN'
 
     def is_ensemble_escalated(self, ensemble_uuid: Optional[str]) -> bool:
         """Return True if the ensemble is currently in an escalated (crisis) state."""
@@ -376,6 +369,20 @@ class SmartAlertAggregator:
             return False
         with self.lock:
             return ensemble_uuid in self._escalated_ensembles
+
+    def is_alarm_active(self, ensemble_uuid: str, alert_key: str) -> bool:
+        """
+        Return True only if alert_key is present in the TTL-active alarms cache
+        for the given ensemble.
+
+        Used by QtDeviceHandler.update_data() to cross-reference stale MDIB state:
+        if the MDIB still shows Presence=On but this method returns False, the
+        alarm has already been TTL-expired by the Watchdog GC and must be ignored.
+
+        Thread safety: protected by self.lock.
+        """
+        with self.lock:
+            return alert_key in self._active_alarms.get(ensemble_uuid, {})
 
     def clear_alarm(self, ensemble_uuid: Optional[str], alert_key: str) -> None:
         """
@@ -414,25 +421,35 @@ class SmartAlertAggregator:
                     f'[ActiveAlarms] Cleared (alarm OFF): ensemble={ensemble_uuid[:8]} '
                     f'alert={alert_key!r}'
                 )
-            # If all alarms for this ensemble are now gone → crisis resolved
+            # If all alarms for this ensemble are now gone → reset to Normal (Blue).
+            # This covers BOTH the Escalated (Red) and Warning (Yellow) cases:
+            # a Warning ensemble is NOT in _escalated_ensembles, so the old inner
+            # `if ensemble_uuid in self._escalated_ensembles` guard would silently
+            # skip the notify call, leaving the card stuck Yellow.
             if not self._active_alarms.get(ensemble_uuid):
+                crisis_resolved = True  # always notify Blue when alarm cache is empty
                 if ensemble_uuid in self._escalated_ensembles:
                     self._escalated_ensembles.discard(ensemble_uuid)
-                    crisis_resolved = True
                     self.logger.info(
                         f'[Escalation] Crisis resolved: ensemble={ensemble_uuid[:8]} '
                         f'— all alarms cleared, escalation state reset.'
                     )
-                    # Inline reverse-lookup while lock is held (avoids re-entrant acquire).
-                    for (pid, room), eid in self._active_ensembles.items():
-                        if eid == ensemble_uuid:
-                            _patient_id, _room = pid, room
-                            break
+                else:
+                    self.logger.info(
+                        f'[Alarm] Warning resolved: ensemble={ensemble_uuid[:8]} '
+                        f'— all alarms cleared, returning to Normal.'
+                    )
+                # Inline reverse-lookup while lock is held (avoids re-entrant acquire).
+                for (pid, room), eid in self._active_ensembles.items():
+                    if eid == ensemble_uuid:
+                        _patient_id, _room = pid, room
+                        break
 
         # Notify PatientOverview outside the lock — _notify_overview acquires self.lock
         # for device_count; calling it inside would re-enter and deadlock.
         if crisis_resolved:
-            self._notify_overview(ensemble_uuid, _patient_id, _room, False, 0.0)
+            self._notify_overview(ensemble_uuid, _patient_id, _room,
+                                  is_escalated=False, risk_score=0.0, is_warning=False)
 
     def _propagate_escalation_to_devices(self, ensemble_uuid: str) -> None:
         """
@@ -467,11 +484,18 @@ class SmartAlertAggregator:
             handler = manager_devices.get(epr)
             if handler is None:
                 continue
-            suppressed: Optional[set] = getattr(handler, '_pipeline_suppressed', None)
-            if suppressed is not None:
-                suppressed.clear()
+            # Clear BOTH suppression sets so all alarms show as active (Red) after escalation.
+            artifact_sup: Optional[set] = getattr(handler, '_artifact_suppressed', None)
+            warning_h: Optional[set] = getattr(handler, '_warning_handles', None)
+            if artifact_sup is not None:
+                artifact_sup.clear()
                 self.logger.debug(
-                    f'[Escalation]   Cleared _pipeline_suppressed on device {epr[-12:]}'
+                    f'[Escalation]   Cleared _artifact_suppressed on device {epr[-12:]}'
+                )
+            if warning_h is not None:
+                warning_h.clear()
+                self.logger.debug(
+                    f'[Escalation]   Cleared _warning_handles on device {epr[-12:]}'
                 )
             qt_h = getattr(handler, 'qtDeviceHandler', None)
             if qt_h is not None:
@@ -499,10 +523,16 @@ class SmartAlertAggregator:
         room: str,
         is_escalated: bool,
         risk_score: float,
+        is_warning: bool = False,
     ) -> None:
         """
         Push an ensemble summary to PatientOverviewModel (thread-safe via its
         internal queue + Signal bridge).  No-op when _overview_model is None.
+
+        Tri-state semantics:
+          is_escalated=True,  is_warning=False  → Red   (risk ≥ 5.0)
+          is_escalated=False, is_warning=True   → Yellow (risk > 0 but < 5.0)
+          is_escalated=False, is_warning=False  → Blue   (no active alarms)
         """
         if self._overview_model is None:
             return
@@ -516,6 +546,7 @@ class SmartAlertAggregator:
                 device_count,
                 is_escalated,
                 risk_score,
+                is_warning,
             )
         except Exception as exc:
             self.logger.debug(f'[PatientOverview] updateEnsemble failed: {exc}')
@@ -549,6 +580,10 @@ class SmartAlertAggregator:
         """
         now = time.time()
         resolved_ensembles: list[str] = []
+        # Ensembles where ≥1 alarm was TTL-removed (possibly still non-empty).
+        # Used to trigger scheduleUpdate() on member devices so update_data()
+        # re-evaluates against the now-smaller _active_alarms cache.
+        stale_ensembles: list[str] = []
 
         with self.lock:
             for ensemble_uuid, alarm_cache in list(self._active_alarms.items()):
@@ -563,20 +598,49 @@ class SmartAlertAggregator:
                         f'alert={k!r} — removed.'
                     )
 
+                if stale_keys:
+                    stale_ensembles.append(ensemble_uuid)
+
                 if not alarm_cache:
                     del self._active_alarms[ensemble_uuid]
                     if ensemble_uuid in self._escalated_ensembles:
                         self._escalated_ensembles.discard(ensemble_uuid)
-                        resolved_ensembles.append(ensemble_uuid)
                         self.logger.info(
                             f'[AggregatorGC] Crisis resolved: ensemble={ensemble_uuid[:8]} '
                             f'— all alarms TTL-expired, escalation cleared.'
                         )
+                    else:
+                        self.logger.info(
+                            f'[AggregatorGC] Warning resolved: ensemble={ensemble_uuid[:8]} '
+                            f'— all alarms TTL-expired, returning to Normal.'
+                        )
+                    # Always notify Blue, regardless of prior state (Red or Yellow).
+                    resolved_ensembles.append(ensemble_uuid)
 
-        # Notify UI outside the lock (updateEnsemble enqueues into queue.Queue).
+        # Notify PatientOverview for fully-resolved ensembles.
         for ensemble_uuid in resolved_ensembles:
             patient_id, room = self._reverse_lookup_patient_room(ensemble_uuid)
-            self._notify_overview(ensemble_uuid, patient_id, room, False, 0.0)
+            self._notify_overview(ensemble_uuid, patient_id, room,
+                                  is_escalated=False, risk_score=0.0, is_warning=False)
+
+        # Force UI refresh on every device whose alarm cache changed (partially or fully).
+        # update_data() will cross-check against is_alarm_active() and skip stale MDIB entries.
+        manager_devices: dict = getattr(self._manager, 'devices', {})
+        for ensemble_uuid in stale_ensembles:
+            with self.lock:
+                eprs: set[str] = set(self._ensemble_devices.get(ensemble_uuid, set()))
+            for epr in eprs:
+                handler = manager_devices.get(epr)
+                if handler is None:
+                    continue
+                qt_h = getattr(handler, 'qtDeviceHandler', None)
+                if qt_h is not None:
+                    try:
+                        qt_h.scheduleUpdate()
+                    except Exception as _exc:
+                        self.logger.debug(
+                            f'[AggregatorGC] scheduleUpdate failed for {epr[-12:]}: {_exc}'
+                        )
 
     def stop(self) -> None:
         """Signal the GC daemon thread to exit. Call on application shutdown."""
@@ -873,7 +937,8 @@ class SmartAlertAggregator:
                 f'successfully applied to {device_handler.epr[-12:]}.'
             )
             # Notify PatientOverview: new/updated ensemble, not yet escalated
-            self._notify_overview(ensemble_uuid, patient_id, room or '', False, 0.0)
+            self._notify_overview(ensemble_uuid, patient_id, room or '',
+                                  is_escalated=False, risk_score=0.0, is_warning=False)
         else:
             # SOAP failed -- roll back the local assignment so the device
             # is not considered "bound" until the next successful attempt.

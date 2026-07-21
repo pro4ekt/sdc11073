@@ -73,13 +73,14 @@ class PatientOverviewModel(QObject):
         device_count: int,
         is_escalated: bool,
         risk_score: float,
+        is_warning: bool = False,
     ) -> None:
         """
         Called from SmartAlertAggregator (worker thread).
         Enqueues an update command and triggers main-thread processing.
         """
         self._queue.put(('update', ensemble_uuid, patient_name, room,
-                         device_count, is_escalated, risk_score))
+                         device_count, is_escalated, risk_score, is_warning))
         self._pendingUpdate.emit()
 
     def removeEnsemble(self, ensemble_uuid: str) -> None:
@@ -108,13 +109,14 @@ class PatientOverviewModel(QObject):
             cmd = item[0]
 
             if cmd == 'update':
-                _, uuid, name, room, count, escalated, score = item
+                _, uuid, name, room, count, escalated, score, warning = item
                 entry = {
                     'ensembleUuid': uuid,
                     'patientName':  name,
                     'room':         room,
                     'deviceCount':  count,
                     'isEscalated':  escalated,
+                    'isWarning':    warning,
                     'riskScore':    float(score),
                 }
                 if self._ensembles.get(uuid) != entry:

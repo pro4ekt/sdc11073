@@ -87,6 +87,14 @@ Item {
             var patientMatch = (activePatient === "") || (e.patientid === activePatient)
 
             if (roomMatch && patientMatch) {
+                // Sync dynamic fields from the live QtDeviceHandler before appending.
+                // masterDeviceArray holds a static snapshot from onDeviceConnected;
+                // e.deviceObj always reflects the current property values.
+                if (e.deviceObj) {
+                    e.alarm    = e.deviceObj.alarmStatus
+                    e.value    = e.deviceObj.deviceValue
+                    e.priority = e.deviceObj.priority
+                }
                 deviceModel.append(e)   // deviceObj Python reference is preserved
             }
         }
@@ -123,12 +131,15 @@ Item {
         }
 
         items.sort((a, b) => {
+            // Bayesian statuses (On, Warning) take absolute priority over
+            // network/operator statuses (Ack, Latch).
             let getAlarmRank = (status) => {
-                if (status === "COMM_FAILURE") return 4
-                if (status === "On")           return 3
-                if (status === "Ack")          return 2
-                if (status === "Latch")        return 1
-                return 0
+                if (status === "On")           return 6   // Stage 2 Escalate
+                if (status === "Warning")      return 5   // Stage 2 Warn
+                if (status === "COMM_FAILURE") return 4   // device silent
+                if (status === "Ack")          return 3   // operator ack
+                if (status === "Latch")        return 2   // latched
+                return 1                                  // Off / normal
             }
             let rankA = getAlarmRank(a.alarm)
             let rankB = getAlarmRank(b.alarm)
@@ -401,20 +412,28 @@ Item {
                         height: 80
                         radius: 20
 
-                        color: (model.alarm === "On" || model.alarm === "Ack" || model.alarm === "COMM_FAILURE")
+                        color: (model.alarm === "On" || model.alarm === "COMM_FAILURE" || model.alarm === "Warning")
                                ? "transparent" : "#5e6ea5"
 
-                        gradient: model.alarm === "On"           ? gradOn
-                                : (model.alarm === "Ack"         ? gradAck
-                                : (model.alarm === "COMM_FAILURE" ? gradComm : gradOff))
+                        gradient: model.alarm === "On"            ? gradOn
+                                : (model.alarm === "Warning"      ? gradWarn
+                                : (model.alarm === "COMM_FAILURE" ? gradComm
+                                : (model.alarm === "Ack"          ? gradAck
+                                : (model.alarm === "Latch"        ? gradLatch : gradOff))))
 
-                        Gradient { id: gradOn;   GradientStop { position: 0.0; color: "#8c2f2f" } GradientStop { position: 1.0; color: "#af3c3c" } }
-                        Gradient { id: gradAck;  GradientStop { position: 0.0; color: "#bfa11f" } GradientStop { position: 1.0; color: "#ebd234" } }
-                        Gradient { id: gradComm; GradientStop { position: 0.0; color: "#555555" } GradientStop { position: 1.0; color: "#aa3333" } }
-                        Gradient { id: gradOff;  GradientStop { position: 0.0; color: "#5e6ea5" } GradientStop { position: 1.0; color: "#7487c4" } }
+                        // On/Warning/COMM_FAILURE: use gradient, rest use flat color fallback
+                        Gradient { id: gradOn;    GradientStop { position: 0.0; color: "#8c2f2f" } GradientStop { position: 1.0; color: "#af3c3c" } }
+                        Gradient { id: gradWarn;  GradientStop { position: 0.0; color: "#8a7010" } GradientStop { position: 1.0; color: "#bfa11f" } }
+                        Gradient { id: gradComm;  GradientStop { position: 0.0; color: "#4a3030" } GradientStop { position: 1.0; color: "#7a3030" } }
+                        Gradient { id: gradAck;   GradientStop { position: 0.0; color: "#2e4a6e" } GradientStop { position: 1.0; color: "#3d5f8a" } }
+                        Gradient { id: gradLatch; GradientStop { position: 0.0; color: "#303d60" } GradientStop { position: 1.0; color: "#3e4f7a" } }
+                        Gradient { id: gradOff;   GradientStop { position: 0.0; color: "#5e6ea5" } GradientStop { position: 1.0; color: "#7487c4" } }
 
                         SequentialAnimation on opacity {
-                            running: model.alarm === "On" || model.alarm === "Ack" || model.alarm === "COMM_FAILURE"
+                            // Blink ONLY for hard clinical alerts: Escalated (On) and COMM_FAILURE.
+                            // Warning is static yellow — risk is accumulating, not yet critical.
+                            // Ack/Latch are intentionally calm — operator already aware.
+                            running: model.alarm === "On" || model.alarm === "COMM_FAILURE"
                             loops: Animation.Infinite
                             NumberAnimation { to: 0.5; duration: 500; easing.type: Easing.InOutQuad }
                             NumberAnimation { to: 1.0; duration: 500; easing.type: Easing.InOutQuad }

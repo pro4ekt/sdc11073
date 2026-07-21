@@ -103,11 +103,12 @@ class DeviceHandler(threading.Thread):
         # Passed to SmartAlertAggregator.check_alert_validity() on each alarm event
         # so pipeline filters never query the database at event time.
         self._device_calibration: dict[str, tuple[Any, Optional[DeviceReliabilityProfile]]] = {}
-        # AlarmCoordinator suppressed condition handles.
-        # When Stage 1 or Stage 2 suppresses an alarm, its condition DescriptorHandle
-        # is added here so the UI layer and paired signal can also be hidden.
-        # Cleared automatically when the alarm goes inactive.
-        self._pipeline_suppressed: set[str] = set()
+        # AlarmCoordinator suppression sets (split by suppression semantics).
+        # _artifact_suppressed: Stage 1 RoC artifacts — hidden completely from UI.
+        # _warning_handles:     Stage 2 low-risk alarms — shown as Yellow in UI.
+        # Both are cleared automatically when the alarm goes inactive (Presence=False).
+        self._artifact_suppressed: set[str] = set()
+        self._warning_handles: set[str] = set()
 
         # --- Synchronisation ---
         self.data_lock = threading.Lock()
@@ -726,20 +727,23 @@ class DeviceHandler(threading.Thread):
             aggregator = getattr(self.manager, 'aggregator', None)
 
             # ── Signal suppression propagation ────────────────────────────────
-            # If this is a Signal whose parent Condition was suppressed by the
-            # pipeline, suppress the signal too (prevents log + UI indicator).
-            if type_label == 'Signal' and condition_signaled in self._pipeline_suppressed:
+            # If this Signal's parent Condition is a confirmed hardware artifact
+            # (_artifact_suppressed), hide the signal too (prevents log + UI indicator).
+            # Warning-level conditions (_warning_handles) are intentionally NOT hidden
+            # here — they propagate to update_data() which renders them as Yellow.
+            if type_label == 'Signal' and condition_signaled in self._artifact_suppressed:
                 if is_active:
-                    continue  # parent condition suppressed → hide the signal as well
+                    continue  # Stage 1 artifact — hide signal completely
 
             # ── Condition suppression tracking ────────────────────────────────
-            # When a Condition clears, always remove from _pipeline_suppressed so
-            # the next ON event gets a fresh evaluation.
+            # When a Condition clears, remove from BOTH sets so the next ON event
+            # gets a fresh pipeline evaluation.
             # Also explicitly remove from the aggregator's TTL cache (_active_alarms)
             # so the dead alarm is not included in Bayesian fusion for the next
             # alarm that fires in the same ensemble.
             if type_label == 'Condition' and not is_active:
-                self._pipeline_suppressed.discard(handle)
+                self._artifact_suppressed.discard(handle)
+                self._warning_handles.discard(handle)
                 if aggregator is not None and self.ensemble_uuid:
                     try:
                         aggregator.clear_alarm(self.ensemble_uuid, handle)
@@ -749,13 +753,10 @@ class DeviceHandler(threading.Thread):
             # DSP filter (IHE-PCD ACM Alarm Coordinator — Stage 1 + Stage 2)
             if is_active and type_label == 'Condition' and aggregator is not None and self.ensemble_uuid:
                 try:
-                    # Retrieve the pre-fetched calibration for this concept.
-                    # Tuple (roc_limit, reliability_profile) was populated at MDIB init time
-                    # by _prefetch_device_calibration() via DeviceProfileRepository.
                     _roc_limit, _rel_profile = self._device_calibration.get(
                         metric_concept, (None, None)
                     )
-                    if not aggregator.check_alert_validity(
+                    _result = aggregator.check_alert_validity(
                         self.ensemble_uuid, handle, metric_concept,
                         biceps_priority=biceps_priority,
                         manufacturer=self.manufacturer,
@@ -763,17 +764,31 @@ class DeviceHandler(threading.Thread):
                         device_epr=self.epr,
                         roc_limit=_roc_limit,
                         reliability_profile=_rel_profile,
-                    ):
-                        self._pipeline_suppressed.add(handle)   # suppress condition + its signal
+                    )
+                    if _result == 'SUPPRESS':
+                        # Stage 1: physiological artifact — hide from UI + log
+                        self._artifact_suppressed.add(handle)
+                        self._warning_handles.discard(handle)
                         self.logger.info(
-                            f'[DSP FILTER] Pipeline suppressed alarm: '
+                            f'[DSP FILTER] Stage 1 artifact suppressed: '
                             f'handle={handle!r} metric={metric_concept!r} '
                             f'concept={alert_concept!r} priority={biceps_priority!r}'
                         )
                         continue
+                    elif _result == 'WARN':
+                        # Stage 2: real alarm, risk < 5.0 — show Yellow in UI
+                        self._warning_handles.add(handle)
+                        self._artifact_suppressed.discard(handle)
+                        self.logger.info(
+                            f'[DSP FILTER] Stage 2 warning alarm: '
+                            f'handle={handle!r} metric={metric_concept!r} '
+                            f'concept={alert_concept!r} priority={biceps_priority!r}'
+                        )
+                        # Do NOT continue — let alarm proceed to log/UI as Warning
                     else:
-                        # Alarm passed the pipeline — ensure it is not in suppressed set
-                        self._pipeline_suppressed.discard(handle)
+                        # 'ESCALATE': alarm passed both stages or fail-open
+                        self._artifact_suppressed.discard(handle)
+                        self._warning_handles.discard(handle)
                 except Exception as e:
                     self.logger.warning(f'[DSP FILTER] check_alert_validity raised: {e}')
 
