@@ -8,7 +8,42 @@ Item {
     property var mainPage
     property var loginPage
 
+    // Filtered subset of patientOverview_model.patients.
+    // Rebuilt by applyRoomFilter() whenever the room selection or patient list changes.
+    property var filteredPatients: []
+
     anchors.fill: parent
+
+    // ── Room filter logic ──────────────────────────────────────────────────────
+    function applyRoomFilter() {
+        var all = (typeof patientOverview_model !== "undefined")
+                  ? patientOverview_model.patients : []
+        var room = sdcManager ? sdcManager.currentRoom : ""
+        if (!room || room === "") {
+            filteredPatients = all
+        } else {
+            var out = []
+            for (var i = 0; i < all.length; i++) {
+                if (all[i].room === room)
+                    out.push(all[i])
+            }
+            filteredPatients = out
+        }
+    }
+
+    Component.onCompleted: applyRoomFilter()
+
+    // Re-filter when the operator switches rooms
+    Connections {
+        target: sdcManager
+        function onCurrentRoomChanged() { patientOverview.applyRoomFilter() }
+    }
+
+    // Re-filter when the Python model delivers new/updated patient data
+    Connections {
+        target: (typeof patientOverview_model !== "undefined") ? patientOverview_model : null
+        function onPatientsChanged() { patientOverview.applyRoomFilter() }
+    }
 
     // ─── TOP BAR ──────────────────────────────────────────────────────────────
     Rectangle {
@@ -45,6 +80,73 @@ Item {
                 font.family: "Tahoma"
             }
         }
+
+        // ── ROOM SWITCHER ──────────────────────────────────────────────────
+        Row {
+            id: roomSwitcherRow
+            anchors.centerIn: parent
+            spacing: 6
+
+            Text {
+                text: "Room:"
+                color: "#ccd0e8"
+                font.pixelSize: 18
+                font.family: "Tahoma"
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Button {
+                id: allRoomsBtn
+                text: "All"
+                width: 62
+                height: 36
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: sdcManager && sdcManager.switchRoom("")
+
+                background: Rectangle {
+                    radius: 6
+                    color: (!sdcManager || sdcManager.currentRoom === "") ? "#3a5f9c" : "#404c6e"
+                    border.color: "#9ab0d9"
+                    border.width: (!sdcManager || sdcManager.currentRoom === "") ? 2 : 0
+                }
+                contentItem: Text {
+                    text: allRoomsBtn.text
+                    color: "white"
+                    font.pixelSize: 15
+                    font.family: "Tahoma"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+
+            Repeater {
+                model: sdcManager ? sdcManager.availableRooms : []
+                delegate: Button {
+                    required property string modelData
+                    text: modelData
+                    width: Math.max(80, text.length * 11)
+                    height: 36
+                    anchors.verticalCenter: roomSwitcherRow.verticalCenter
+                    onClicked: sdcManager && sdcManager.switchRoom(modelData)
+
+                    background: Rectangle {
+                        radius: 6
+                        color: (sdcManager && sdcManager.currentRoom === modelData) ? "#3a5f9c" : "#404c6e"
+                        border.color: "#9ab0d9"
+                        border.width: (sdcManager && sdcManager.currentRoom === modelData) ? 2 : 0
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: "white"
+                        font.pixelSize: 15
+                        font.family: "Tahoma"
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+        }
+        // ── END ROOM SWITCHER ──────────────────────────────────────────────
     }
 
     // ─── CONTENT AREA ─────────────────────────────────────────────────────────
@@ -86,8 +188,7 @@ Item {
 
                 Repeater {
                     id: patientRepeater
-                    // patientOverview context property is the PatientOverviewModel.patients list
-                    model: (typeof patientOverview_model !== "undefined") ? patientOverview_model.patients : []
+                    model: patientOverview.filteredPatients
 
                     delegate: Rectangle {
                         id: card

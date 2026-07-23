@@ -78,19 +78,31 @@ Item {
         var activeRoom    = (sdcManager && sdcManager.currentRoom) ? sdcManager.currentRoom : ""
         var activePatient = mainPage.filterPatient
 
-        // Step 1: filter masterDeviceArray into a local JS array,
-        //         syncing live device properties from deviceObj.
+        // Step 1: filter masterDeviceArray into a local JS array.
+        //   Topology fields (room, patientid, patientname) are refreshed from the
+        //   live deviceObj BEFORE filter evaluation — fixes async MDIB init race
+        //   where patientRoom arrives after onDeviceConnected snapshots e.room = "".
         var filtered = []
         for (var i = 0; i < mainPage.masterDeviceArray.length; i++) {
             var e = mainPage.masterDeviceArray[i]
-            var roomMatch    = (activeRoom    === "") || (e.room      === activeRoom)
-            var patientMatch = (activePatient === "") || (e.patientid === activePatient)
+
+            // Sync ALL fields from the live C++/Python object before any comparison.
+            if (e.deviceObj) {
+                e.room        = e.deviceObj.patientRoom   // topology — may have been "" at connect
+                e.patientid   = e.deviceObj.patientId     // topology
+                e.patientname = e.deviceObj.patientName   // topology
+                e.alarm       = e.deviceObj.alarmStatus   // clinical
+                e.value       = e.deviceObj.deviceValue   // clinical
+                e.priority    = e.deviceObj.priority      // clinical
+            }
+
+            var roomMatch    = (activeRoom    === "") || (e.room        === activeRoom)
+            // Accept both patientId (MDIB Extension) and patientName (CoreData) — PatientOverview
+            // may pass either depending on which field is available for the patient.
+            var patientMatch = (activePatient === "") || (e.patientname === activePatient)
+                                                     || (e.patientid   === activePatient)
+
             if (roomMatch && patientMatch) {
-                if (e.deviceObj) {
-                    e.alarm    = e.deviceObj.alarmStatus
-                    e.value    = e.deviceObj.deviceValue
-                    e.priority = e.deviceObj.priority
-                }
                 filtered.push(e)
             }
         }
@@ -215,72 +227,7 @@ Item {
             font.family: "Tahoma"
         }
 
-        // ── ROOM SWITCHER ──────────────────────────────────────────────────
-        Row {
-            id: roomSwitcherRow
-            anchors.centerIn: parent
-            spacing: 6
-
-            Text {
-                text: "Room:"
-                color: "#ccd0e8"
-                font.pixelSize: 18
-                font.family: "Tahoma"
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Button {
-                id: allRoomsBtn
-                text: "All"
-                width: 62
-                height: 36
-                anchors.verticalCenter: parent.verticalCenter
-                onClicked: sdcManager && sdcManager.switchRoom("")
-
-                background: Rectangle {
-                    radius: 6
-                    color: (!sdcManager || sdcManager.currentRoom === "") ? "#3a5f9c" : "#404c6e"
-                    border.color: "#9ab0d9"
-                    border.width: (!sdcManager || sdcManager.currentRoom === "") ? 2 : 0
-                }
-                contentItem: Text {
-                    text: allRoomsBtn.text
-                    color: "white"
-                    font.pixelSize: 15
-                    font.family: "Tahoma"
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-            }
-
-            Repeater {
-                model: sdcManager ? sdcManager.availableRooms : []
-                delegate: Button {
-                    required property string modelData
-                    text: modelData
-                    width: Math.max(80, text.length * 11)
-                    height: 36
-                    anchors.verticalCenter: roomSwitcherRow.verticalCenter
-                    onClicked: sdcManager && sdcManager.switchRoom(modelData)
-
-                    background: Rectangle {
-                        radius: 6
-                        color: (sdcManager && sdcManager.currentRoom === modelData) ? "#3a5f9c" : "#404c6e"
-                        border.color: "#9ab0d9"
-                        border.width: (sdcManager && sdcManager.currentRoom === modelData) ? 2 : 0
-                    }
-                    contentItem: Text {
-                        text: parent.text
-                        color: "white"
-                        font.pixelSize: 15
-                        font.family: "Tahoma"
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                }
-            }
-        }
-        // ── END ROOM SWITCHER ──────────────────────────────────────────────
+        // Room switcher moved to PatientOverview.qml (topBar)
 
         Popup {
             id: pop
