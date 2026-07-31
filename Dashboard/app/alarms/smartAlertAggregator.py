@@ -103,6 +103,11 @@ class SmartAlertAggregator:
         self._ensemble_sensor_ids: Dict[str, frozenset] = {}
         # Monotonic timestamp of the previous tick() per ensemble → dt_step source.
         self._last_tick_ts: Dict[str, float] = {}
+        # V2 — grace-period bookkeeping: ensemble_uuid → monotonic resolution time.
+        # Adaptive state is retained for ADAPTIVE_DISCARD_GRACE_SEC after an ensemble
+        # resolves so a rapidly re-firing (jittering) alarm reuses the SAME persistence
+        # timer instead of resetting Δt on every ON/OFF cycle.
+        self._ensemble_resolved_ts: Dict[str, float] = {}
 
         # Adaptive filter tuning (see AggregatorConfig / SensorHardwareConfig).
         # tau_base is set as a FRACTION of the ensemble's W_max so the structural
@@ -115,6 +120,13 @@ class SmartAlertAggregator:
         # FHIR prior mapping: prior = clip(BASE + PER_CODE·|danger_codes|, [0.01, 0.5]).
         self.ADAPTIVE_PRIOR_BASE:     float = 0.01
         self.ADAPTIVE_PRIOR_PER_CODE: float = 0.08
+        # V4 — cap the per-tick persistence credit so a starved/paused notification
+        # thread cannot advance Δt by an arbitrarily large jump and force escalation
+        # by collapsing Θ(t) to theta_min in a single step.
+        self.ADAPTIVE_MAX_DT_STEP: float = 20.0
+        # V2 — how long an aggregator survives after its ensemble resolves, so a fast
+        # OFF→ON jitter reuses the same persistence timer instead of resetting Δt.
+        self.ADAPTIVE_DISCARD_GRACE_SEC: float = 10.0
 
         # DSP signal processor — stateless, no extra locking needed.
         self.alarm_coordinator = AlarmCoordinator()
@@ -386,43 +398,48 @@ class SmartAlertAggregator:
             active_keys: Set[str] = set(self._active_alarms[ensemble_uuid].keys())
             patient_prior: float = self._derive_patient_prior_locked(ensemble_uuid)
 
-        # ── Stage 2 drive (adaptive aggregator) — under _adaptive_lock only ───────
-        # tick() mutates the per-ensemble aggregator and is not re-entrant, so all
-        # aggregator operations are serialised here.  No network/FHIR I/O happens
-        # in this block, so holding a dedicated CPU-only lock is safe and cheap.
-        with self._adaptive_lock:
-            last_ts = self._last_tick_ts.get(ensemble_uuid)
-            # dt_step must track TRUE wall-clock so the persistence timer Δt equals
-            # real elapsed seconds since first activation, independent of how many
-            # ticks occur.  Two devices re-asserting at (nearly) the same instant
-            # produce a ~0 delta on the second tick — it must contribute 0.0, NOT a
-            # spurious full step, otherwise Δt inflates and escalation fires early.
-            if last_ts is None:
-                dt_step = 0.0                      # first tick of this ensemble
-            else:
-                dt_step = now - last_ts
-                if dt_step < 0.0:
-                    dt_step = 0.0                  # guard against clock non-monotonicity
-            self._last_tick_ts[ensemble_uuid] = now
+            # ── Stage 2 drive (adaptive aggregator) — V3: executed while STILL
+            # holding self.lock to close the TOCTOU gap with the GC daemon (the
+            # snapshot + tick are now atomic w.r.t. _cleanup_stale_alarms).
+            # Lock hierarchy A → B: acquiring _adaptive_lock while holding self.lock
+            # is permitted; _adaptive_lock never re-acquires self.lock, so the order
+            # is acyclic.  tick() is pure CPU (no network/FHIR I/O), so holding
+            # self.lock for the microseconds it takes is safe.
+            with self._adaptive_lock:
+                last_ts = self._last_tick_ts.get(ensemble_uuid)
+                # dt_step must track TRUE wall-clock so the persistence timer Δt
+                # equals real elapsed seconds since first activation, independent of
+                # how many ticks occur.  A ~0 delta (two devices re-asserting at the
+                # same instant) must contribute 0.0, not a spurious full step.
+                if last_ts is None:
+                    dt_step = 0.0                  # first tick of this ensemble
+                else:
+                    dt_step = now - last_ts
+                    if dt_step < 0.0:
+                        dt_step = 0.0              # guard against clock non-monotonicity
+                # V4 — cap the per-tick credit so thread starvation cannot force
+                # escalation by collapsing Θ(t) to theta_min in a single jump.
+                dt_step = min(dt_step, self.ADAPTIVE_MAX_DT_STEP)
+                self._last_tick_ts[ensemble_uuid] = now
 
-            aggregator = self._get_or_build_adaptive_aggregator_locked(
-                ensemble_uuid, ensemble_evidences, patient_prior
-            )
-            # Binary activation vector for this tick: 1 if the sensor's alarm is
-            # currently in the TTL cache, else 0 (sensor fell silent → window decays).
-            sensor_states: Dict[str, int] = {
-                sid: (1 if sid in active_keys else 0)
-                for sid in aggregator.sensor_ids
-            }
+                aggregator = self._get_or_build_adaptive_aggregator_locked(
+                    ensemble_uuid, ensemble_evidences, patient_prior
+                )
+                # Binary activation vector for this tick: 1 if the sensor's alarm is
+                # currently in the TTL cache, else 0 (sensor fell silent → decays).
+                sensor_states: Dict[str, int] = {
+                    sid: (1 if sid in active_keys else 0)
+                    for sid in aggregator.sensor_ids
+                }
 
-            decision = self.alarm_coordinator.evaluate(
-                aggregator,
-                triggering_evidence,
-                buf_snapshot,
-                sensor_states,
-                dt_step,
-                ensemble_evidences,
-            )
+                decision = self.alarm_coordinator.evaluate(
+                    aggregator,
+                    triggering_evidence,
+                    buf_snapshot,
+                    sensor_states,
+                    dt_step,
+                    ensemble_evidences,
+                )
 
         # ── Route based on tri-state decision ────────────────────────────────────
         if decision.escalate:
@@ -521,6 +538,11 @@ class SmartAlertAggregator:
         existing: frozenset = self._ensemble_sensor_ids.get(ensemble_uuid, frozenset())
         agg = self._ensemble_adaptive_aggregators.get(ensemble_uuid)
 
+        # V2 — the ensemble is active again: cancel any pending grace-period discard
+        # so the persistence timer Δt is preserved across a brief OFF→ON jitter.
+        # (Safe: this runs under self.lock via check_alert_validity's Stage-2 block.)
+        self._ensemble_resolved_ts.pop(ensemble_uuid, None)
+
         # Reuse path — current aggregator already covers every active sensor.
         if agg is not None and required <= existing:
             agg.update_patient_context(
@@ -592,6 +614,70 @@ class SmartAlertAggregator:
             self._ensemble_sensor_ids.pop(ensemble_uuid, None)
             self._last_tick_ts.pop(ensemble_uuid, None)
 
+    def release_device(self, epr: str) -> None:
+        """
+        V1 — memory-safety teardown for a disconnected device.
+
+        Removes ``epr`` from ensemble bookkeeping; if it was the LAST member of its
+        ensemble, fully tears down every per-ensemble structure to prevent unbounded
+        growth across admit/discharge/reconnect churn:
+          _ensemble_devices, _physiological_graph, _active_alarms,
+          _escalated_ensembles, _ensemble_resolved_ts, _active_ensembles, and the
+          per-ensemble adaptive state.  FHIR caches for the patient are evicted only
+          when the patient has no remaining ensemble.
+
+        Called from SdcMyConsumer.remove_device() when a device thread dies.
+
+        Lock discipline: all shared-map mutations happen under self.lock; the
+        adaptive-state discard (which acquires _adaptive_lock) runs AFTER releasing
+        self.lock, honouring the A → B ordering.
+        """
+        if not epr:
+            return
+
+        orphaned: Optional[str] = None
+        dead_patient: Optional[str] = None
+
+        with self.lock:
+            # Locate the ensemble this device belongs to and drop the EPR.
+            for eid, eprs in list(self._ensemble_devices.items()):
+                if epr in eprs:
+                    eprs.discard(epr)
+                    if not eprs:
+                        # Last device gone → the ensemble is dead. Tear it all down.
+                        orphaned = eid
+                        del self._ensemble_devices[eid]
+                        self._physiological_graph.pop(eid, None)
+                        self._active_alarms.pop(eid, None)
+                        self._escalated_ensembles.discard(eid)
+                        self._ensemble_resolved_ts.pop(eid, None)
+                        for key, mapped in list(self._active_ensembles.items()):
+                            if mapped == eid:
+                                dead_patient = key[0]
+                                del self._active_ensembles[key]
+                                break
+                    break
+
+            # Evict FHIR caches only if the patient has no other active ensemble.
+            if dead_patient and not any(
+                key[0] == dead_patient for key in self._active_ensembles
+            ):
+                self._fhir_cache.pop(dead_patient, None)
+                self._fhir_focus_cache.pop(dead_patient, None)
+
+        # Adaptive discard outside self.lock (acquires _adaptive_lock — A → B order).
+        if orphaned is not None:
+            self._discard_adaptive_state(orphaned)
+            self.logger.info(
+                f'[Aggregator] release_device: ensemble {orphaned[:8]}... fully '
+                f'released (last device {epr[-12:]} disconnected).'
+            )
+        else:
+            self.logger.debug(
+                f'[Aggregator] release_device: {epr[-12:]} removed; ensemble still '
+                f'has other members (or device was never bound).'
+            )
+
     def is_ensemble_escalated(self, ensemble_uuid: Optional[str]) -> bool:
         """Return True if the ensemble is currently in an escalated (crisis) state."""
         if not ensemble_uuid:
@@ -657,6 +743,11 @@ class SmartAlertAggregator:
             # skip the notify call, leaving the card stuck Yellow.
             if not self._active_alarms.get(ensemble_uuid):
                 crisis_resolved = True  # always notify Blue when alarm cache is empty
+                # V2 — defer adaptive teardown: stamp the resolution time instead of
+                # discarding the aggregator immediately, so a fast re-fire (jitter)
+                # reuses the SAME persistence timer.  _cleanup_stale_alarms() discards
+                # only after the ensemble stays quiet past ADAPTIVE_DISCARD_GRACE_SEC.
+                self._ensemble_resolved_ts[ensemble_uuid] = time.monotonic()
                 if ensemble_uuid in self._escalated_ensembles:
                     self._escalated_ensembles.discard(ensemble_uuid)
                     self.logger.info(
@@ -677,10 +768,10 @@ class SmartAlertAggregator:
         # Notify PatientOverview outside the lock — _notify_overview acquires self.lock
         # for device_count; calling it inside would re-enter and deadlock.
         if crisis_resolved:
-            # Drop the per-ensemble adaptive aggregator (windows + persistence timer)
-            # now that the ensemble has no active alarms.  Done outside self.lock to
-            # respect the self.lock → _adaptive_lock ordering rule.
-            self._discard_adaptive_state(ensemble_uuid)
+            # V2 — adaptive state is NOT discarded here anymore; the grace-period
+            # sweep in _cleanup_stale_alarms() tears it down once the ensemble has
+            # stayed quiet past ADAPTIVE_DISCARD_GRACE_SEC.  This preserves the
+            # persistence timer across a brief OFF→ON jitter cycle.
             self._notify_overview(ensemble_uuid, _patient_id, _room,
                                   is_escalated=False, risk_score=0.0, is_warning=False)
 
@@ -823,6 +914,9 @@ class SmartAlertAggregator:
         # Used to trigger scheduleUpdate() on member devices so update_data()
         # re-evaluates against the now-smaller _active_alarms cache.
         stale_ensembles: list[str] = []
+        # V2 — ensembles whose grace period has elapsed → adaptive state may be torn
+        # down now (discarded outside self.lock, honouring the A → B lock order).
+        grace_expired: list[str] = []
 
         with self.lock:
             for ensemble_uuid, alarm_cache in list(self._active_alarms.items()):
@@ -853,16 +947,29 @@ class SmartAlertAggregator:
                             f'[AggregatorGC] Warning resolved: ensemble={ensemble_uuid[:8]} '
                             f'— all alarms TTL-expired, returning to Normal.'
                         )
+                    # V2 — defer adaptive teardown via a grace stamp (see clear_alarm).
+                    # A re-fire within the grace window reuses the persistence timer.
+                    self._ensemble_resolved_ts.setdefault(ensemble_uuid, now)
                     # Always notify Blue, regardless of prior state (Red or Yellow).
                     resolved_ensembles.append(ensemble_uuid)
 
+            # V2 — grace sweep: discard adaptive state for ensembles that have stayed
+            # quiet (no active alarms) past ADAPTIVE_DISCARD_GRACE_SEC.
+            for eid, ts in list(self._ensemble_resolved_ts.items()):
+                if now - ts > self.ADAPTIVE_DISCARD_GRACE_SEC and eid not in self._active_alarms:
+                    grace_expired.append(eid)
+                    del self._ensemble_resolved_ts[eid]
+
         # Notify PatientOverview for fully-resolved ensembles.
         for ensemble_uuid in resolved_ensembles:
-            # Drop adaptive Stage-2 state (outside self.lock — lock-ordering rule).
-            self._discard_adaptive_state(ensemble_uuid)
             patient_id, room = self._reverse_lookup_patient_room(ensemble_uuid)
             self._notify_overview(ensemble_uuid, patient_id, room,
                                   is_escalated=False, risk_score=0.0, is_warning=False)
+
+        # V2 — tear down adaptive Stage-2 state for grace-expired ensembles.
+        # Done outside self.lock (acquires _adaptive_lock — A → B ordering).
+        for eid in grace_expired:
+            self._discard_adaptive_state(eid)
 
         # Force UI refresh on every device whose alarm cache changed (partially or fully).
         # update_data() will cross-check against is_alarm_active() and skip stale MDIB entries.

@@ -120,6 +120,19 @@ class SdcMyConsumer(QObject):
                 del self.devices[epr]
                 if getattr(handler, '_ui_connected', False):
                     self.deviceDisconnected.emit(epr)
+        # V1 — release per-ensemble aggregator state so a discharged/disconnected
+        # device does not leak _ensemble_devices / _physiological_graph / FHIR caches.
+        # Called outside self.lock (SdcMyConsumer.lock) — release_device manages the
+        # aggregator's own locks internally.
+        agg = getattr(self, 'aggregator', None)
+        if agg is not None:
+            try:
+                agg.release_device(epr)
+            except Exception as exc:
+                _mgr_log.warning(
+                    f'aggregator.release_device failed for {epr[-12:]}: {exc}'
+                )
+        with self.lock:
             if error_occurred and self.discovery:
                 _mgr_log.info(f'Device {epr[-12:]} had error -- clearing WSDiscovery cache.')
                 self._reconnect_cooldown[epr] = time.monotonic()
