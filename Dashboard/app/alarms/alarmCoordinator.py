@@ -3,8 +3,26 @@ alarmCoordinator.py — IHE-PCD ACM Alarm Coordinator (Pipeline pattern).
 
 Pipeline:
   Stage 1 ─ HardwareArtifactFilter    (deterministic dx/dt RoC gate; per-device)
-  Stage 2 ─ ClinicalRiskFilter         (Bayesian Sensor Fusion; per-ensemble)
-  Facade  ─ AlarmCoordinator           (orchestrator; single entry point for SmartAlertAggregator)
+  Stage 2 ─ AdaptiveAlarmAggregator   (continuous-time stochastic Bayesian filter; per-ensemble)
+  Facade  ─ AlarmCoordinator          (orchestrator; single entry point for SmartAlertAggregator)
+
+Architectural shift (Stage 2)
+-----------------------------
+The former *static* ``ClinicalRiskFilter`` (a single-shot Bayesian sensor-fusion
+that multiplied Likelihood Ratios and compared a scalar posterior against a fixed
+5.0 threshold) has been **fully replaced** by ``AdaptiveAlarmAggregator`` — a
+continuous-time stochastic process that:
+
+  * weights each sensor by its hardware reliability   w_j = ln(Se_j / FAR_j);
+  * smooths transient activations with a sliding window s_j(t) ∈ [0, 1];
+  * decays the escalation boundary Θ(t) as an alarm persists (λ·Δt);
+  * shifts Θ(t) by the FHIR-derived clinical prior  ln(P(C|D)/(1−P(C|D))).
+
+Because the adaptive filter is *stateful per patient ensemble*, its instances are
+owned and life-cycled by ``SmartAlertAggregator`` (one aggregator per
+``ensemble_uuid``).  ``AlarmCoordinator`` remains a stateless facade: it receives
+the already-constructed aggregator plus the pre-computed ``sensor_states`` and
+``dt_step`` and simply drives one ``tick()``.
 
 Replaces:
   app/signalProcessor.py  (SignalProcessor.validate_alert → HardwareArtifactFilter.validate)
@@ -13,10 +31,12 @@ Replaces:
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from dataclasses import dataclass  # still needed for DeviceAlertEvidence and AlarmDecision
 from typing import Optional
 
+from .adaptive_alarm_aggregator import AdaptiveAlarmAggregator
 from .device_profile_repo import DeviceReliabilityProfile
 
 
@@ -51,16 +71,30 @@ class AlarmDecision:
     """
     Immutable output ticket representing the ensemble-level routing decision.
 
-    risk_score is the Posterior Probability for the patient ensemble,
-    computed as the normalised product of all device Likelihood Ratios,
-    scaled by the maximum BICEPS priority weight (range: [0.0, 10.0]).
+    risk_score is a UI-facing projection of the adaptive Stage-2 decision onto
+    the legacy [0.0, 10.0] axis, computed from the log-odds margin of the
+    continuous-time filter:
+
+        margin      = logit_sum(t) − Θ(t)
+        risk_score  = 10 · σ(margin) = 10 / (1 + e^(−margin))       ∈ [0.0, 10.0]
+
+    The mapping is calibrated so that risk_score = 5.0 corresponds exactly to the
+    escalation boundary (margin = 0 ⇔ logit_sum = Θ ⇔ is_escalated flips), which
+    preserves backward compatibility with the previous fixed-threshold semantics.
     -1.0 signals that Stage 2 was not reached (suppressed at Stage 1).
+
+    The raw stochastic telemetry (logit_sum, theta, delta_t) is exposed for
+    traceability, dashboards and unit-test assertions.
     """
     escalate:            bool          # True → forward to UI/log; False → suppress
     risk_score:          float         # Posterior risk ∈ [0.0, 10.0]; -1.0 if N/A
     contributing_devices: int          # Number of ensemble devices used in Stage 2
-    suppression_stage:   Optional[str] # 'HardwareArtifactFilter' | 'ClinicalRiskFilter' | None
+    suppression_stage:   Optional[str] # 'HardwareArtifactFilter' | 'AdaptiveAlarmAggregator' | None
     suppression_reason:  Optional[str]
+    # ── Adaptive Stage-2 telemetry (continuous-time filter internals) ─────────
+    logit_sum:           float = 0.0   # Σ w_j · s_j(t) — weighted evidence sum
+    theta:               float = 0.0   # Θ(t) — dynamic decision boundary
+    delta_t:             float = 0.0   # persistence duration (s) since first activation
 
 
 # ── Stage 1 ───────────────────────────────────────────────────────────────────
@@ -140,7 +174,15 @@ class HardwareArtifactFilter:
 
 class ClinicalRiskFilter:
     """
-    Stage 2 of the alarm pipeline.
+    LEGACY — retired from the runtime pipeline (2026-07-31).
+
+    This *static* single-shot Bayesian sensor-fusion filter was the former Stage 2.
+    It has been superseded in ``AlarmCoordinator`` by the continuous-time
+    ``AdaptiveAlarmAggregator``.  The class is retained **only** so that the offline
+    stochastic-validation script ``scripts/monte_carlo_ward.py`` can keep importing
+    ``ClinicalRiskFilter.compute_risk`` to reproduce the original convergence study.
+    It is no longer instantiated by any production code path.
+
     Bayesian Sensor Fusion across all devices in a patient ensemble.
 
     Mathematics (Odds form):
@@ -265,54 +307,83 @@ class AlarmCoordinator:
     Facade / Orchestrator implementing the IHE-PCD ACM Alarm Coordinator node.
     Single stateless entry point for SmartAlertAggregator.
 
-    Pipeline contract:
-        1. Stage 1 evaluates `triggering_evidence` against its per-device RoC limit.
-           False → AlarmDecision(escalate=False, risk_score=-1.0,
-                                 suppression_stage='HardwareArtifactFilter')
-        2. Stage 2 computes ensemble risk_score ∈ [0.0, 10.0]:
-               risk_score = Posterior_P × P_total
-           risk_score < ESCALATION_THRESHOLD (5.0)
-               → AlarmDecision(escalate=False, suppression_stage='ClinicalRiskFilter')
-        3. Both gates passed → AlarmDecision(escalate=True, risk_score=<value ≥ 5.0>)
+    Pipeline contract (2026-07-31, adaptive Stage 2):
+        1. Stage 1 — HardwareArtifactFilter evaluates `triggering_evidence` against
+           its per-device RoC limit.
+               False → AlarmDecision(escalate=False, risk_score=-1.0,
+                                     suppression_stage='HardwareArtifactFilter')
+        2. Stage 2 — AdaptiveAlarmAggregator.tick() drives ONE step of the
+           continuous-time stochastic filter that the caller owns per ensemble:
+               result = aggregator.tick(sensor_states, dt_step)
+           The escalation boundary is internal to the aggregator (Θ(t)); the facade
+           does NOT compare against a fixed scalar threshold anymore.
+               result.is_escalated == True  → AlarmDecision(escalate=True)
+               result.is_escalated == False → AlarmDecision(escalate=False,
+                                     suppression_stage='AdaptiveAlarmAggregator')
 
-    Risk scale interpretation (with default fail-safe profiles, prior=0.5):
-        [0.0,  3.0) — Lo priority: always suppressed without calibrated profiles
-        [3.0,  5.0) — Me priority / moderate posterior: below escalation threshold
-        [5.0,  6.0) — Hi priority (5.0 = threshold) or Me + high posterior
-        [6.0, 10.0] — Hi priority + high posterior: strong clinical signal
+    UI-facing risk projection
+    -------------------------
+    The continuous log-odds margin is projected back onto the legacy [0.0, 10.0]
+    axis with a calibrated logistic squashing function:
 
-    Thread-safety: stateless; mutable state lives only in caller-supplied arguments.
+        margin      = logit_sum(t) − Θ(t)
+        risk_score  = 10 · σ(margin) = 10 / (1 + e^(−margin))       ∈ [0.0, 10.0]
+
+    margin = 0 (escalation boundary) maps exactly to risk_score = 5.0, preserving
+    backward compatibility with dashboards calibrated on the old fixed threshold.
+
+    Statelessness
+    -------------
+    AlarmCoordinator holds NO per-ensemble mutable state.  All stochastic state
+    (sliding windows, persistence timer, patient prior) lives inside the
+    AdaptiveAlarmAggregator instance supplied by the caller.  The facade only owns
+    the stateless Stage-1 filter.  Thread-safety of the aggregator is the caller's
+    responsibility (SmartAlertAggregator serialises tick() per ensemble).
     """
 
-    # Escalation threshold on the BICEPS-scaled risk axis [0.0, 10.0].
-    # With fail-safe profiles (LR+=1.0) and prior=0.5:
-    #   'Hi'  → risk_score = 5.0 (exactly at threshold → escalates, since check is `<`)
-    #   'Me'  → risk_score = 3.0 (below threshold → suppressed without real profiles)
+    # Reference midpoint of the UI risk axis.  risk_score == 5.0 ⇔ margin == 0
+    # ⇔ logit_sum == Θ(t) ⇔ is_escalated flips.  Kept for dashboard calibration.
     ESCALATION_THRESHOLD: float = 5.0
+
+    # Clamp for the logistic argument to prevent math.exp overflow on extreme margins.
+    _MARGIN_CLAMP: float = 60.0
 
     def __init__(self) -> None:
         self._logger = logging.getLogger('sdc.consumer.alarm_coordinator')
         self._stage1 = HardwareArtifactFilter()
-        self._stage2 = ClinicalRiskFilter()
+        # Stage 2 is no longer a filter owned here — it is the per-ensemble
+        # AdaptiveAlarmAggregator passed into evaluate() by SmartAlertAggregator.
+
+    def _risk_from_margin(self, margin: float) -> float:
+        """Project the log-odds margin onto [0.0, 10.0] via 10·σ(margin)."""
+        m = max(-self._MARGIN_CLAMP, min(self._MARGIN_CLAMP, margin))
+        return 10.0 / (1.0 + math.exp(-m))
 
     def evaluate(
         self,
-        triggering_evidence: DeviceAlertEvidence,        # device whose alarm fired
-        metric_buffer:       deque,                      # snapshot of that device's metric history
-        ensemble_evidences:  list[DeviceAlertEvidence],  # all devices in the patient ensemble
+        aggregator:          AdaptiveAlarmAggregator,     # per-ensemble stochastic filter (caller-owned)
+        triggering_evidence: DeviceAlertEvidence,         # device whose alarm fired
+        metric_buffer:       deque,                       # snapshot of that device's metric history
+        sensor_states:       dict[str, int],              # {sensor_id → 0|1} for this tick
+        dt_step:             float,                        # wall-clock seconds since previous tick
+        ensemble_evidences:  list[DeviceAlertEvidence],   # all devices in the patient ensemble
     ) -> AlarmDecision:
         """
         Executes the full two-stage pipeline for one incoming alarm event.
+
+        Stage 1 is a deterministic per-device RoC gate.  Stage 2 advances the
+        caller-owned AdaptiveAlarmAggregator by exactly one tick and reads back its
+        escalation verdict and stochastic telemetry.
 
         Logging contract (traceability):
           INFO  "Received Alert for evaluation: alert=..., priority=...,
                  ensemble=..., devices=N"
           INFO  "Stage 1 (HardwareArtifactFilter) finished: alarm suppressed / valid
                  — concept=..."
-          DEBUG "Starting Stage 2 (ClinicalRiskFilter) — N device(s) in ensemble,
-                 P_total candidate = X"
-          INFO  "Stage 2 result: Risk Score = X.XXX (Posterior=X.XXXX × P_total=X.X),
-                 threshold = 5.0, Routing = ESCALATE / SUPPRESS"
+          DEBUG "Starting Stage 2 (AdaptiveAlarmAggregator) — N sensor(s),
+                 dt_step=..., active=..."
+          INFO  "Stage 2 result: logit_sum=X.XXX vs Θ(t)=X.XXX (Δt=Xs),
+                 Risk=X.XXX, Routing = ESCALATE / SUPPRESS"
         """
         n = len(ensemble_evidences)
         self._logger.info(
@@ -345,49 +416,47 @@ class AlarmCoordinator:
             f'— concept={triggering_evidence.metric_concept!r}'
         )
 
-        # ── Stage 2: ClinicalRiskFilter (Bayesian Sensor Fusion) ──────────────
-        p_total_candidate = max(
-            (self._stage2._PRIORITY_WEIGHTS.get(e.biceps_priority, 0.0) for e in ensemble_evidences),
-            default=0.0,
-        )
+        # ── Stage 2: AdaptiveAlarmAggregator (continuous-time stochastic tick) ──
+        active_now = sum(1 for v in sensor_states.values() if v)
         self._logger.debug(
-            f'Starting Stage 2 (ClinicalRiskFilter) — {n} device(s) in ensemble, '
-            f'P_total candidate = {p_total_candidate:.1f}'
+            f'Starting Stage 2 (AdaptiveAlarmAggregator) — {len(sensor_states)} sensor(s), '
+            f'dt_step={dt_step:.3f}s, active={active_now}'
         )
 
-        risk_score = self._stage2.compute_risk(ensemble_evidences)
+        result = aggregator.tick(sensor_states, dt_step)
+        margin = result.current_logit_sum - result.current_theta
+        risk_score = self._risk_from_margin(margin)
 
-        # Derive Posterior_P and P_total for the traceability log line
-        posterior_p = risk_score / p_total_candidate if p_total_candidate > 0.0 else 0.0
+        routing = 'ESCALATE' if result.is_escalated else 'SUPPRESS'
+        self._logger.info(
+            f'Stage 2 result: logit_sum={result.current_logit_sum:.3f} '
+            f'vs Θ(t)={result.current_theta:.3f} (Δt={result.active_delta_t:.1f}s), '
+            f'Risk={risk_score:.3f}, Routing = {routing}'
+        )
 
-        if risk_score < self.ESCALATION_THRESHOLD:
-            routing = 'SUPPRESS'
-            self._logger.info(
-                f'Stage 2 result: Risk Score = {risk_score:.3f} '
-                f'(Posterior={posterior_p:.4f} × P_total={p_total_candidate:.1f}), '
-                f'threshold = {self.ESCALATION_THRESHOLD:.1f}, Routing = {routing}'
-            )
+        if not result.is_escalated:
             return AlarmDecision(
                 escalate=False,
                 risk_score=risk_score,
                 contributing_devices=n,
-                suppression_stage='ClinicalRiskFilter',
+                suppression_stage='AdaptiveAlarmAggregator',
                 suppression_reason=(
-                    f'risk_score {risk_score:.3f} < threshold {self.ESCALATION_THRESHOLD:.1f}'
+                    f'logit_sum {result.current_logit_sum:.3f} '
+                    f'< Θ(t) {result.current_theta:.3f}'
                 ),
+                logit_sum=result.current_logit_sum,
+                theta=result.current_theta,
+                delta_t=result.active_delta_t,
             )
 
-        routing = 'ESCALATE'
-        self._logger.info(
-            f'Stage 2 result: Risk Score = {risk_score:.3f} '
-            f'(Posterior={posterior_p:.4f} × P_total={p_total_candidate:.1f}), '
-            f'threshold = {self.ESCALATION_THRESHOLD:.1f}, Routing = {routing}'
-        )
         return AlarmDecision(
             escalate=True,
             risk_score=risk_score,
             contributing_devices=n,
             suppression_stage=None,
             suppression_reason=None,
+            logit_sum=result.current_logit_sum,
+            theta=result.current_theta,
+            delta_t=result.active_delta_t,
         )
 

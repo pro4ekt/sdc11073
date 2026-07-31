@@ -1,4 +1,5 @@
 import logging
+import math
 import threading
 import time
 import uuid
@@ -7,6 +8,12 @@ from typing import Optional, Tuple, Set, Dict
 
 from ..fhirData import FHIRPatientData
 from .alarmCoordinator import AlarmCoordinator, DeviceAlertEvidence
+from .adaptive_alarm_aggregator import (
+    AdaptiveAlarmAggregator,
+    AggregatorConfig,
+    PatientContext,
+    SensorHardwareConfig,
+)
 from .device_profile_repo import DeviceReliabilityProfile
 
 # TYPE_CHECKING guard to avoid circular imports when annotating DeviceHandler
@@ -75,6 +82,39 @@ class SmartAlertAggregator:
         # Used to rate-limit dump output: at most once per GRAPH_DUMP_INTERVAL_SEC.
         self._last_graph_dump_ts: float = 0.0
         self.GRAPH_DUMP_INTERVAL_SEC: float = 2.0
+
+        # ── Adaptive Stage-2 state (continuous-time Bayesian filter) ──────────
+        # The former static ClinicalRiskFilter (single-shot LR-product) is
+        # replaced by one AdaptiveAlarmAggregator instance PER patient ensemble.
+        # Each instance is a stateful stochastic process (sliding windows +
+        # persistence timer), so its lifecycle is owned here, not in the
+        # stateless AlarmCoordinator facade.
+        #
+        # Thread-safety: tick() mutates the aggregator's internal windows/timer and
+        # is NOT re-entrant.  All aggregator lifecycle operations (build, tick,
+        # patient-context update, dt bookkeeping) are serialised by _adaptive_lock,
+        # which is DISTINCT from self.lock.  Lock ordering rule to avoid deadlock:
+        # never hold self.lock while acquiring _adaptive_lock (the two are only ever
+        # taken sequentially, never nested).
+        self._adaptive_lock = threading.Lock()
+        self._ensemble_adaptive_aggregators: Dict[str, AdaptiveAlarmAggregator] = {}
+        # Sensor composition each aggregator was built with (alert_key set).  Used
+        # to detect when a new device's alarm requires a rebuild.
+        self._ensemble_sensor_ids: Dict[str, frozenset] = {}
+        # Monotonic timestamp of the previous tick() per ensemble → dt_step source.
+        self._last_tick_ts: Dict[str, float] = {}
+
+        # Adaptive filter tuning (see AggregatorConfig / SensorHardwareConfig).
+        # tau_base is set as a FRACTION of the ensemble's W_max so the structural
+        # Base_Logit stays scale-invariant to the number of devices:
+        #   TAU_BASE_FRACTION = 0.5 → tau = 0.5 → Base_Logit = ln(1) = 0.0.
+        self.ADAPTIVE_TAU_FRACTION: float = 0.5
+        self.ADAPTIVE_DECAY_RATE:   float = 0.05   # λ — Θ(t) descent per second of persistence
+        self.ADAPTIVE_THETA_MIN:    float = -3.0   # hard floor for Θ(t)
+        self.ADAPTIVE_WINDOW_SIZE:  int   = 5      # T — sliding-window length (ticks)
+        # FHIR prior mapping: prior = clip(BASE + PER_CODE·|danger_codes|, [0.01, 0.5]).
+        self.ADAPTIVE_PRIOR_BASE:     float = 0.01
+        self.ADAPTIVE_PRIOR_PER_CODE: float = 0.08
 
         # DSP signal processor — stateless, no extra locking needed.
         self.alarm_coordinator = AlarmCoordinator()
@@ -262,9 +302,15 @@ class SmartAlertAggregator:
             If the metric jump is physiologically impossible → ``"SUPPRESS"``.
             The device-level UI hides the alarm completely (noise/artifact).
 
-        Stage 2 — ClinicalRiskFilter (Bayesian Sensor Fusion, per-ensemble):
-            risk_score ≥ ESCALATION_THRESHOLD (5.0) → ``"ESCALATE"``  (Red)
-            risk_score <  ESCALATION_THRESHOLD       → ``"WARN"``      (Yellow)
+        Stage 2 — AdaptiveAlarmAggregator (continuous-time Bayesian filter, per-ensemble):
+            One AdaptiveAlarmAggregator instance per ensemble is advanced by exactly
+            one ``tick()`` on each alarm event.  It weights each sensor by its
+            hardware reliability w_j = ln(Se_j/FAR_j), smooths activations over a
+            sliding window s_j(t), decays the escalation boundary Θ(t) the longer any
+            alarm persists (λ·Δt), and shifts Θ(t) by the FHIR-derived clinical prior.
+            The tick verdict is mapped to routing:
+                result.is_escalated == True  → ``"ESCALATE"``  (Red)
+                result.is_escalated == False → ``"WARN"``      (Yellow)
 
         Fail-open paths (no metric history, unknown concept) → ``"ESCALATE"``
         so real alarms are never silently swallowed.
@@ -273,7 +319,7 @@ class SmartAlertAggregator:
         -------
         str
             ``"ESCALATE"`` — forward alarm; device + patient card Red.
-            ``"WARN"``     — real alarm, risk < 5.0; device card Yellow.
+            ``"WARN"``     — real alarm below Θ(t); device card Yellow.
             ``"SUPPRESS"`` — Stage 1 artifact; hide completely from UI.
         """
         if not metric_concept:
@@ -335,9 +381,48 @@ class SmartAlertAggregator:
                 ev for ev, _ts in self._active_alarms[ensemble_uuid].values()
             ]
 
-        decision = self.alarm_coordinator.evaluate(
-            triggering_evidence, buf_snapshot, ensemble_evidences
-        )
+            # Snapshot everything Stage 2 needs while still under self.lock so the
+            # adaptive drive below never touches self.lock-protected structures.
+            active_keys: Set[str] = set(self._active_alarms[ensemble_uuid].keys())
+            patient_prior: float = self._derive_patient_prior_locked(ensemble_uuid)
+
+        # ── Stage 2 drive (adaptive aggregator) — under _adaptive_lock only ───────
+        # tick() mutates the per-ensemble aggregator and is not re-entrant, so all
+        # aggregator operations are serialised here.  No network/FHIR I/O happens
+        # in this block, so holding a dedicated CPU-only lock is safe and cheap.
+        with self._adaptive_lock:
+            last_ts = self._last_tick_ts.get(ensemble_uuid)
+            # dt_step must track TRUE wall-clock so the persistence timer Δt equals
+            # real elapsed seconds since first activation, independent of how many
+            # ticks occur.  Two devices re-asserting at (nearly) the same instant
+            # produce a ~0 delta on the second tick — it must contribute 0.0, NOT a
+            # spurious full step, otherwise Δt inflates and escalation fires early.
+            if last_ts is None:
+                dt_step = 0.0                      # first tick of this ensemble
+            else:
+                dt_step = now - last_ts
+                if dt_step < 0.0:
+                    dt_step = 0.0                  # guard against clock non-monotonicity
+            self._last_tick_ts[ensemble_uuid] = now
+
+            aggregator = self._get_or_build_adaptive_aggregator_locked(
+                ensemble_uuid, ensemble_evidences, patient_prior
+            )
+            # Binary activation vector for this tick: 1 if the sensor's alarm is
+            # currently in the TTL cache, else 0 (sensor fell silent → window decays).
+            sensor_states: Dict[str, int] = {
+                sid: (1 if sid in active_keys else 0)
+                for sid in aggregator.sensor_ids
+            }
+
+            decision = self.alarm_coordinator.evaluate(
+                aggregator,
+                triggering_evidence,
+                buf_snapshot,
+                sensor_states,
+                dt_step,
+                ensemble_evidences,
+            )
 
         # ── Route based on tri-state decision ────────────────────────────────────
         if decision.escalate:
@@ -366,6 +451,146 @@ class SmartAlertAggregator:
                                   is_escalated=False, risk_score=decision.risk_score,
                                   is_warning=True)
         return 'WARN'
+
+    # ── Adaptive Stage-2 support ──────────────────────────────────────────────
+
+    def _derive_patient_prior_locked(self, ensemble_uuid: str) -> float:
+        """
+        Derive the clinical crisis prior P(C|D_i) for the patient bound to
+        ``ensemble_uuid`` from cached FHIR data.
+
+        Heuristic mapping (monotone in comorbidity burden):
+            prior = clip(BASE + PER_CODE · |danger_codes|, [0.01, 0.5])
+
+        A patient with more active FHIR Conditions (danger codes) carries a higher
+        pre-test probability of decompensation, which raises Prior_Logit, lowers the
+        adaptive Θ(t), and makes escalation easier — the clinical-context
+        sensitisation the specification calls for.  Returns ADAPTIVE_PRIOR_BASE when
+        no FHIR data is available (fail-safe: neutral, minimally-sensitising prior).
+
+        MUST be called with self.lock already held (reads _active_ensembles / _fhir_cache).
+        """
+        patient_id: Optional[str] = None
+        for (pid, _room), eid in self._active_ensembles.items():
+            if eid == ensemble_uuid:
+                patient_id = pid
+                break
+
+        if patient_id and patient_id in self._fhir_cache:
+            try:
+                n_codes = len(self._fhir_cache[patient_id].get_danger_codes() or [])
+            except Exception as _exc:
+                self.logger.debug(
+                    f'[Adaptive] danger-code prior extraction failed for '
+                    f'patient_id={patient_id!r}: {_exc}'
+                )
+                n_codes = 0
+            prior = self.ADAPTIVE_PRIOR_BASE + self.ADAPTIVE_PRIOR_PER_CODE * n_codes
+            return max(0.01, min(0.5, prior))
+
+        return self.ADAPTIVE_PRIOR_BASE
+
+    def _get_or_build_adaptive_aggregator_locked(
+        self,
+        ensemble_uuid: str,
+        ensemble_evidences: list[DeviceAlertEvidence],
+        patient_prior: float,
+    ) -> AdaptiveAlarmAggregator:
+        """
+        Return the AdaptiveAlarmAggregator for ``ensemble_uuid``, building it lazily.
+
+        Sensor identity: each device's alarm is one sensor keyed by its MDIB
+        ``alert_key``.  Its SensorHardwareConfig is derived from the pre-fetched
+        DeviceReliabilityProfile carried in the evidence DTO (Se, FAR); absent
+        profiles fall back to the neutral (0.5, 0.5) → LR+ = 1.0.
+
+        Rebuild policy: if a *new* sensor (alert_key not seen before) joins the
+        ensemble, the aggregator is rebuilt over the UNION of old and new sensors.
+        This is a deliberate PoC simplification — the rebuild resets the per-sensor
+        sliding windows and the persistence timer.  In the reference scenario the
+        sensor set stabilises within the first few hundred milliseconds (all devices
+        fire early), so the reset window is negligible.  A production build would
+        support incremental sensor insertion without discarding state.
+
+        Always refreshes the patient context so a freshly-fetched FHIR prior takes
+        effect on the very next tick.
+
+        MUST be called with self._adaptive_lock held.
+        """
+        required: frozenset = frozenset(ev.alert_key for ev in ensemble_evidences)
+        existing: frozenset = self._ensemble_sensor_ids.get(ensemble_uuid, frozenset())
+        agg = self._ensemble_adaptive_aggregators.get(ensemble_uuid)
+
+        # Reuse path — current aggregator already covers every active sensor.
+        if agg is not None and required <= existing:
+            agg.update_patient_context(
+                PatientContext(prior_crisis_probability=patient_prior)
+            )
+            return agg
+
+        # (Re)build path — compose SensorHardwareConfig for the UNION of sensors.
+        union: frozenset = existing | required
+        ev_by_key = {ev.alert_key: ev for ev in ensemble_evidences}
+
+        configs: list[SensorHardwareConfig] = []
+        for sid in union:
+            ev = ev_by_key.get(sid)
+            if ev is not None and ev.reliability_profile is not None:
+                se  = ev.reliability_profile.sensitivity
+                far = ev.reliability_profile.false_alarm_rate
+            else:
+                # Fail-safe neutral profile (LR+ = 1.0 → w_j = 0, no vote weight).
+                se, far = 0.5, 0.5
+            configs.append(
+                SensorHardwareConfig(
+                    sensor_id=sid,
+                    sensitivity=se,
+                    far=far,
+                    window_size=self.ADAPTIVE_WINDOW_SIZE,
+                )
+            )
+
+        # tau_base as a fraction of the ensemble's W_max keeps Base_Logit scale-
+        # invariant to device count (see ADAPTIVE_TAU_FRACTION).
+        w_max = sum(
+            math.log(
+                max(1e-5, min(1.0 - 1e-5, c.sensitivity))
+                / max(1e-5, min(1.0 - 1e-5, c.far))
+            )
+            for c in configs
+        )
+        tau_base = self.ADAPTIVE_TAU_FRACTION * w_max if w_max > 0.0 else 0.5
+
+        agg = AdaptiveAlarmAggregator(
+            sensor_configs=configs,
+            aggregator_config=AggregatorConfig(
+                tau_base=tau_base,
+                decay_rate=self.ADAPTIVE_DECAY_RATE,
+                theta_min=self.ADAPTIVE_THETA_MIN,
+            ),
+            patient_context=PatientContext(prior_crisis_probability=patient_prior),
+        )
+        self._ensemble_adaptive_aggregators[ensemble_uuid] = agg
+        self._ensemble_sensor_ids[ensemble_uuid] = union
+        self.logger.info(
+            f'[Adaptive] Built aggregator for ensemble={ensemble_uuid[:8]} — '
+            f'{len(configs)} sensor(s), W_max={w_max:.3f}, tau_base={tau_base:.3f}, '
+            f'prior={patient_prior:.3f}.'
+        )
+        return agg
+
+    def _discard_adaptive_state(self, ensemble_uuid: str) -> None:
+        """
+        Drop all adaptive Stage-2 state for a fully-resolved ensemble.
+
+        Called when the TTL cache for an ensemble becomes empty (crisis / warning
+        resolved).  MUST NOT be called while holding self.lock — it acquires
+        _adaptive_lock, and the lock-ordering rule forbids nesting the two.
+        """
+        with self._adaptive_lock:
+            self._ensemble_adaptive_aggregators.pop(ensemble_uuid, None)
+            self._ensemble_sensor_ids.pop(ensemble_uuid, None)
+            self._last_tick_ts.pop(ensemble_uuid, None)
 
     def is_ensemble_escalated(self, ensemble_uuid: Optional[str]) -> bool:
         """Return True if the ensemble is currently in an escalated (crisis) state."""
@@ -452,6 +677,10 @@ class SmartAlertAggregator:
         # Notify PatientOverview outside the lock — _notify_overview acquires self.lock
         # for device_count; calling it inside would re-enter and deadlock.
         if crisis_resolved:
+            # Drop the per-ensemble adaptive aggregator (windows + persistence timer)
+            # now that the ensemble has no active alarms.  Done outside self.lock to
+            # respect the self.lock → _adaptive_lock ordering rule.
+            self._discard_adaptive_state(ensemble_uuid)
             self._notify_overview(ensemble_uuid, _patient_id, _room,
                                   is_escalated=False, risk_score=0.0, is_warning=False)
 
@@ -629,6 +858,8 @@ class SmartAlertAggregator:
 
         # Notify PatientOverview for fully-resolved ensembles.
         for ensemble_uuid in resolved_ensembles:
+            # Drop adaptive Stage-2 state (outside self.lock — lock-ordering rule).
+            self._discard_adaptive_state(ensemble_uuid)
             patient_id, room = self._reverse_lookup_patient_room(ensemble_uuid)
             self._notify_overview(ensemble_uuid, patient_id, room,
                                   is_escalated=False, risk_score=0.0, is_warning=False)
