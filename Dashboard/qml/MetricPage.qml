@@ -170,9 +170,12 @@ Item {
                 id: imageInstance
                 anchors.fill: parent
 
-                source: (alarm === "On" && timeout === 1) || alarm === "Ack"
+                // "On" (Red / escalated) and "Warning" (Yellow / sub-threshold) are
+                // both audible alarm states — treat them identically for the bell so
+                // muting works INDEPENDENTLY of the Bayesian risk class.
+                source: (((alarm === "On" || alarm === "Warning") && timeout === 1) || alarm === "Ack")
                         ? "../img/noSound.png"
-                        : ((alarm === "On" && timeout === 0)
+                        : (((alarm === "On" || alarm === "Warning") && timeout === 0)
                             ? "../img/bellOn.png"
                             : "../img/bellOff.png")
 
@@ -185,15 +188,20 @@ Item {
                 anchors.fill: parent
                 color: "#FFD700"
                 opacity: 0.38
-                visible: alarm === "Ack" || (alarm === "On" && timeout === 1)
+                visible: alarm === "Ack" || ((alarm === "On" || alarm === "Warning") && timeout === 1)
             }
 
             MouseArea {
                 anchors.fill: parent
                 onPressed: {
-                    if (alarm === "On") {
-                        // Send Ack to the provider via SetAlertState
-                        if (devicePage && devicePage.currentDevice) {
+                    // An audible AlertSignal exists whenever the device is On (Red)
+                    // or Warning (Yellow) — INDEPENDENT of the Bayesian risk class.
+                    var audible = (alarm === "On" || alarm === "Warning")
+                    if (audible) {
+                        // Send Ack to the provider via SetAlertState (audio pause).
+                        // Does not affect the aggregator risk score / Red-Yellow state.
+                        if (devicePage && devicePage.currentDevice
+                                && typeof devicePage.currentDevice.silenceAlarm === "function") {
                             devicePage.currentDevice.silenceAlarm()
                         }
                         timeout = timeout === 0 ? 1 : 0

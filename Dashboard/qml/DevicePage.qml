@@ -169,9 +169,12 @@ Item {
                 id: imageInstance
                 anchors.fill: parent
 
-                source: (alarm === "On" && timeout === 1) || alarm === "Ack"
+                // "On" (Red / escalated) and "Warning" (Yellow / sub-threshold) are
+                // both audible alarm states — treat them identically for the bell so
+                // muting works INDEPENDENTLY of the Bayesian risk class.
+                source: (((alarm === "On" || alarm === "Warning") && timeout === 1) || alarm === "Ack")
                         ? "../img/noSound.png"
-                        : ((alarm === "On" && timeout === 0)
+                        : (((alarm === "On" || alarm === "Warning") && timeout === 0)
                             ? "../img/bellOn.png"
                             : "../img/bellOff.png")
 
@@ -184,14 +187,27 @@ Item {
                 anchors.fill: parent
                 color: "#FFD700"
                 opacity: 0.38
-                visible: alarm === "Ack" || (alarm === "On" && timeout === 1)
+                visible: alarm === "Ack" || ((alarm === "On" || alarm === "Warning") && timeout === 1)
             }
 
             MouseArea {
                 anchors.fill: parent
                 onPressed: {
-                    if (alarm === "On" || alarm === "Ack") {
-                        timeout = timeout === 0 ? 1 : 0
+                    // An audible AlertSignal exists whenever the device is On (Red)
+                    // or Warning (Yellow) — INDEPENDENT of the Bayesian risk class.
+                    var audible = (alarm === "On" || alarm === "Warning")
+                    if (audible || alarm === "Ack") {
+                        var wasSilenced = (timeout === 1)
+                        timeout = wasSilenced ? 0 : 1
+                        // RECONNECTED (was missing): acknowledge the active AlertSignal
+                        // on the provider (SetAlertState Presence=Ack) to pause the
+                        // alarm audio.  This does NOT touch the aggregator's risk score
+                        // or Red/Yellow visual state — those are driven by the
+                        // AlertCondition, not by the acknowledged AlertSignal.
+                        if (!wasSilenced && currentDevice
+                                && typeof currentDevice.silenceAlarm === "function") {
+                            currentDevice.silenceAlarm()
+                        }
                     }
                 }
             }
