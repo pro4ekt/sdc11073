@@ -71,14 +71,31 @@ for j, (dev, col) in enumerate(zip(devices, sensor_cols)):
                 key=f"check_{j}",
             )
             if active:
-                start, end = st.slider(
-                    "Alarm interval (s)",
+                # Primary alarm interval
+                start1, end1 = st.slider(
+                    "Interval 1 (s)",
                     0, sim_time, (1, min(10, sim_time)),
-                    key=f"slider_{j}",
+                    key=f"slider1_{j}",
                 )
-                # clamp to valid index range
-                end_idx = min(end + 1, n_steps)
-                signals[start:end_idx, j] = 1.0
+                end_idx1 = min(end1 + 1, n_steps)
+                signals[start1:end_idx1, j] = 1.0
+
+                # Optional second interval (reconnection / flicker simulation)
+                has_second = st.checkbox(
+                    "Add 2nd interval (reconnection)",
+                    value=False,
+                    key=f"check_second_{j}",
+                )
+                if has_second:
+                    def_start2 = min(end1 + 3, sim_time)
+                    def_end2   = min(def_start2 + 5, sim_time)
+                    start2, end2 = st.slider(
+                        "Interval 2 (s)",
+                        0, sim_time, (def_start2, def_end2),
+                        key=f"slider2_{j}",
+                    )
+                    end_idx2 = min(end2 + 1, n_steps)
+                    signals[start2:end_idx2, j] = 1.0
 
 st.divider()
 
@@ -244,10 +261,10 @@ with st.expander("Show / hide table", expanded=False):
             "SpO₂":       int(signals[i, 1]),
             "Vent":       int(signals[i, 2]),
             "NIBP":       int(signals[i, 3]),
-            "SDC Score":  round(sdc_hist[i], 3),
+            "SDC Score":  round(sdc_hist[i], 4),
             "k_min":      int(k_min_hist[i]),
-            "Θ_target":   round(theta_target_hist[i], 3),
-            "Θ(t)":       round(theta_hist[i], 3),
+            "Θ_target":   round(theta_target_hist[i], 4),
+            "Θ(t)":       round(theta_hist[i], 4),
             "Evidence":   round(evidence_hist[i], 3),
             "Escalation": "🚨 YES" if escalation_hist[i] else "🟢 NO",
         })
