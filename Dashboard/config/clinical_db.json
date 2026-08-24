@@ -1,18 +1,30 @@
 {
   "_comment": "IHE-PCD ACM Clinical Device Database — Consumer-side calibration data.",
-  "_version": "2.0.0",
-  "_updated": "2026-07-15",
+  "_version": "3.0.0",
+  "_updated": "2026-08-20",
 
-  "roc_limits": {
-    "_comment": "Physiological dx/dt limits (units/s) keyed by LOINC/MDC concept code. Stage 1 (HardwareArtifactFilter).",
-    "8310-5":  0.5,
-    "59408-5": 3.0,
-    "8867-4":  10.0,
-    "2345-7":  5.0,
-    "12812-6": 5.0,
-    "68480-6": 5.0,
-    "20053-5": 50.0,
-    "8775-2":  100.0
+  "base_odds_O0": 0.005,
+
+  "filter_params": {
+    "_comment": "Two-axis adaptive filter tuning. horizon_T [s] couples the FIR window s_j(t) and the hysteresis rate rho=(1-SDC)/T; alpha biases SDC_score toward the peak threat max(v_j).",
+    "horizon_T": 10.0,
+    "alpha": 0.7
+  },
+
+  "priority_map": {
+    "_comment": "BICEPS AlertCondition.Priority -> static SDC priority P_j.",
+    "None": 0,
+    "Lo": 1,
+    "Me": 2,
+    "Hi": 3
+  },
+
+  "odds_ratios": {
+    "_comment": "FHIR diagnosis/danger code -> OR_d for Context_Log_Odds = ln(O_0) + sum(R_d * ln(OR_d)). Unknown codes default to OR=1.0 (neutral).",
+    "59621000": 2.5,
+    "44054006": 3.1,
+    "I50.9": 4.0,
+    "R57.0": 5.0
   },
 
   "device_profiles": {
