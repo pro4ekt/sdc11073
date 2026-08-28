@@ -3,7 +3,7 @@
   "_version": "3.0.0",
   "_updated": "2026-08-20",
 
-  "base_odds_O0": 0.005,
+  "base_prob_P0": 0.005,
 
   "filter_params": {
     "_comment": "Two-axis adaptive filter tuning. horizon_T [s] couples the FIR window s_j(t) and the hysteresis rate rho=(1-SDC)/T; alpha biases SDC_score toward the peak threat max(v_j).",
