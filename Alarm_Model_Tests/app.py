@@ -22,12 +22,15 @@ st.divider()
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Algorithm Hyperparameters")
-    alpha = st.slider("α  — SDC highest prior. weight", 0.0, 1.0, 0.7, 0.05,
-                      help="SDC Score = α·max(v_j) + (1−α)·mean(v_j)")
-    gamma = st.slider("γ  — k_min sensitivity",                0.1, 2.0, 1.0, 0.1)
-    rho   = st.slider("ρ  — Release time-constant (1/s)",      0.01, 2.0, 0.5, 0.01,
-                      help="Exponential slow-release: Θ(t) = Θ_target + (Θ_prev − Θ_target)·exp(−ρ·Δt)")
-    T     = st.slider("T  — Sliding window (s)",               1,   15,  5,   1)
+    alpha = st.slider(
+        "α  — SDC highest prior. weight", 0.0, 1.0, 0.7, 0.05,
+        help="SDC Score = α·(max(v_j)/P_max) + (1−α)·(Σv_j/ΣP_j)  — normalised convex combination",
+    )
+    T = st.slider(
+        "T  — Sliding window (s)", 1, 15, 5, 1,
+        help="Also used as the memory time horizon for adaptive release: "
+             "ρ(t) = (1 − SDC_score(t)) / T  — higher T → slower threshold recovery",
+    )
 
     st.header("📊 SDC Priorities  P_j  (VMD Channels)")
     p_ecg  = st.selectbox("P — ECG",        [0, 1, 2, 3], index=1)
@@ -39,7 +42,8 @@ with st.sidebar:
     st.header("🩺 Patient Context")
     context_log_odds = st.number_input(
         "Context Log-Odds", value=-1.104, step=0.1,
-        help="ln(prior_risk / (1−prior_risk)) adjusted for comorbidities"
+        help="ln(prior_risk / (1−prior_risk)) adjusted for comorbidities. "
+             "More negative → higher personalised threshold → filter more conservative.",
     )
 
     st.divider()
@@ -55,17 +59,15 @@ col_time, _ = st.columns([1, 3])
 with col_time:
     sim_time = st.slider("Simulation duration (seconds)", 10, 60, 20)
 
-# ── Sub-second time grid ──────────────────────────────────────────────────────
-DT      = 0.1                                      # simulation resolution (s)
-t_fine  = np.arange(0, sim_time + DT, DT)          # high-res grid
-n_fine  = len(t_fine)
-t_sec   = np.arange(0, sim_time + 1, dtype=int)    # whole-second ticks (for UI / table)
+# Sub-second time grid
+DT     = 0.1
+t_fine = np.arange(0, sim_time + DT, DT)
+n_fine = len(t_fine)
+t_sec  = np.arange(0, sim_time + 1, dtype=int)
 
 vmd_channels = ['ECG', 'SpO₂', 'Ventilator', 'NIBP']
 colors        = ['#e74c3c', '#3498db', '#2ecc71', '#9b59b6']
-
-# signals on fine grid (binary: 0 or 1)
-signals_fine = np.zeros((n_fine, 4))
+signals_fine  = np.zeros((n_fine, 4))
 
 sensor_cols = st.columns(4)
 for j, (dev, col) in enumerate(zip(vmd_channels, sensor_cols)):
@@ -83,7 +85,6 @@ for j, (dev, col) in enumerate(zip(vmd_channels, sensor_cols)):
                     0, sim_time, (1, min(10, sim_time)),
                     key=f"slider1_{j}",
                 )
-                # map whole-second bounds → fine-grid indices
                 idx_s1 = int(round(start1 / DT))
                 idx_e1 = min(int(round((end1 + 1) / DT)), n_fine)
                 signals_fine[idx_s1:idx_e1, j] = 1.0
@@ -117,14 +118,19 @@ w_avg = float(np.mean(w))
 # Θ_init = system steady-state (no alarms → SDC=0 → k_min=M)
 prev_theta_init = float(M * w_avg - context_log_odds)
 
-buffer_size = max(1, int(round(T / DT)))           # window size in fine-grid samples
+# Pre-compute normalisation constants (protect against all-zero P)
+p_max_M = float(np.max(P_array)) if np.max(P_array) > 0 else 1.0
+sum_P   = float(np.sum(P_array)) if np.sum(P_array) > 0 else 1.0
+
+buffer_size = max(1, int(round(T / DT)))
 
 s_hist            = np.zeros((n_fine, M))
 evidence_hist     = np.zeros(n_fine)
 sdc_hist          = np.zeros(n_fine)
-k_min_hist        = np.zeros(n_fine)
+k_min_hist        = np.zeros(n_fine, dtype=int)
 theta_target_hist = np.zeros(n_fine)
 theta_hist        = np.zeros(n_fine)
+rho_hist          = np.zeros(n_fine)
 escalation_hist   = np.zeros(n_fine, dtype=bool)
 
 buffers    = [deque([0.0] * buffer_size, maxlen=buffer_size) for _ in range(M)]
@@ -140,25 +146,31 @@ for i in range(n_fine):
     ev = float(sum(w[j] * s_hist[i, j] for j in range(M)))
     evidence_hist[i] = ev
 
-    # ── Convex combination SDC Score (no separate β) ──────────────────────
-    v   = P_array * sig
-    sdc = alpha * float(np.max(v)) + (1.0 - alpha) * float(np.mean(v))
+    # 1. Normalised convex-combination SDC Score
+    v           = P_array * sig
+    max_v_norm  = float(np.max(v)) / p_max_M
+    sum_v_norm  = float(np.sum(v)) / sum_P
+    sdc         = alpha * max_v_norm + (1.0 - alpha) * sum_v_norm
     sdc_hist[i] = sdc
 
-    # ── Topological fail-safe k_min ───────────────────────────────────────
-    k_min         = max(2, int(np.floor(M - gamma * sdc)))
+    # 2. Dynamic k_min (no gamma — derived directly from SDC score)
+    k_min         = int(np.floor(M - (M - 2) * sdc))
     k_min_hist[i] = k_min
 
+    # 3. Target threshold
     theta_target        = k_min * w_avg - float(context_log_odds)
     theta_target_hist[i] = theta_target
 
-    # ── Exponential asymmetric hysteresis ────────────────────────────────
+    # 4. Adaptive rho(t) & asymmetric exponential hysteresis
+    rho_t       = (1.0 - sdc) / float(T)
+    rho_hist[i] = rho_t
+
     if theta_target <= theta_prev:
-        # Fast attack: threshold drops instantly to target
+        # Fast attack — drop instantly
         theta_curr = theta_target
     else:
         # Slow exponential release
-        theta_curr = theta_target + (theta_prev - theta_target) * np.exp(-rho * DT)
+        theta_curr = theta_target + (theta_prev - theta_target) * np.exp(-rho_t * DT)
 
     theta_hist[i] = theta_curr
     theta_prev    = theta_curr
@@ -169,7 +181,7 @@ for i in range(n_fine):
 st.subheader("② Simulation Summary")
 
 n_esc          = int(escalation_hist.sum())
-total_esc_time = n_esc * DT                              # seconds
+total_esc_time = n_esc * DT
 first_esc_t    = float(t_fine[escalation_hist][0]) if n_esc > 0 else None
 max_evidence   = float(evidence_hist.max())
 min_theta      = float(theta_hist.min())
@@ -177,19 +189,18 @@ alarm_fraction = total_esc_time / sim_time * 100
 
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Total escalation time", f"{total_esc_time:.1f} s",
-          help="Cumulative seconds during which Evidence ≥ Θ(t)")
+          help="Cumulative seconds during which Evidence ≥ Θ_current(t)")
 m2.metric("First escalation at",
           f"t = {first_esc_t:.1f} s" if first_esc_t is not None else "—")
-m3.metric("Peak evidence",       f"{max_evidence:.3f}")
-m4.metric("Min threshold Θ(t)",  f"{min_theta:.3f}")
-m5.metric("Alarm fraction",      f"{alarm_fraction:.1f} %")
+m3.metric("Peak evidence",            f"{max_evidence:.3f}")
+m4.metric("Min threshold Θ_current",  f"{min_theta:.3f}")
+m5.metric("Alarm fraction",           f"{alarm_fraction:.1f} %")
 
 st.divider()
 
 # ── Section 3 — Plots ─────────────────────────────────────────────────────────
 st.subheader("③ Decision Axis Visualisation")
 
-# Whole-second sample indices (for sparse markers)
 sec_idx = [int(round(s / DT)) for s in t_sec if int(round(s / DT)) < n_fine]
 
 fig = plt.figure(figsize=(12, 8))
@@ -197,21 +208,16 @@ gs  = gridspec.GridSpec(2, 1, hspace=0.42)
 ax_heat = fig.add_subplot(gs[0])
 ax_dec  = fig.add_subplot(gs[1])
 
-# ── Panel 1: VMD Channel activity heatmap ────────────────────────────────────
+# Panel 1: VMD Channel activity heatmap
 for j in range(4):
     row = signals_fine[:, j]
-    # Use fill_between for gapless rendering
     ax_heat.fill_between(
-        t_fine,
-        j - 0.28, j + 0.28,
-        where=(row > 0.5),
-        color=colors[j], alpha=0.82, step='mid',
+        t_fine, j - 0.28, j + 0.28,
+        where=(row > 0.5), color=colors[j], alpha=0.82, step='mid',
     )
     ax_heat.fill_between(
-        t_fine,
-        j - 0.28, j + 0.28,
-        where=(row <= 0.5),
-        color='#ecf0f1', alpha=0.55, step='mid',
+        t_fine, j - 0.28, j + 0.28,
+        where=(row <= 0.5), color='#ecf0f1', alpha=0.55, step='mid',
     )
 
 ax_heat.set_yticks(range(4))
@@ -230,8 +236,7 @@ ax_heat.grid(True, axis='x', linestyle='--', alpha=0.4)
 if sim_time <= 30:
     ax_heat.set_xticks(t_sec)
 
-# ── Panel 2: Decision axis (smooth curves + sparse markers) ──────────────────
-# Smooth lines on fine grid
+# Panel 2: Decision axis
 ax_dec.plot(t_fine, evidence_hist,
             color='#27ae60', linewidth=2.0, zorder=3,
             label='Accumulated Evidence  Σ w_j·s_j(t)')
@@ -240,24 +245,24 @@ ax_dec.plot(t_fine, theta_target_hist,
             label='Target Threshold  Θ_target(t)')
 ax_dec.plot(t_fine, theta_hist,
             color='#e74c3c', linewidth=2.0, zorder=4,
-            label='Hysteresis Threshold  Θ(t)  [exp. release]')
+            label='Θ_current(t)  [adaptive exp. release]')
 
-# Sparse markers at whole seconds only
+# Sparse markers at whole seconds
 ax_dec.plot(t_fine[sec_idx], evidence_hist[sec_idx],
             '^', color='#27ae60', markersize=6, zorder=6, linewidth=0)
 ax_dec.plot(t_fine[sec_idx], theta_hist[sec_idx],
             'o', color='#e74c3c', markersize=5, zorder=6, linewidth=0)
 
-# Escalation fill (gapless)
+# Escalation fill
 ax_dec.fill_between(
     t_fine, theta_hist, evidence_hist,
     where=escalation_hist,
     color='#ffcccc', alpha=0.55, step='mid', zorder=1,
-    label='⚠ ESCALATION  (Evidence ≥ Θ)',
+    label='⚠ ESCALATION  (Evidence ≥ Θ_current)',
 )
 
 ax_dec.set_title(
-    "Panel 2 — Escalation Decision Axis: Accumulated Evidence vs Personalised Threshold",
+    "Panel 2 — Escalation Decision Axis: Accumulated Evidence vs Θ_current(t)",
     fontweight='bold', fontsize=10,
 )
 ax_dec.set_ylabel("Log-Odds Scale", fontweight='bold')
@@ -273,7 +278,7 @@ else:
 plt.tight_layout()
 st.pyplot(fig)
 
-# ── Section 4 — Step table (sampled at 1 s) ───────────────────────────────────
+# ── Section 4 — Step table ────────────────────────────────────────────────────
 st.divider()
 st.subheader("④ Step-by-Step Computation Table")
 
@@ -289,11 +294,12 @@ with st.expander("Show / hide table", expanded=False):
             "SpO₂":       int(signals_fine[i, 1]),
             "Vent":       int(signals_fine[i, 2]),
             "NIBP":       int(signals_fine[i, 3]),
-            "SDC Score":  round(sdc_hist[i], 4),
+            "SDC Score":  round(float(sdc_hist[i]), 4),
             "k_min":      int(k_min_hist[i]),
-            "Θ_target":   round(theta_target_hist[i], 4),
-            "Θ(t)":       round(theta_hist[i], 4),
-            "Evidence":   round(evidence_hist[i], 4),
+            "ρ(t)":       round(float(rho_hist[i]), 4),
+            "Θ_target":   round(float(theta_target_hist[i]), 4),
+            "Θ_current":  round(float(theta_hist[i]), 4),
+            "Evidence":   round(float(evidence_hist[i]), 4),
             "Escalation": "🚨 YES" if escalation_hist[i] else "🟢 NO",
         })
     st.dataframe(table_data, use_container_width=True)
