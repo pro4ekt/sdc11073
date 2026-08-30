@@ -163,3 +163,4 @@ test.txt
 myProvider.txt
 myMDIB.xml
 myConsumer.txt
+Dashboard/tests/test_math_core.py
