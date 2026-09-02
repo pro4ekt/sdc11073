@@ -3,7 +3,7 @@
   "_version": "3.0.0",
   "_updated": "2026-08-20",
 
-  "base_prob_P0": 0.005,
+  "base_prob_P0": 0.5,
 
   "filter_params": {
     "_comment": "Two-axis adaptive filter tuning. horizon_T [s] couples the FIR window s_j(t) and the hysteresis rate rho=(1-SDC)/T; alpha biases SDC_score toward the peak threat max(v_j).",
@@ -31,18 +31,18 @@
     "_comment": "Bayesian reliability priors: Manufacturer -> ModelName -> ConceptCode -> {sensitivity, false_alarm_rate}. Stage 2 (ClinicalRiskFilter). prior=0.005.",
     "Draeger": {
       "Infinity Monitor": {
-        "_comment": "Bedside patient monitor — HR channel. LR+ = 0.99/0.15 = 6.60. Phase 3 risk = P*×10.0.",
-        "8867-4": { "sensitivity": 0.99, "false_alarm_rate": 0.15 }
+        "_comment": "Bedside patient monitor — HR channel. Calibrated for escalation testing: LR+ = 0.99/0.01 = 99 → w_j = ln(99) ≈ 4.595.",
+        "8867-4": { "sensitivity": 0.99, "false_alarm_rate": 0.01 }
       },
       "Evita Ventilator": {
-        "_comment": "Mechanical ventilator — airway pressure. LR+ = 0.98/0.10 = 9.80.",
-        "20053-5": { "sensitivity": 0.98, "false_alarm_rate": 0.10 }
+        "_comment": "Mechanical ventilator — airway pressure. Calibrated for escalation testing: LR+ = 0.99/0.01 = 99 → w_j = ln(99) ≈ 4.595.",
+        "20053-5": { "sensitivity": 0.99, "false_alarm_rate": 0.01 }
       }
     },
     "BBraun": {
       "Space Perfusor": {
-        "_comment": "Syringe infusion pump — line pressure. LR+ = 0.95/0.08 = 11.875.",
-        "8775-2": { "sensitivity": 0.95, "false_alarm_rate": 0.08 }
+        "_comment": "Syringe infusion pump — line pressure. Calibrated for escalation testing: LR+ = 0.99/0.01 = 99 → w_j = ln(99) ≈ 4.595.",
+        "8775-2": { "sensitivity": 0.99, "false_alarm_rate": 0.01 }
       }
     },
     "Acme Medical": {

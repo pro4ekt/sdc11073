@@ -358,7 +358,7 @@ class QtDeviceHandler(QObject):
                 )
                 cond_handle = getattr(sig_desc, 'ConditionSignaled', None) if sig_desc else None
 
-                # Stage 1 artifact — hide completely (RoC exceeded → noise)
+                # SUPPRESS-routed condition — hidden completely from the UI
                 if cond_handle and str(cond_handle) in _artifact_suppressed:
                     continue
 
@@ -370,7 +370,7 @@ class QtDeviceHandler(QObject):
                     if not _aggregator.is_alarm_active(_ens_uuid, str(cond_handle)):
                         continue  # stale MDIB state — alarm TTL-expired in aggregator
 
-                # Stage 2 Warning — real alarm, risk < 5.0; record but don't inflate priority
+                # WARN-routed condition (E(t) < Theta_current) — record but do not inflate priority
                 if priority > 0 and cond_handle and str(cond_handle) in _warning_handles:
                     has_warning_signal = True
                     continue  # shown as Yellow only when no On/Ack/Latch is present
@@ -393,10 +393,10 @@ class QtDeviceHandler(QObject):
             ]
 
             for alert in active_conditions:
-                # Skip Stage 1 artifacts — they are invisible to the user
+                # Skip SUPPRESS-routed conditions — they are invisible to the user
                 if alert.DescriptorHandle in _artifact_suppressed:
                     continue
-                # Warning conditions (Stage 2) are intentionally included so the
+                # WARN-routed conditions are intentionally included so the
                 # metric row is highlighted in the DevicePage even at Warning level.
 
                 alert_desc = self._device.mdib.descriptions.handle.get_one(

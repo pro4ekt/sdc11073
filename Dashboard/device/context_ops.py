@@ -6,7 +6,7 @@ Both follow the two-phase pattern:
   Phase 1 (data_lock):  read MDIB, build the proposed context state.
   Phase 2 (no lock):    send SetContextState over the network.
 
-Called by SmartAlertAggregator.evaluate_and_bind_device() after a device
+Called by EnsembleTopologyManager.evaluate_and_bind_device() after a device
 connects successfully.
 """
 
@@ -145,9 +145,6 @@ def apply_fhir_contexts(handler: 'DeviceHandler', fhir_data: Any) -> None:
     """
     Write FHIR DangerCodes into the device's WorkflowContextState via
     a SetContextState SOAP call.
-
-    Also triggers a topology audit (audit_topology) after writing the
-    FHIR context, logging any missing required sensors.
     """
     if fhir_data is None:
         handler.logger.warning(
@@ -191,24 +188,28 @@ def apply_fhir_contexts(handler: 'DeviceHandler', fhir_data: Any) -> None:
                 return
             wf_descriptor = wf_descriptors[0]
 
-            # Prefer the SetContextState op targeting PatientContextDescriptor
-            # (it has a registered handler on the provider side).
+            # Select the SetContextState operation whose OperationTarget is the
+            # WorkflowContextDescriptor — the proposed state we send below is a
+            # WorkflowContextState, so its descriptor MUST match the operation
+            # target.  Using an op that targets a different descriptor (e.g. the
+            # PatientContextDescriptor) makes the provider reject the request or
+            # write to the wrong context.  No blind fallback: if no matching op
+            # exists, bail out safely (the device does not accept WorkflowContext
+            # writes).
             set_ctx_ops = handler.mdib.descriptions.NODETYPE.get(
                 _pm.SetContextStateOperationDescriptor, []
             )
-            pat_descriptors = handler.mdib.descriptions.NODETYPE.get(
-                _pm.PatientContextDescriptor, []
-            )
-            pat_handle = pat_descriptors[0].Handle if pat_descriptors else None
             for op in set_ctx_ops:
-                if pat_handle and op.OperationTarget == pat_handle:
+                if op.OperationTarget == wf_descriptor.Handle:
                     operation_handle = op.Handle
                     break
-            if not operation_handle and set_ctx_ops:
-                operation_handle = set_ctx_ops[0].Handle
 
             if not operation_handle:
-                handler.logger.warning('apply_fhir_contexts: no SetContextState operation found in MDIB.')
+                handler.logger.warning(
+                    'apply_fhir_contexts: no SetContextState operation targeting the '
+                    'WorkflowContextDescriptor found -- cannot write DangerCodes. '
+                    'Skipping FHIR write-back.'
+                )
                 return
 
             wf_states = handler.mdib.context_states.NODETYPE.get(_pm.WorkflowContextState, [])
@@ -273,26 +274,4 @@ def apply_fhir_contexts(handler: 'DeviceHandler', fhir_data: Any) -> None:
     except Exception as exc:
         handler.logger.error(f'apply_fhir_contexts: SOAP call failed -- {exc}')
 
-    # ------------------------------------------------------------------
-    # Topology audit: verify ensemble has all sensors for patient's focus
-    # ------------------------------------------------------------------
-    if handler.ensemble_uuid:
-        _aggregator = getattr(handler.manager, 'aggregator', None)
-        if _aggregator is not None:
-            try:
-                missing = _aggregator.audit_topology(handler.ensemble_uuid)
-                if missing:
-                    handler.logger.warning(
-                        f'[TOPOLOGY AUDIT] Missing required sensors for patient\'s '
-                        f'clinical focus: {missing} '
-                        f'(ensemble={handler.ensemble_uuid[:8]}..., device={handler.epr[-12:]})'
-                    )
-                else:
-                    handler.logger.info(
-                        f'[TOPOLOGY AUDIT] All required sensors present for patient\'s '
-                        f'clinical focus (ensemble={handler.ensemble_uuid[:8]}...).'
-                    )
-                _aggregator.log_clinical_focus_summary(handler.ensemble_uuid)
-            except Exception as audit_err:
-                handler.logger.warning(f'[TOPOLOGY AUDIT] audit_topology raised: {audit_err}')
 

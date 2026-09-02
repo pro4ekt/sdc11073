@@ -108,20 +108,25 @@ class UrgencyEngine:
     # ── Consensus quorum ──────────────────────────────────────────────────────
 
     def k_min(self, m_size: int, sdc_score: float) -> int:
-        """Return the dynamic consensus quorum k_min(t) ∈ [min(2, |M|), |M|].
+        """Return the dynamic consensus quorum k_min(t), strictly clamped to [2, |M|].
 
-        k_min = clamp( ⌊ |M| − (|M| − 2)·SDC_score ⌋,  min(2, |M|),  |M| ).
+        k_min = clamp( ⌊ |M| − (|M| − 2)·SDC_score ⌋,  2,  |M| ).
 
         * SDC_score = 0 → k_min = |M| (near-unanimous consensus required).
         * SDC_score = 1 → k_min = 2   (two corroborating channels suffice).
-        * |M| ≤ 2       → the topological floor pins k_min to |M| (or 2).
+
+        Topological fail-safe (Reference Architecture §5): the lower bound is a
+        HARD 2 — consensus from a single VMD is forbidden for stationary ICU
+        monitoring, so a lone sensor can never trigger a central escalation in
+        isolation.  If |M| < 2 the floor still pins k_min to 2, which exceeds the
+        ensemble size and is therefore unreachable → the single channel is held
+        back (SUPPRESS), exactly as intended.
         """
         if m_size <= 0:
             return 0
         raw = math.floor(m_size - (m_size - 2) * sdc_score)
-        lower = min(2, m_size)   # topological guarantee: at least 2 (or |M| if |M|<2)
-        upper = m_size
-        return max(lower, min(upper, raw))
+        # HARD lower bound of 2 (never min(2, |M|)): forbids single-VMD consensus.
+        return max(2, min(m_size, raw))
 
     # ── Target threshold ──────────────────────────────────────────────────────
 

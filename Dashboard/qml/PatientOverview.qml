@@ -304,7 +304,7 @@ Item {
 
                                 Text {
                                     visible: modelData.isEscalated || modelData.isWarning
-                                    text: "Risk: " + modelData.riskScore.toFixed(1)
+                                    text: "Severity: " + Math.round(modelData.sdcScore * 100) + "%"
                                     color: modelData.isEscalated ? "#ffaaaa" : "#ebd234"
                                     font.pixelSize: 17
                                     font.family: "Tahoma"

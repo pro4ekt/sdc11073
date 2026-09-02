@@ -150,6 +150,12 @@ if __name__ == "__main__":
     )
     manager.start()
 
+    # Ensure a clean shutdown on window close / app quit: stop the manager so the
+    # GC daemon and discovery loop terminate AND the thesis KPI summaries
+    # ([METRICS-Z1/2/3] + CSV SUMMARY rows) are emitted.  Without this, app.exec()
+    # returns straight into sys.exit() and manager.stop() would never run.
+    app.aboutToQuit.connect(manager.stop)
+
     # ------------------------------------------------------------------
     # STEP 3: QML engine
     # ------------------------------------------------------------------

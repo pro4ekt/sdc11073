@@ -80,7 +80,7 @@ class DeviceHandler(threading.Thread):
         self.running: bool = True
         self.consumer: Any = None
         # DPWS device identity — populated in _phase_connect after start_all().
-        # Used by ClinicalRiskFilter to look up calibrated _DEVICE_PROFILES.
+        # Used by DeviceProfileRepository to look up the calibrated profile.
         self.manufacturer: str = ''
         self.model: str = ''
         self.mdib: Any = None
@@ -98,14 +98,14 @@ class DeviceHandler(threading.Thread):
         self._last_ui_update_ts: float = 0.0
         # handle → BICEPS/LOINC concept code (built once after init_mdib)
         self._handle_to_concept: dict[str, str] = {}
-        # Per-device calibration cache: concept → (roc_limit, reliability_profile)
+        # Per-device calibration cache: concept → reliability_profile
         # Pre-fetched from DeviceProfileRepository right after _build_semantic_map().
         # Passed to SmartAlertAggregator.check_alert_validity() on each alarm event
-        # so pipeline filters never query the database at event time.
-        self._device_calibration: dict[str, tuple[Any, Optional[DeviceReliabilityProfile]]] = {}
+        # so the math core never queries the database at event time.
+        self._device_calibration: dict[str, Optional[DeviceReliabilityProfile]] = {}
         # AlarmCoordinator suppression sets (split by suppression semantics).
-        # _artifact_suppressed: Stage 1 RoC artifacts — hidden completely from UI.
-        # _warning_handles:     Stage 2 low-risk alarms — shown as Yellow in UI.
+        # _artifact_suppressed: SUPPRESS-routed handles — hidden completely from UI.
+        # _warning_handles:     WARN-routed handles — shown as Yellow in UI.
         # Both are cleared automatically when the alarm goes inactive (Presence=False).
         self._artifact_suppressed: set[str] = set()
         self._warning_handles: set[str] = set()
@@ -223,6 +223,17 @@ class DeviceHandler(threading.Thread):
             self._phase_subscribe()
             self.logger.info('Connection established. Monitoring...')
 
+            # Ziel 1 metric (best-effort): this provider passed the room filter and
+            # subscribed — record it as accepted with its measured subscription count
+            # (grouped per hosted service, len(subscription_mgr.subscriptions)).
+            try:
+                from app.metrics.topology_metrics import get_topology_metrics
+                sub_mgr = getattr(self.consumer, 'subscription_mgr', None)
+                n_subs = len(getattr(sub_mgr, 'subscriptions', {})) if sub_mgr else 0
+                get_topology_metrics().record_accepted(self.epr, subscriptions=n_subs)
+            except Exception:
+                pass
+
             await self._phase_aggregate_on_connect()
             self._phase_snapshot_initial_alerts()
             self._phase_setup_qt()
@@ -292,10 +303,11 @@ class DeviceHandler(threading.Thread):
         """
         Reads DPWS ThisModel metadata from consumer.host_description (fetched
         during start_all → _get_metadata).  Populates self.manufacturer and
-        self.model so ClinicalRiskFilter can look up calibrated _DEVICE_PROFILES.
+        self.model so DeviceProfileRepository can look up the calibrated profile.
 
         Fail-safe: any exception leaves manufacturer/model as '' (fail-open:
-        ClinicalRiskFilter falls back to _FAIL_SAFE_PROFILE, LR+ = 1.0).
+        the profile lookup misses and the channel degrades to a neutral
+        TPR = FPR = 0.5 → w_j = 0).
         """
         try:
             host_desc = getattr(self.consumer, 'host_description', None)
@@ -389,22 +401,24 @@ class DeviceHandler(threading.Thread):
 
         Called immediately after _build_semantic_map() so that self._handle_to_concept
         is already populated.  Results are stored in self._device_calibration:
-            concept → (roc_limit: float | None, reliability_profile: DeviceReliabilityProfile | None)
+            concept → reliability_profile: DeviceReliabilityProfile | None
 
-        The aggregator and pipeline filters read these pre-fetched values from the
-        DeviceAlertEvidence DTO — they never touch the database at alarm event time.
+        The math core reads these pre-fetched values from the DeviceAlertEvidence
+        DTO — it never touches the database at alarm event time.  The former rate-of-change
+        gate has been decommissioned, so only the reliability profile (TPR/FPR →
+        w_j) is fetched now.
         """
         repo = get_repository()
         self._device_calibration = {}
         concepts = set(self._handle_to_concept.values())
         for concept in concepts:
-            roc_limit = repo.get_roc_limit(concept)
-            profile   = repo.get_profile(self.manufacturer, self.model, concept)
-            self._device_calibration[concept] = (roc_limit, profile)
+            self._device_calibration[concept] = repo.get_profile(
+                self.manufacturer, self.model, concept
+            )
         self.logger.info(
             f'[DeviceCalibration] Pre-fetched {len(self._device_calibration)} concept(s) '
             f'for {self.manufacturer!r}/{self.model!r} — '
-            f'{sum(1 for _, (_, p) in self._device_calibration.items() if p is not None)} '
+            f'{sum(1 for p in self._device_calibration.values() if p is not None)} '
             f'profile(s) found, rest use fail-safe (LR+=1.0).'
         )
 
@@ -494,20 +508,20 @@ class DeviceHandler(threading.Thread):
 
     async def _phase_aggregate_on_connect(self) -> None:
         """
-        Let the SmartAlertAggregator decide ensemble membership and call
+        Let the EnsembleTopologyManager decide ensemble membership and call
         apply_ensemble_context() + apply_fhir_contexts().
 
         Uses asyncio.to_thread() because evaluate_and_bind_device() is
         synchronous (FHIR HTTP + SOAP calls).
         """
-        aggregator = getattr(self.manager, 'aggregator', None)
-        if aggregator is not None:
-            self.logger.debug('[Aggregator] Calling evaluate_and_bind_device...')
+        topology = getattr(self.manager, 'topology', None)
+        if topology is not None:
+            self.logger.debug('[Topology] Calling evaluate_and_bind_device...')
             try:
-                await asyncio.to_thread(aggregator.evaluate_and_bind_device, self)
+                await asyncio.to_thread(topology.evaluate_and_bind_device, self)
             except Exception as e:
                 self.logger.error(
-                    f'[Aggregator] evaluate_and_bind_device raised an unexpected '
+                    f'[Topology] evaluate_and_bind_device raised an unexpected '
                     f'exception — ensemble binding skipped: {e}',
                     exc_info=True,
                 )
@@ -593,6 +607,7 @@ class DeviceHandler(threading.Thread):
             if not self.consumer.is_connected:
                 self.logger.warning('Connection lost reported by SDC stack.')
                 self.error_occurred = True
+                self._record_fallback_metric('is_connected')
                 break
 
             # ── WS-Events subscription silence detection ─────────────────────
@@ -608,6 +623,7 @@ class DeviceHandler(threading.Thread):
                     f'WS-Events subscription may have expired. Forcing reconnect.'
                 )
                 self.error_occurred = True
+                self._record_fallback_metric('metric_silence')
                 break
 
             if self.qtDeviceHandler:
@@ -615,10 +631,19 @@ class DeviceHandler(threading.Thread):
 
             missed = await self._ping(missed, MAX_MISSED, SLEEP_INTERVAL, T_FALLBACK)
             if missed < 0:
+                self._record_fallback_metric('t_fallback')
                 break  # T_fallback exceeded — exit requested by _ping
 
             await self._process_ack_timeouts()
             await asyncio.sleep(SLEEP_INTERVAL)
+
+    def _record_fallback_metric(self, cause: str) -> None:
+        """Ziel 2 metric (best-effort): record Δt_safe when the watchdog fires."""
+        try:
+            from app.metrics.latency_metrics import get_latency_metrics
+            get_latency_metrics().record_fallback(self.epr, cause=cause)
+        except Exception:
+            pass
 
     async def _ping(self, missed: int, max_missed: int, interval: float, t_fallback: float) -> int:
         """
@@ -633,6 +658,13 @@ class DeviceHandler(threading.Thread):
                     await asyncio.to_thread(
                         self.consumer.context_service_client.get_context_states
                     )
+                    # Ziel 2 metric (best-effort): a successful ping is a confirmed
+                    # live round-trip → refresh the Δt_safe anchor (t_last_rx).
+                    try:
+                        from app.metrics.latency_metrics import get_latency_metrics
+                        get_latency_metrics().mark_rx(self.epr)
+                    except Exception:
+                        pass
                     if not getattr(self, '_ctx_ping_ok_logged', False):
                         self.logger.info(
                             '[DIAG] GetContextStates ping: SUCCESS — '
@@ -695,34 +727,22 @@ class DeviceHandler(threading.Thread):
         """
         Called by sdc11073 from its notification thread on EpisodicMetricReport.
 
-        Phase 1 — update physiological state graph (no data_lock needed;
-          state objects are already delivered as arguments).
-        Phase 2 — rate-limited UI refresh (max 1 Hz).
+        The two-axis math core reads only boolean AlertCondition.Presence, not raw
+        metric magnitudes, so metric values are no longer forwarded to any physio
+        graph here.  This callback now only (a) refreshes the last-RX watchdog
+        timestamp + Ziel-2 latency marker, and (b) does a rate-limited UI refresh.
         """
-        aggregator = getattr(self.manager, 'aggregator', None)
-        if aggregator is not None and self.ensemble_uuid:
-            for state in metrics_by_handle.values():
-                try:
-                    mv = getattr(state, 'MetricValue', None)
-                    if mv is None:
-                        continue
-                    value = getattr(mv, 'Value', None)
-                    if value is None:
-                        continue
-                    concept = self._handle_to_concept.get(
-                        getattr(state, 'DescriptorHandle', '')
-                    )
-                    if concept:
-                        aggregator.update_metric_state(self.ensemble_uuid, concept, float(value))
-                except Exception as exc:
-                    self.logger.warning(
-                        f'[MetricUpdate] Failed to process metric state '
-                        f'handle={getattr(state, "DescriptorHandle", "?")} : {exc}'
-                    )
 
         # Update last-metric timestamp on every successful report arrival.
         # Used by _monitoring_loop to detect silent WS-Events subscription loss.
         self._last_metric_ts = time.monotonic()
+
+        # Ziel 2 metric (best-effort): mark last-received report for Δt_safe.
+        try:
+            from app.metrics.latency_metrics import get_latency_metrics
+            get_latency_metrics().mark_rx(self.epr)
+        except Exception:
+            pass
 
         if not self.qtDeviceHandler:
             return
@@ -747,12 +767,19 @@ class DeviceHandler(threading.Thread):
           1. Classify alert type (Condition / Signal / Alert)
           2. Look up concept code and monitored metric code from MDIB
           3. Skip AlertSystemState (no meaningful Presence)
-          4. DSP filter: suppress physiologically impossible metric jumps
+          4. Adaptive alarm filter: consensus-based escalation routing
           5. Priority check: mark if clinically critical for patient's focus
           6. Log the transition
           7. Update ack-timeout tracking (signals only)
         """
         now = time.monotonic()
+
+        # Ziel 2 metric (best-effort): an alert report is also an inbound message.
+        try:
+            from app.metrics.latency_metrics import get_latency_metrics
+            get_latency_metrics().mark_rx(self.epr)
+        except Exception:
+            pass
 
         for handle, state in alert_by_handle.items():
             raw_presence = getattr(state, 'Presence', None)
@@ -780,7 +807,7 @@ class DeviceHandler(threading.Thread):
                     and condition_signaled in self._artifact_suppressed
                 )
             if signal_is_artifact and is_active:
-                continue  # Stage 1 artifact — hide signal completely
+                continue  # SUPPRESS-routed signal — hide completely
 
             # ── Condition suppression tracking ────────────────────────────────
             # When a Condition clears, remove from BOTH sets under the lock.
@@ -792,62 +819,53 @@ class DeviceHandler(threading.Thread):
                     try:
                         aggregator.clear_alarm(self.ensemble_uuid, handle)
                     except Exception as _e:
-                        self.logger.debug(f'[DSP FILTER] clear_alarm failed: {_e}')
+                        self.logger.debug(f'[ALARM FILTER] clear_alarm failed: {_e}')
 
-            # DSP filter (IHE-PCD ACM Alarm Coordinator — Stage 1 + Stage 2)
+            # Adaptive stochastic alarm filter (IHE-PCD ACM Alarm Coordinator)
             if is_active and type_label == 'Condition' and aggregator is not None and self.ensemble_uuid:
                 try:
-                    _roc_limit, _rel_profile = self._device_calibration.get(
-                        metric_concept, (None, None)
-                    )
+                    _rel_profile = self._device_calibration.get(metric_concept)
                     _result = aggregator.check_alert_validity(
                         self.ensemble_uuid, handle, metric_concept,
                         biceps_priority=biceps_priority,
                         manufacturer=self.manufacturer,
                         model=self.model,
                         device_epr=self.epr,
-                        roc_limit=_roc_limit,
                         reliability_profile=_rel_profile,
                     )
                     if _result == 'SUPPRESS':
-                        # Stage 1: physiological artifact — hide from UI + log
+                        # SUPPRESS: routed below the barrier — hide from UI + log
                         with self._suppression_lock:
                             self._artifact_suppressed.add(handle)
                             self._warning_handles.discard(handle)
                         self.logger.info(
-                            f'[DSP FILTER] Stage 1 artifact suppressed: '
+                            f'[ALARM FILTER] SUPPRESS: '
                             f'handle={handle!r} metric={metric_concept!r} '
                             f'concept={alert_concept!r} priority={biceps_priority!r}'
                         )
                         continue
                     elif _result == 'WARN':
-                        # Stage 2: real alarm, risk < 5.0 — show Yellow in UI
+                        # WARN: active alarm below escalation (E(t) < Θ) — show Yellow
                         with self._suppression_lock:
                             self._warning_handles.add(handle)
                             self._artifact_suppressed.discard(handle)
                         self.logger.info(
-                            f'[DSP FILTER] Stage 2 warning alarm: '
+                            f'[ALARM FILTER] WARN: '
                             f'handle={handle!r} metric={metric_concept!r} '
                             f'concept={alert_concept!r} priority={biceps_priority!r}'
                         )
                         # Do NOT continue — let alarm proceed to log/UI as Warning
                     else:
-                        # 'ESCALATE': alarm passed both stages or fail-open
+                        # 'ESCALATE': E(t) ≥ Θ_current(t) or fail-open
                         with self._suppression_lock:
                             self._artifact_suppressed.discard(handle)
                             self._warning_handles.discard(handle)
                 except Exception as e:
-                    self.logger.warning(f'[DSP FILTER] check_alert_validity raised: {e}')
+                    self.logger.warning(f'[ALARM FILTER] check_alert_validity raised: {e}')
 
-            # Priority check
-            is_priority = False
-            if is_active and aggregator is not None and self.ensemble_uuid and alert_concept:
-                try:
-                    is_priority = aggregator.check_alert_priority(self.ensemble_uuid, alert_concept)
-                except Exception as e:
-                    self.logger.warning(f'[PRIORITY CHECK] check_alert_priority raised: {e}')
-
-            prefix = '[PRIORITY CLINICAL FOCUS] ' if is_priority else ''
+            # Priority clinical-focus tagging was removed together with the legacy
+            # rule engine; log lines carry no priority prefix now.
+            prefix = ''
 
             if isinstance(raw_presence, bool):
                 self._log_condition_transition(handle, raw_presence, type_label, concept_hint, ens, dev, prefix)
@@ -919,6 +937,50 @@ class DeviceHandler(threading.Thread):
                 self.data_lock.release()
 
         return alert_concept, metric_concept, concept_hint, biceps_priority, condition_signaled
+
+    def enumerate_alert_channels(
+        self,
+    ) -> list[tuple[str, str, str, Optional[DeviceReliabilityProfile]]]:
+        """Enumerate EVERY AlertCondition channel of this device — alarming or not.
+
+        Returns a list of ``(alert_key, metric_concept, biceps_priority,
+        reliability_profile)`` tuples, one per ``AlertConditionDescriptor`` in the
+        MDIB.  SmartAlertAggregator uses this at bind time to register the FULL
+        sensor ensemble so the urgency axis normalises SDC_score / k_min over every
+        connected channel |M|, not just the ones currently in alarm.
+
+        Non-blocking: returns ``[]`` if the MDIB lock is busy or the MDIB is absent
+        (the caller degrades gracefully to the active-alarm set).
+        """
+        channels: list[tuple[str, str, str, Optional[DeviceReliabilityProfile]]] = []
+        if not self.data_lock.acquire(blocking=False):
+            return channels
+        try:
+            if not self.mdib:
+                return channels
+            cond_descs = self.mdib.descriptions.NODETYPE.get(pm.AlertConditionDescriptor, [])
+            for desc in cond_descs:
+                alert_key = str(desc.Handle)
+                # Resolve the source metric concept (drives the calibration profile).
+                metric_concept = ''
+                for src_handle in (getattr(desc, 'Source', None) or []):
+                    mc = self._handle_to_concept.get(str(src_handle))
+                    if mc:
+                        metric_concept = mc
+                        break
+                # BICEPS AlertCondition.Priority ('Hi'/'Me'/'Lo'/'None'); fail-open 'Hi'.
+                biceps_priority = 'Hi'
+                prio = getattr(desc, 'Priority', None)
+                if prio is not None and str(prio) in ('Hi', 'Me', 'Lo', 'None'):
+                    biceps_priority = str(prio)
+                # Pre-fetched reliability profile (None → neutral fail-safe w_j = 0).
+                profile = self._device_calibration.get(metric_concept) if metric_concept else None
+                channels.append((alert_key, metric_concept, biceps_priority, profile))
+        except Exception:
+            pass  # best-effort enumeration; caller falls back to the active set
+        finally:
+            self.data_lock.release()
+        return channels
 
     @staticmethod
     def _is_alert_active(raw_presence: Any) -> bool:

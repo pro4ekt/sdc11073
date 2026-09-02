@@ -7,11 +7,14 @@ import logging
 import socket
 import threading
 import time
+from typing import Dict
 from .qtDeviceHandler import QtDeviceHandler
 from .deviceHandler import DeviceHandler
+from .alarms.ensemble_topology_manager import EnsembleTopologyManager
 from .alarms.smartAlertAggregator import SmartAlertAggregator
 from PySide6.QtCore import QObject, Signal, Slot, Property
 from sdc11073.wsdiscovery import WSDiscovery
+
 _mgr_log = logging.getLogger('sdc.consumer.manager')
 def get_local_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -23,6 +26,7 @@ def get_local_ip() -> str:
     finally:
         s.close()
     return ip
+
 class SdcMyConsumer(QObject):
     deviceConnected = Signal(QtDeviceHandler, arguments=['device'])
     deviceDisconnected = Signal(str, arguments=['epr'])
@@ -35,9 +39,14 @@ class SdcMyConsumer(QObject):
         self.target_room: str | None = target_room
         self.running = True
         self.override_ip: str | None = override_ip
-        self.devices = {}
+        self.devices: Dict[str, 'DeviceHandler'] = {}
         self.lock = threading.Lock()
-        self.aggregator = SmartAlertAggregator(self, overview_model=overview_model)
+        # SLOW path: ensemble topology, sensor registry, FHIR (own mutex).
+        self.topology = EnsembleTopologyManager(self, overview_model=overview_model)
+        # FAST path: alarm processing / two-axis math core (own mutex). Holds a
+        # read-only reference to the topology manager for membership snapshots.
+        self.aggregator = SmartAlertAggregator(self, self.topology,
+                                               overview_model=overview_model)
         self.discovery = None
         self._location_rejected: set[str] = set()
         self._rejected_room_map: dict[str, str] = {}
@@ -55,6 +64,15 @@ class SdcMyConsumer(QObject):
             for epr, handler in self.devices.items():
                 _mgr_log.info(f'Stopping worker for: {epr[-12:]}')
                 handler.stop()
+        # Emit end-of-run KPI summaries (best-effort; conditional on SDC_METRICS).
+        try:
+            from app.metrics import (get_topology_metrics, get_latency_metrics,
+                                     get_arr_metrics)
+            get_topology_metrics().emit_summary()
+            get_latency_metrics().emit_summary()
+            get_arr_metrics().emit_summary()
+        except Exception:
+            pass
     def _run_discovery(self):
         asyncio.run(self._discovery_loop())
     async def _discovery_loop(self):
@@ -69,6 +87,12 @@ class SdcMyConsumer(QObject):
                 for service in services:
                     try:
                         epr = str(service.epr).strip()
+                        # Ziel 1 metric (best-effort): count every discovered provider.
+                        try:
+                            from app.metrics.topology_metrics import get_topology_metrics
+                            get_topology_metrics().record_discovered(epr)
+                        except Exception:
+                            pass
                         with self.lock:
                             is_rejected = epr in self._location_rejected
                         if is_rejected:
@@ -109,6 +133,12 @@ class SdcMyConsumer(QObject):
         if location_filtered:
             with self.lock:
                 self._location_rejected.add(epr)
+            # Ziel 1 metric (best-effort): count a LocationContext rejection.
+            try:
+                from app.metrics.topology_metrics import get_topology_metrics
+                get_topology_metrics().record_rejected(epr, reason='location')
+            except Exception:
+                pass
             _mgr_log.info(
                 f'Device {epr[-12:]} location-rejected '
                 f"(target room: '{self.target_room}'). Will not reconnect this session."
@@ -120,17 +150,27 @@ class SdcMyConsumer(QObject):
                 del self.devices[epr]
                 if getattr(handler, '_ui_connected', False):
                     self.deviceDisconnected.emit(epr)
-        # V1 — release per-ensemble aggregator state so a discharged/disconnected
-        # device does not leak _ensemble_devices / _physiological_graph / FHIR caches.
-        # Called outside self.lock (SdcMyConsumer.lock) — release_device manages the
-        # aggregator's own locks internally.
-        agg = getattr(self, 'aggregator', None)
-        if agg is not None:
+        # Release per-ensemble state so a discharged/disconnected device does not
+        # leak topology (membership / registry / FHIR) or processor (alarm /
+        # adaptive) state.  Called outside self.lock (SdcMyConsumer.lock) — each
+        # component manages its own internal locks.
+        #   1. Topology teardown returns the orphaned ensemble UUID (or None if the
+        #      ensemble still has other members).
+        #   2. If orphaned, tell the Alert Processor to discard that ensemble.
+        topo = getattr(self, 'topology', None)
+        orphaned = None
+        if topo is not None:
             try:
-                agg.release_device(epr)
+                orphaned = topo.release_device(epr)
+            except Exception as exc:
+                _mgr_log.warning(f'topology.release_device failed for {epr[-12:]}: {exc}')
+        agg = getattr(self, 'aggregator', None)
+        if agg is not None and orphaned:
+            try:
+                agg.discard_ensemble(orphaned)
             except Exception as exc:
                 _mgr_log.warning(
-                    f'aggregator.release_device failed for {epr[-12:]}: {exc}'
+                    f'aggregator.discard_ensemble failed for {orphaned[:8]}: {exc}'
                 )
         with self.lock:
             if error_occurred and self.discovery:

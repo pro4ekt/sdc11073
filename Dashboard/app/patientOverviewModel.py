@@ -59,7 +59,7 @@ class PatientOverviewModel(QObject):
         """
         Returns a snapshot list of ensemble dicts for QML Repeater.
         Each dict keys: ensembleUuid, patientName, room, deviceCount,
-                        isEscalated, riskScore
+                        isEscalated, isWarning, sdcScore
         """
         return list(self._ensembles.values())
 
@@ -72,15 +72,19 @@ class PatientOverviewModel(QObject):
         room: str,
         device_count: int,
         is_escalated: bool,
-        risk_score: float,
+        sdc_score: float,
         is_warning: bool = False,
     ) -> None:
         """
         Called from SmartAlertAggregator (worker thread).
         Enqueues an update command and triggers main-thread processing.
+
+        ``sdc_score`` ∈ [0, 1] is the model's normalised severity index
+        (SDC_score(t)); QML renders it as a percentage.  There is no [0, 10]
+        logistic risk projection anymore.
         """
         self._queue.put(('update', ensemble_uuid, patient_name, room,
-                         device_count, is_escalated, risk_score, is_warning))
+                         device_count, is_escalated, sdc_score, is_warning))
         self._pendingUpdate.emit()
 
     def removeEnsemble(self, ensemble_uuid: str) -> None:
@@ -109,7 +113,7 @@ class PatientOverviewModel(QObject):
             cmd = item[0]
 
             if cmd == 'update':
-                _, uuid, name, room, count, escalated, score, warning = item
+                _, uuid, name, room, count, escalated, sdc, warning = item
                 entry = {
                     'ensembleUuid': uuid,
                     'patientName':  name,
@@ -117,14 +121,14 @@ class PatientOverviewModel(QObject):
                     'deviceCount':  count,
                     'isEscalated':  escalated,
                     'isWarning':    warning,
-                    'riskScore':    float(score),
+                    'sdcScore':     float(sdc),
                 }
                 if self._ensembles.get(uuid) != entry:
                     self._ensembles[uuid] = entry
                     changed = True
                     _log.debug(
                         f'[PatientOverview] update: uuid={uuid[:8]} '
-                        f'name={name!r} escalated={escalated} score={score:.2f}'
+                        f'name={name!r} escalated={escalated} sdc={sdc:.2f}'
                     )
 
             elif cmd == 'remove':
