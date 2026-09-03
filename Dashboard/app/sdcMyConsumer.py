@@ -2,20 +2,29 @@
 sdcMyConsumer.py -- Manager (The "Manager") of the SDC device network (ICU mode).
 """
 from __future__ import annotations
+
 import asyncio
 import logging
 import socket
 import threading
 import time
-from typing import Dict
+from typing import Dict, List, Optional, TYPE_CHECKING
+
 from .qtDeviceHandler import QtDeviceHandler
 from .deviceHandler import DeviceHandler
 from .alarms.ensemble_topology_manager import EnsembleTopologyManager
 from .alarms.smartAlertAggregator import SmartAlertAggregator
+
 from PySide6.QtCore import QObject, Signal, Slot, Property
 from sdc11073.wsdiscovery import WSDiscovery
 
+# Import only for static type checking (avoids any runtime import cost/cycle).
+if TYPE_CHECKING:
+    from .patientOverviewModel import PatientOverviewModel
+
 _mgr_log = logging.getLogger('sdc.consumer.manager')
+
+
 def get_local_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -32,38 +41,55 @@ class SdcMyConsumer(QObject):
     deviceDisconnected = Signal(str, arguments=['epr'])
     roomChanged = Signal(str, arguments=['room'])
     availableRoomsChanged = Signal()
-    def __init__(self, target_room: str | None = None, override_ip: str | None = None,
-                 tls_mode: str = 'auto', overview_model=None):
+
+    def __init__(
+        self,
+        target_room: Optional[str] = None,
+        override_ip: Optional[str] = None,
+        tls_mode: str = 'auto',
+        overview_model: Optional['PatientOverviewModel'] = None,
+    ) -> None:
         super().__init__()
+
         self.tls_mode: str = tls_mode
-        self.target_room: str | None = target_room
-        self.running = True
-        self.override_ip: str | None = override_ip
+        self.target_room: Optional[str] = target_room
+        self.running: bool = True
+        self.override_ip: Optional[str] = override_ip
+
         self.devices: Dict[str, 'DeviceHandler'] = {}
-        self.lock = threading.Lock()
+        self.lock: threading.Lock = threading.Lock()
+
         # SLOW path: ensemble topology, sensor registry, FHIR (own mutex).
         self.topology = EnsembleTopologyManager(self, overview_model=overview_model)
         # FAST path: alarm processing / two-axis math core (own mutex). Holds a
         # read-only reference to the topology manager for membership snapshots.
         self.aggregator = SmartAlertAggregator(self, self.topology,
                                                overview_model=overview_model)
-        self.discovery = None
+
+        self.discovery: Optional[WSDiscovery] = None
         self._location_rejected: set[str] = set()
-        self._rejected_room_map: dict[str, str] = {}
+        self._rejected_room_map: Dict[str, str] = {}
         self._known_rooms: set[str] = set()
-        self._reconnect_cooldown: dict[str, float] = {}
+        self._reconnect_cooldown: Dict[str, float] = {}
         self.RECONNECT_COOLDOWN_SEC: float = 15.0
-        self.discovery_thread = threading.Thread(target=self._run_discovery, daemon=True)
-    def start(self):
+
+        self.discovery_thread: threading.Thread = threading.Thread(
+            target=self._run_discovery, daemon=True
+        )
+
+    def start(self) -> None:
         self.discovery_thread.start()
         _mgr_log.info('System started. Discovery loop active.')
-    def stop(self):
+
+    def stop(self) -> None:
         self.running = False
         _mgr_log.info('Stopping...')
+
         with self.lock:
             for epr, handler in self.devices.items():
                 _mgr_log.info(f'Stopping worker for: {epr[-12:]}')
                 handler.stop()
+
         # Emit end-of-run KPI summaries (best-effort; conditional on SDC_METRICS).
         try:
             from app.metrics import (get_topology_metrics, get_latency_metrics,
@@ -73,30 +99,38 @@ class SdcMyConsumer(QObject):
             get_arr_metrics().emit_summary()
         except Exception:
             pass
-    def _run_discovery(self):
+
+    def _run_discovery(self) -> None:
         asyncio.run(self._discovery_loop())
-    async def _discovery_loop(self):
-        self.manager_loop = asyncio.get_running_loop()
+
+    async def _discovery_loop(self) -> None:
+        self.manager_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         local_ip = self.override_ip if self.override_ip else get_local_ip()
         _mgr_log.info(f'Network scan | IP={local_ip} | TLS={self.tls_mode}')
+
         self.discovery = WSDiscovery(local_ip)
         self.discovery.start()
+
         while self.running:
             try:
                 services = await asyncio.to_thread(self.discovery.search_services, timeout=2)
+
                 for service in services:
                     try:
                         epr = str(service.epr).strip()
+
                         # Ziel 1 metric (best-effort): count every discovered provider.
                         try:
                             from app.metrics.topology_metrics import get_topology_metrics
                             get_topology_metrics().record_discovered(epr)
                         except Exception:
                             pass
+
                         with self.lock:
                             is_rejected = epr in self._location_rejected
                         if is_rejected:
                             continue
+
                         if epr in self._reconnect_cooldown:
                             elapsed = time.monotonic() - self._reconnect_cooldown[epr]
                             if elapsed < self.RECONNECT_COOLDOWN_SEC:
@@ -107,6 +141,7 @@ class SdcMyConsumer(QObject):
                             else:
                                 del self._reconnect_cooldown[epr]
                                 _mgr_log.info(f'Cooldown expired for {epr[-12:]}. Reconnecting...')
+
                         with self.lock:
                             if epr in self.devices and not self.devices[epr].is_alive():
                                 _mgr_log.debug(f'Dead worker for {epr[-12:]}. Cleaning up.')
@@ -120,16 +155,22 @@ class SdcMyConsumer(QObject):
                                 )
                                 self.devices[epr] = device
                                 device.start()
+
                     except Exception as loop_err:
                         _mgr_log.error(f'Error processing discovered service: {loop_err}')
+
                 await asyncio.sleep(2)
+
             except Exception as e:
                 _mgr_log.error(f'Discovery loop error: {e}')
                 await asyncio.sleep(5)
+
         self.discovery.stop()
+
     def remove_device(self, epr: str, error_occurred: bool = False,
-                      location_filtered: bool = False):
+                      location_filtered: bool = False) -> None:
         epr = str(epr).strip()
+
         if location_filtered:
             with self.lock:
                 self._location_rejected.add(epr)
@@ -188,23 +229,29 @@ class SdcMyConsumer(QObject):
                         _mgr_log.debug(f'WSDiscovery cache cleared for {epr[-12:]}.')
                 except Exception as e:
                     _mgr_log.warning(f'Error clearing WSDiscovery cache for {epr[-12:]}: {e}')
+
     def register_device_room(self, epr: str, room: str) -> None:
         if not room:
             return
+
         if room not in self._known_rooms:
             self._known_rooms.add(room)
             _mgr_log.info(f'New room: {room!r}. Known rooms: {sorted(self._known_rooms)}')
             self.availableRoomsChanged.emit()
+
     @Slot(str)
     def switchRoom(self, new_room: str) -> None:
-        effective_room: str | None = new_room if new_room else None
+        effective_room: Optional[str] = new_room if new_room else None
         if effective_room == self.target_room:
             return
+
         old_room = self.target_room
         _mgr_log.info(f'switchRoom: {old_room!r} -> {effective_room!r}')
         self.target_room = effective_room
+
         with self.lock:
             handlers_snapshot = list(self.devices.values())
+
         if effective_room is not None:
             stopped = 0
             for handler in handlers_snapshot:
@@ -217,20 +264,25 @@ class SdcMyConsumer(QObject):
                     stopped += 1
             if stopped:
                 _mgr_log.info(f'switchRoom: stopping {stopped} device(s) from other rooms.')
+
         if effective_room is not None:
             to_unban = [e for e, r in list(self._rejected_room_map.items()) if r == effective_room]
         else:
             to_unban = list(self._rejected_room_map.keys())
+
         for epr in to_unban:
             self._location_rejected.discard(epr)
             self._rejected_room_map.pop(epr, None)
             self._reconnect_cooldown.pop(epr, None)
         if to_unban:
             _mgr_log.info(f'switchRoom: un-banned {len(to_unban)} device(s) for {effective_room!r}.')
+
         self.roomChanged.emit(new_room)
+
     @Property(str, notify=roomChanged)
     def currentRoom(self) -> str:
         return self.target_room if self.target_room else ''
+
     @Property(list, notify=availableRoomsChanged)
-    def availableRooms(self) -> list:
+    def availableRooms(self) -> List[str]:
         return sorted(self._known_rooms)

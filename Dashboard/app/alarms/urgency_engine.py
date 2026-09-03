@@ -151,3 +151,43 @@ class UrgencyEngine:
         k = self.k_min(m_size, score)
         theta = k * w_avg - context_log_odds
         return UrgencyResult(theta_target=theta, k_min=k, sdc_score=score)
+
+    # ── Time-in-Alarm decay multiplier ────────────────────────────────────────
+
+    @staticmethod
+    def decay_multiplier(
+        sdc_score: float,
+        active_alarm_duration: float,
+        horizon_T: float,
+    ) -> float:
+        """Return the Time-in-Alarm decay multiplier δ(t) ∈ (0, 1].
+
+        Rationale (SPOF fail-safe):
+            A persistent alarm that cannot break the hard topological quorum
+            (k_min ≥ 2) — e.g. a single continuously-firing channel — would never
+            escalate under the static threshold.  To honour patient safety, the
+            target threshold is *exponentially eroded* the longer evidence persists
+            without escalation, so a genuinely sustained condition eventually
+            crosses the barrier.
+
+        Canonical mathematics:
+            λ(t) = 1/T − ρ(t) = SDC_score(t) / T        (decay rate, symmetric to ρ)
+            δ(t) = exp( −λ(t) · max(0, τ − T) )         (τ = active_alarm_duration)
+
+        Properties:
+            * A grace period of one horizon T: while τ ≤ T, ``max(0, τ−T) = 0`` ⇒
+              δ = 1.0 (no erosion) — short/transient alarms are unaffected.
+            * SDC_score = 0 ⇒ λ = 0 ⇒ δ = 1.0 — no erosion without any threat.
+            * Higher severity ⇒ larger λ ⇒ faster erosion once past the grace period.
+            * δ is applied as ``Θ_target · δ`` BEFORE the (untouched) hysteresis.
+
+        This method is intentionally STATELESS: the duration τ is owned and tracked
+        by the per-ensemble ``AdaptiveAlarmAggregator``; the engine only maps the
+        inputs to the multiplier.
+        """
+        effective_t = max(horizon_T, 1e-6)
+        # λ(t) = SDC/T = 1/T − ρ(t); clamp SDC into [0,1] for numerical safety.
+        lambda_rate = max(0.0, min(1.0, sdc_score)) / effective_t
+        time_over_grace = max(0.0, active_alarm_duration - effective_t)
+        return math.exp(-lambda_rate * time_over_grace)
+

@@ -16,6 +16,8 @@ Per-tick pipeline (all under ``_adaptive_lock``)
     1. record activations a_j(t) and push a ZOH sample into the FIR buffers;
     2. E(t) = Σ w_j·s_j(t),  w̄ = mean w_j,  a_raw = {a_j(t)}   (EvidenceAccumulator);
     3. Θ_target, k_min, SDC_score  from priorities P_j + a_raw    (UrgencyEngine);
+    3b. Time-in-Alarm penalty: τ tracking + δ(t) = exp(−λ·max(0,τ−T)),
+        Θ_target ← Θ_target · δ(t)  (SPOF fail-safe; hysteresis stays untouched);
     4. Θ_current = IIR(Θ_target, SDC_score, Δt)                   (HysteresisFilter);
     5. verdict + full telemetry → TickResult.
 
@@ -95,6 +97,14 @@ class AdaptiveAlarmAggregator:
         # Baseline shift ln(O_0) — the log-odds when no FHIR danger codes apply.
         self._ctx_log_odds: float = self._context.baseline_log_odds
 
+        # ── Time-in-Alarm penalty state (SPOF fail-safe) ────────────────────────
+        # τ — seconds evidence has persisted WITHOUT escalation. Drives the decay
+        # multiplier δ(t) that erodes Θ_target once τ exceeds the grace horizon T.
+        self.active_alarm_duration: float = 0.0
+        # Escalation verdict of the PREVIOUS tick — used to decide whether to keep
+        # accumulating τ (avoids the penalty↔escalation circular dependency).
+        self._last_escalated: bool = False
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     @property
@@ -153,20 +163,40 @@ class AdaptiveAlarmAggregator:
             w_avg = self._evidence.w_avg()
             a_raw = self._evidence.raw_activations()
 
-            # (3) Urgency axis: Θ_target, k_min, SDC_score.
-            theta_target, k_min, sdc = self._urgency.theta_target(
+            # (3) Urgency axis: Θ_target (raw), k_min, SDC_score.
+            theta_raw, k_min, sdc = self._urgency.theta_target(
                 m_size, self._priorities, a_raw, w_avg, self._ctx_log_odds
             )
 
-            # (4) Hysteresis kinetics: Θ_current(t).
+            # (3b) Time-in-Alarm penalty (SPOF fail-safe).
+            # Track τ using the PREVIOUS tick's escalation state to avoid a
+            # circular dependency (δ feeds Θ feeds escalation):
+            #   * E(t) = 0            → reset τ to 0 (no active evidence);
+            #   * E(t) > 0, not esc.  → accumulate τ += Δt;
+            #   * E(t) > 0, escalated → hold τ (already escalated → freeze counter).
+            if e_t <= 0.0:
+                self.active_alarm_duration = 0.0
+            elif not self._last_escalated:
+                self.active_alarm_duration += max(0.0, dt_step)
+            # else: escalated → hold τ unchanged.
+
+            delta_penalty = self._urgency.decay_multiplier(
+                sdc, self.active_alarm_duration, self._config.horizon_T
+            )
+            theta_target = theta_raw * delta_penalty
+
+            # (4) Hysteresis kinetics: Θ_current(t) — filter itself is UNTOUCHED.
             theta_current = self._hysteresis.step(theta_target, sdc, dt_step)
             rho = self._hysteresis.last_rho
 
             # (5) Escalation condition: E(t) ≥ Θ_current(t).
             escalate = e_t >= theta_current
+            self._last_escalated = escalate
+            has_active = e_t > 0.0
 
             return TickResult(
                 is_escalated=escalate,
+                has_active_alarms=has_active,
                 current_theta=theta_current,
                 evidence=e_t,
                 active_delta_t=dt_step,
@@ -174,6 +204,8 @@ class AdaptiveAlarmAggregator:
                 k_min=k_min,
                 theta_target=theta_target,
                 rho_decay=rho,
+                delta_penalty=delta_penalty,
+                active_alarm_duration=self.active_alarm_duration,
             )
 
     def update_specs(self, specs: Dict[str, SensorSpec]) -> None:
@@ -194,6 +226,37 @@ class AdaptiveAlarmAggregator:
             self._evidence.update_specs(specs)
             # |M| changed → Θ scale changed → cold-restart the hysteresis cleanly.
             self._hysteresis.reset()
+            # Composition changed → restart the Time-in-Alarm counter so a new
+            # channel set does not inherit a stale erosion state.
+            self.active_alarm_duration = 0.0
+            self._last_escalated = False
+
+    def reset(self) -> None:
+        """Cold-restart the filter's DYNAMIC state, preserving composition + context.
+
+        Flushes the confidence-axis ZOH buffers, the hysteresis memory, the last
+        activation vector and the Time-in-Alarm counter — WITHOUT changing the
+        sensor set (specs / priorities) or the clinical context.  Distinct from
+        ``update_specs`` (which rebuilds |M|).
+
+        Called by SmartAlertAggregator the moment an ensemble fully resolves
+        (TTL cache empty / escalation latch cleared), so a re-fire arriving inside
+        the discard grace window starts genuinely cold: without this, the stale
+        ``True`` samples left in the FIR buffers would be back-filled by the ZOH
+        integral across the silent gap and trigger a FALSE re-escalation.
+
+        Thread-safety: takes this instance's ``_adaptive_lock`` (level C).  The
+        caller holds SmartAlertAggregator._adaptive_lock (the same B → C order as
+        the normal tick path), never SmartAlertAggregator.lock (A/B) — so the lock
+        ordering stays acyclic.
+        """
+        with self._adaptive_lock:
+            self._evidence.reset()
+            self._hysteresis.reset()
+            for sid in self._sensor_states:
+                self._sensor_states[sid] = False
+            self.active_alarm_duration = 0.0
+            self._last_escalated = False
 
     def set_clinical_context(self, ctx_log_odds: float) -> None:
         """Set the additive clinical shift Context_Log_Odds used in Θ_target.

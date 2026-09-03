@@ -59,7 +59,7 @@ class PatientOverviewModel(QObject):
         """
         Returns a snapshot list of ensemble dicts for QML Repeater.
         Each dict keys: ensembleUuid, patientName, room, deviceCount,
-                        isEscalated, isWarning, sdcScore
+                        isEscalated, hasActiveAlarms, sdcScore
         """
         return list(self._ensembles.values())
 
@@ -73,18 +73,19 @@ class PatientOverviewModel(QObject):
         device_count: int,
         is_escalated: bool,
         sdc_score: float,
-        is_warning: bool = False,
+        has_active_alarms: bool = False,
     ) -> None:
         """
-        Called from SmartAlertAggregator (worker thread).
+        Called from SmartAlertAggregator / EnsembleTopologyManager (worker thread).
         Enqueues an update command and triggers main-thread processing.
 
-        ``sdc_score`` ∈ [0, 1] is the model's normalised severity index
-        (SDC_score(t)); QML renders it as a percentage.  There is no [0, 10]
-        logistic risk projection anymore.
+        Two-tier status (fail-safe): ``is_escalated`` → Red (central escalation);
+        else ``has_active_alarms`` → Yellow (local bedside notification — ANY active
+        signal); else Blue (idle).  ``sdc_score`` ∈ [0, 1] is the model's normalised
+        severity index (SDC_score(t)); QML renders it as a percentage.
         """
         self._queue.put(('update', ensemble_uuid, patient_name, room,
-                         device_count, is_escalated, sdc_score, is_warning))
+                         device_count, is_escalated, sdc_score, has_active_alarms))
         self._pendingUpdate.emit()
 
     def removeEnsemble(self, ensemble_uuid: str) -> None:
@@ -113,14 +114,14 @@ class PatientOverviewModel(QObject):
             cmd = item[0]
 
             if cmd == 'update':
-                _, uuid, name, room, count, escalated, sdc, warning = item
+                _, uuid, name, room, count, escalated, sdc, has_active = item
                 entry = {
                     'ensembleUuid': uuid,
                     'patientName':  name,
                     'room':         room,
                     'deviceCount':  count,
                     'isEscalated':  escalated,
-                    'isWarning':    warning,
+                    'hasActiveAlarms': has_active,
                     'sdcScore':     float(sdc),
                 }
                 if self._ensembles.get(uuid) != entry:

@@ -96,14 +96,17 @@ class AlarmDecision:
     """
     escalate:             bool    # True ⇔ E(t) ≥ Θ_current(t) → forward to UI/log
     contributing_devices: int     # Number of ensemble devices used in the tick
+    # ── Two-tier status ───────────────────────────────────────────────────────
+    has_active_alarms:    bool = False  # True ⇔ E(t) > 0 → local bedside (Yellow)
     # ── Two-axis telemetry (filter internals) ─────────────────────────────────
     evidence:             float = 0.0   # E(t) = Σ w_j · s_j(t) — confidence axis (LHS)
     theta_current:        float = 0.0   # Θ_current(t) — hysteresis-smoothed barrier (RHS)
     delta_t:              float = 0.0   # Δt (s) used by the hysteresis kinetics
     sdc_score:            float = 0.0   # SDC_score(t) ∈ [0,1] — normalised severity
     k_min:                int   = 0     # k_min(t) ∈ [2,|M|] — dynamic consensus quorum
-    theta_target:         float = 0.0   # Θ_target(t) — raw threshold before IIR smoothing
+    theta_target:         float = 0.0   # Θ_target(t) — threshold after δ(t), before IIR
     rho_decay:            float = 0.0   # ρ(t) = (1-SDC)/T — hysteresis relaxation rate
+    delta_penalty:        float = 1.0   # δ(t) ∈ (0,1] — Time-in-Alarm decay multiplier
 
 
 # ── Facade ────────────────────────────────────────────────────────────────────
@@ -161,16 +164,20 @@ class AlarmCoordinator:
         routing = 'ESCALATE' if result.is_escalated else 'SUPPRESS'
         self._logger.info(
             f'Tick result: routing={routing} escalate={result.is_escalated} '
+            f'has_active={result.has_active_alarms} '
             f'evidence={result.evidence:.3f} theta_current={result.current_theta:.3f} '
             f'margin={result.evidence - result.current_theta:+.3f} '
             f'theta_target={result.theta_target:.3f} sdc_score={result.sdc_score:.3f} '
             f'k_min={result.k_min} rho_decay={result.rho_decay:.4f} '
+            f'delta_penalty={result.delta_penalty:.4f} '
+            f'active_dur={result.active_alarm_duration:.1f}s '
             f'delta_t={result.active_delta_t:.1f}s'
         )
 
         return AlarmDecision(
             escalate=result.is_escalated,
             contributing_devices=contributing_devices,
+            has_active_alarms=result.has_active_alarms,
             evidence=result.evidence,
             theta_current=result.current_theta,
             delta_t=result.active_delta_t,
@@ -178,5 +185,6 @@ class AlarmCoordinator:
             k_min=result.k_min,
             theta_target=result.theta_target,
             rho_decay=result.rho_decay,
+            delta_penalty=result.delta_penalty,
         )
 

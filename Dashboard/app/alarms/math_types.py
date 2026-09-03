@@ -155,7 +155,10 @@ class TickResult:
     """Immutable verdict + telemetry produced by ``AdaptiveAlarmAggregator.tick()``.
 
     Core decision:
-        is_escalated:      True ⇔ E(t) ≥ Θ_current(t)  (escalation condition).
+        is_escalated:      True ⇔ E(t) ≥ Θ_current(t)  (central escalation → Red).
+        has_active_alarms: True ⇔ E(t) > 0  (any accumulated evidence → local
+                           bedside notification / Yellow). Escalation is a strict
+                           superset: is_escalated ⇒ has_active_alarms.
         current_theta:     Θ_current(t) — the hysteresis-smoothed applied boundary.
         evidence:          E(t) = Σ w_j · s_j(t) — accumulated weighted evidence [nats].
         active_delta_t:    Δt [s] used by the hysteresis kinetics on this tick.
@@ -163,11 +166,17 @@ class TickResult:
     Extended telemetry (exported for dissertation analysis / dashboards):
         sdc_score:   SDC_score(t) ∈ [0, 1] — normalised ensemble severity index.
         k_min:       k_min(t) ∈ [2, |M|] — dynamic VMD consensus quorum.
-        theta_target: Θ_target(t) — raw target threshold *before* IIR smoothing.
+        theta_target: Θ_target(t) — target threshold AFTER the Time-in-Alarm decay
+                     multiplier δ(t), but BEFORE IIR hysteresis smoothing.
         rho_decay:   ρ(t) = (1 - SDC_score)/T [s⁻¹] — hysteresis relaxation rate.
+        delta_penalty: δ(t) = exp(−λ(t)·max(0, τ−T)) ∈ (0, 1] — Time-in-Alarm decay
+                     multiplier applied to the raw target threshold (1.0 = none).
+        active_alarm_duration: τ [s] — how long evidence has been present WITHOUT
+                     escalation (drives δ(t); resets to 0 when E(t) = 0).
     """
 
     is_escalated: bool = False
+    has_active_alarms: bool = False
     current_theta: float = 0.0
     evidence: float = 0.0
     active_delta_t: float = 0.0
@@ -176,4 +185,7 @@ class TickResult:
     k_min: int = 0
     theta_target: float = 0.0
     rho_decay: float = 0.0
+    # ── Time-in-Alarm penalty telemetry ───────────────────────────────────────
+    delta_penalty: float = 1.0
+    active_alarm_duration: float = 0.0
 

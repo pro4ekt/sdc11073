@@ -293,7 +293,7 @@ class EnsembleTopologyManager:
         room: str,
         is_escalated: bool,
         sdc_score: float,
-        is_warning: bool = False,
+        has_active_alarms: bool = False,
     ) -> None:
         """Push an ensemble summary to PatientOverviewModel (thread-safe). No-op
         when ``_overview_model`` is None."""
@@ -303,7 +303,7 @@ class EnsembleTopologyManager:
         try:
             self._overview_model.updateEnsemble(
                 ensemble_uuid, patient_id, room, device_count,
-                is_escalated, sdc_score, is_warning,
+                is_escalated, sdc_score, has_active_alarms,
             )
         except Exception as exc:
             self.logger.debug(f'[PatientOverview] updateEnsemble failed: {exc}')
@@ -540,7 +540,7 @@ class EnsembleTopologyManager:
             )
             # Notify PatientOverview: new/updated ensemble, not yet escalated.
             self._notify_overview(ensemble_uuid, patient_id, room or '',
-                                  is_escalated=False, sdc_score=0.0, is_warning=False)
+                                  is_escalated=False, sdc_score=0.0, has_active_alarms=False)
         else:
             device_handler.ensemble_uuid = None
             with self.lock:

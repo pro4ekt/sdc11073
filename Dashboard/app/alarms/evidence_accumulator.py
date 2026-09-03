@@ -73,6 +73,20 @@ class EvidenceAccumulator:
                 self._buffers.pop(sid, None)
                 self._last_raw.pop(sid, None)
 
+    def reset(self) -> None:
+        """Flush ALL ZOH history, keeping the current sensor composition.
+
+        Clears every channel's sample buffer and resets its last activation to
+        False WITHOUT touching ``_specs`` (so |M| and w_j are preserved).  Used
+        when an ensemble fully resolves (TTL cache empty / escalation latch
+        cleared): the stale ``True`` samples must not survive a silent gap, or a
+        later re-fire would let the ZOH integral back-fill them across the whole
+        window and cause a false re-escalation.
+        """
+        for sid in self._specs:
+            self._buffers[sid] = deque()
+            self._last_raw[sid] = False
+
     # ── Ingestion ─────────────────────────────────────────────────────────────
 
     def push(self, activations: Dict[str, bool], t_now: float) -> None:

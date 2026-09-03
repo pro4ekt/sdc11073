@@ -89,13 +89,32 @@ class AlarmManager:
             return
 
         # Phase 2: network call (no lock)
+        # Ziel 2 metric (best-effort): time the SetAlertState transaction (RTT_op).
+        _lm = None
+        _t0 = None
         try:
+            try:
+                from app.metrics.latency_metrics import get_latency_metrics
+                _lm = get_latency_metrics()
+                _t0 = _lm.ack_start(alert_signal_handle)
+            except Exception:
+                _lm = None
             future = handler.consumer.set_service_client.set_alert_state(
                 operation_handle, proposed_state
             )
             future.result(timeout=5)
+            if _lm is not None and _t0 is not None:
+                try:
+                    _lm.ack_stop(alert_signal_handle, _t0, ok=True)
+                except Exception:
+                    pass
             handler.logger.info(f"Alarm '{alert_signal_handle}' acknowledged successfully.")
         except Exception as e:
+            if _lm is not None and _t0 is not None:
+                try:
+                    _lm.ack_stop(alert_signal_handle, _t0, ok=False)
+                except Exception:
+                    pass
             handler.logger.error(f'Failed to acknowledge alarm: {e}')
 
     # =========================================================================
