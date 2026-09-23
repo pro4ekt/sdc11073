@@ -202,7 +202,7 @@ Item {
                         color: "transparent"
 
                         gradient: modelData.isEscalated ? gradEscalated
-                                : modelData.isWarning   ? gradWarning
+                                : modelData.hasActiveAlarms   ? gradWarning
                                 :                         gradNormal
 
                         Gradient {
@@ -228,9 +228,9 @@ Item {
                             radius: parent.radius
                             color: "transparent"
                             border.color: modelData.isEscalated ? "#ff4444"
-                                        : modelData.isWarning   ? "#ebd234"
+                                        : modelData.hasActiveAlarms   ? "#ebd234"
                                         :                         "transparent"
-                            border.width: (modelData.isEscalated || modelData.isWarning) ? 3 : 0
+                            border.width: (modelData.isEscalated || modelData.hasActiveAlarms) ? 3 : 0
 
                             // Blink ONLY when escalated (Red). Warning is static.
                             SequentialAnimation on opacity {
@@ -257,7 +257,7 @@ Item {
                             anchors.right: parent.right
                             anchors.rightMargin: 18
                             color: modelData.isEscalated ? "#af3c3c"
-                                 : modelData.isWarning   ? "#ebd234"
+                                 : modelData.hasActiveAlarms   ? "#ebd234"
                                  :                         "#4caf50"
 
                             // Pulse ONLY when escalated (Red). Warning is static.
@@ -303,7 +303,7 @@ Item {
                                 }
 
                                 Text {
-                                    visible: modelData.isEscalated || modelData.isWarning
+                                    visible: modelData.isEscalated || modelData.hasActiveAlarms
                                     text: "Severity: " + Math.round(modelData.sdcScore * 100) + "%"
                                     color: modelData.isEscalated ? "#ffaaaa" : "#ebd234"
                                     font.pixelSize: 17
@@ -313,7 +313,7 @@ Item {
                             }
 
                             Text {
-                                visible: modelData.isEscalated || modelData.isWarning
+                                visible: modelData.isEscalated || modelData.hasActiveAlarms
                                 text: modelData.isEscalated
                                       ? "⚠ ESCALATED — Clinical alarm confirmed"
                                       : "⚠ WARNING — Risk accumulating"

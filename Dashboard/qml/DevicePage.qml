@@ -182,10 +182,12 @@ Item {
                 layer.enabled: true
             }
 
-            // Yellow tint overlay — visible when Ack (from backend) OR locally silenced (timeout=1)
+            // Tint overlay — Ack (backend-acknowledged) renders NEUTRAL per
+            // IEC 60601-1-8 (yellow is reserved for active WARN); a locally
+            // silenced but still-active alarm (timeout=1) keeps the yellow tint.
             Rectangle {
                 anchors.fill: parent
-                color: "#FFD700"
+                color: (alarm === "Ack") ? "#FFFFFF" : "#FFD700"
                 opacity: 0.38
                 visible: alarm === "Ack" || ((alarm === "On" || alarm === "Warning") && timeout === 1)
             }

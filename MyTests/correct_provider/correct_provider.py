@@ -189,104 +189,45 @@ def _spo2_alarm_off(provider) -> None:
 
 # ── Simulation loop ───────────────────────────────────────────────────────────
 
-async def main(provider) -> None:  # noqa: C901
-    elapsed   = 0
-    hr_alarm  = False
-    spo2_alarm = False
+# ── Simulation loop (UI ACK TEST) ────────────────────────────────────────────
+
+async def main(provider) -> None:
+    elapsed = 0
     SEP = '─' * 74
 
     print(f'\n{SEP}')
-    print('  IHE-PCD ACM  AlarmCoordinator Test Harness  —  45-second cycle')
-    print(f'  Device: Acme Medical / PatientMonitor Pro 3000')
+    print('  UI ACK TEST HARNESS — Permanent Alarm Mode')
+    print('  Device: Acme Medical / PatientMonitor Pro 3000')
     print(f'{SEP}')
-    print('  Phase 0  t= 0- 4  BASELINE          HR=80  SpO2=98%  (fill buffer)')
-    print('  Phase 1  t= 5- 9  ARTIFACT          HR jumps 80→150 (RoC=70>>10)')
-    print('                                       ✗ Stage 1 MUST suppress al_hr_hi')
-    print('  Phase 2  t=15-24  WEAK ALARM         SpO2 slow drop to 88%')
-    print('                                       ✗ Stage 2 MUST suppress al_spo2_lo (risk≈4.83<5.0)')
-    print('  Phase 3  t=30-39  FUSION CRISIS      HR→130 + SpO2→85% simultaneously')
-    print('                                       ✗ Stage 2 MUST suppress  al_spo2_lo (risk≈4.83<5.0)')
-    print('                                       ✓ Stage 2 MUST escalate  al_hr_hi   (risk≈9.17≥5.0)')
+    print('  1. Setting HR to 150 bpm.')
+    print('  2. Firing al_hr_hi (Priority=Hi) PERMANENTLY.')
+    print('  3. Waiting for Consumer to send ACK operation via UI...')
     print(f'{SEP}\n')
 
+    # Включаем тревогу один раз при старте и больше не трогаем
+    _set_vitals(provider, Decimal('150'), Decimal('98'))
+    _hr_alarm_on(provider)
+
     while True:
-        t = elapsed % CYCLE_SEC
-        hr_val, spo2_val = _compute_vitals(t)
+        # Читаем текущее состояние Alert Signal прямо из MDIB Провайдера.
+        # Если UI работает правильно, после нажатия кнопки "Ack",
+        # Consumer пришлет SDC-операцию, и этот статус изменится.
+        try:
+            signal_state = provider.mdib.states.descriptor_handle.get_one('al_signal_hr_hi')
+            presence_status = signal_state.Presence
+        except Exception as e:
+            presence_status = f"ERROR: {e}"
 
-        # ── Step 1: Send metric updates BEFORE alarm state changes ────────────
-        # SDC pub/sub: consumer receives EpisodicMetricReport first, then
-        # EpisodicAlertReport — ensuring the physiological graph is current
-        # before AlarmCoordinator.evaluate() runs.
-        _set_vitals(provider, Decimal(str(hr_val)), Decimal(str(spo2_val)))
+        # Визуальный маркер для удобства чтения консоли
+        if presence_status == AlertSignalPresence.ACK:
+            marker = "🟡 ACKNOWLEDGED"
+        elif presence_status == AlertSignalPresence.ON:
+            marker = "🔴 ALARM ON"
+        else:
+            marker = f"⚪ {presence_status}"
 
-        # ── Step 2: Alarm state transitions (boundary ticks only) ─────────────
-
-        # Phase 1 — Artifact: instantaneous HR spike
-        if t == ARTIFACT_START and not hr_alarm:
-            hr_alarm = True
-            _hr_alarm_on(provider)
-            print(f'\n{SEP}')
-            print(f'[t={elapsed:>3}s] 🧪 PHASE 1 — HARDWARE ARTIFACT TEST')
-            print(f'         HR:  80 → 150 bpm  (RoC = 70 bpm/s  >>  limit = 10 bpm/s)')
-            print(f'         al_hr_hi (Priority=Hi) fired.')
-            print(f'         ✗ Consumer Stage 1 MUST log: [Stage1] ARTIFACT (RoC)')
-            print(f'         ✗ Consumer must NOT escalate al_hr_hi')
-            print(f'{SEP}\n')
-
-        elif t == ARTIFACT_END and hr_alarm:
-            hr_alarm = False
-            _hr_alarm_off(provider)
-            print(f'[t={elapsed:>3}s] Phase 1 end — HR restored to 80 bpm, al_hr_hi OFF.')
-
-        # Phase 2 — Weak alarm: SpO2 slow drop
-        elif t == SPO2_ALARM_ON and not spo2_alarm:
-            spo2_alarm = True
-            _spo2_alarm_on(provider)
-            print(f'\n{SEP}')
-            print(f'[t={elapsed:>3}s] 🧪 PHASE 2 — WEAK ALARM / LOW RISK TEST')
-            print(f'         SpO2 = {spo2_val}%  (fell 2%/s for 5s,  RoC=2  <  limit=3)')
-            print(f'         al_spo2_lo (Priority=Me) fired.')
-            print(f'         ✗ Consumer Stage 2 MUST suppress:')
-            print(f'           risk = Posterior_P(≈0.804) × P_total(6.0) ≈ 4.83  <  5.0')
-            print(f'{SEP}\n')
-
-        elif t == SPO2_RESTORE and spo2_alarm:
-            spo2_alarm = False
-            _spo2_alarm_off(provider)
-            print(f'[t={elapsed:>3}s] Phase 2 end — SpO2 restored to 98%, al_spo2_lo OFF.')
-
-        # Phase 3 — Sensor Fusion Crisis: both alarms fire together
-        elif t == FUSION_ALARM_ON and not hr_alarm and not spo2_alarm:
-            hr_alarm   = True
-            spo2_alarm = True
-            _hr_alarm_on(provider)    # al_hr_hi  (Hi)  — Stage 2 ESCALATES
-            _spo2_alarm_on(provider)  # al_spo2_lo(Me)  — Stage 2 SUPPRESSES
-            print(f'\n{SEP}')
-            print(f'[t={elapsed:>3}s] 🧪 PHASE 3 — SENSOR FUSION CRISIS')
-            print(f'         HR = {hr_val} bpm   (rose +10/s for 5s,  RoC=10  NOT>10)')
-            print(f'         SpO2 = {spo2_val}%  (fell ~2.6%/s for 5s,  RoC=3  NOT>3)')
-            print(f'         Both al_hr_hi (Hi) and al_spo2_lo (Me) fired simultaneously.')
-            print(f'         ✗ Consumer Stage 2 MUST suppress  al_spo2_lo:')
-            print(f'           risk = 0.804 × 6.0 = 4.83  <  5.0')
-            print(f'         ✓ Consumer Stage 2 MUST escalate  al_hr_hi:')
-            print(f'           risk = 0.917 × 10.0 = 9.17  ≥  5.0')
-            print(f'{SEP}\n')
-
-        elif t == FUSION_RESTORE and (hr_alarm or spo2_alarm):
-            hr_alarm   = False
-            spo2_alarm = False
-            _hr_alarm_off(provider)
-            _spo2_alarm_off(provider)
-            print(f'[t={elapsed:>3}s] Phase 3 end — HR=80, SpO2=98%, all alarms OFF.\n')
-
-        # ── Step 3: Per-second status line ────────────────────────────────────
-        alarms: list[str] = []
-        if hr_alarm:   alarms.append('HR🔴')
-        if spo2_alarm: alarms.append('SpO2🔴')
-        alarm_str = ','.join(alarms) if alarms else '🟢 none'
         print(
-            f'[t={elapsed:>3}s | {_phase_name(t)} | alarms={alarm_str:<12}]'
-            f'  HR={hr_val:>3} bpm  SpO2={spo2_val:>2}%',
+            f'[t={elapsed:>3}s] HR=150 bpm | State: {marker}',
             flush=True,
         )
 

@@ -110,20 +110,9 @@
                 <!-- ═══════════════════════════════════════════════════════
                      VMD 3 — Vital Signs Monitor
                      IHE-PCD ACM AlarmCoordinator test target
-
-                     al_hr_hi  (Priority="Hi")  Tachycardia
-                       Source: hr_metric  LOINC 8867-4  RoC limit = 10 bpm/s
-                       Acme profile: sensitivity=0.88, FAR=0.08  LR+=11.0
-                       Stage 2: Posterior_P≈0.917  risk=9.17  ≥5.0 → ESCALATE
-
-                     al_spo2_lo (Priority="Me")  Hypoxia
-                       Source: spo2_metric LOINC 59408-5  RoC limit = 3 %/s
-                       Acme profile: sensitivity=0.74, FAR=0.18  LR+≈4.11
-                       Stage 2: Posterior_P≈0.804  risk=4.83  <5.0 → SUPPRESS
                 ════════════════════════════════════════════════════════════ -->
                 <pm:Vmd Handle="vmd_vitals">
                     <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="al_system_vitals">
-                        <!-- Conditions MUST precede Signals (BICEPS schema order) -->
                         <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor"
                                            Handle="al_hr_hi" Kind="Phy" Priority="Hi">
                             <pm:Type Code="MDC_ALERT_HR_HIGH" CodingSystem="urn:oid:1.2.3.4.5">
@@ -155,6 +144,19 @@
                             </pm:Type>
                         </pm:AlertSignal>
                     </pm:AlertSystem>
+
+                    <!-- ДОБАВЛЕН БЛОК SCO ДЛЯ УПРАВЛЕНИЯ ТРЕВОГАМИ VITALS -->
+                    <pm:Sco Handle="sco_vitals">
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="hr_alert_control" OperationTarget="al_signal_hr_hi" Retriggerable="true">
+                            <pm:ModifiableData>Presence</pm:ModifiableData>
+                            <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                        </pm:Operation>
+                        <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="spo2_alert_control" OperationTarget="al_signal_spo2_lo" Retriggerable="true">
+                            <pm:ModifiableData>Presence</pm:ModifiableData>
+                            <pm:ModifiableData>ActivationState</pm:ModifiableData>
+                        </pm:Operation>
+                    </pm:Sco>
+
                     <pm:Channel Handle="vitals_channel">
                         <pm:Metric xsi:type="pm:NumericMetricDescriptor"
                                    Handle="hr_metric"
@@ -256,6 +258,10 @@
             <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="humidity_alert_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="temperature_threshold_control" OperatingMode="En" />
             <pm:State xsi:type="pm:SetMetricStateOperationState" DescriptorHandle="humidity_threshold_control" OperatingMode="En" />
+
+            <!-- ДОБАВЛЕНЫ СТЕЙТЫ ОПЕРАЦИЙ ДЛЯ VITALS -->
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="hr_alert_control" OperatingMode="En" />
+            <pm:State xsi:type="pm:SetAlertStateOperationState" DescriptorHandle="spo2_alert_control" OperatingMode="En" />
 
             <!-- Metric states -->
             <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="device_id">

@@ -403,9 +403,10 @@ Backs `PatientOverview.qml`. Worker threads call `updateEnsemble()` /
 `Signal`, where `_applyPending()` rebuilds the model and emits `patientsChanged`.
 
 Each ensemble dict exposes: `ensembleUuid, patientName, room, deviceCount,
-isEscalated, isWarning, sdcScore`. `sdcScore ∈ [0,1]` (the model's `SDC_score(t)`)
-is rendered by QML as a **percentage** intensity; the tri-state colour is driven by
-the orthogonal `isEscalated` / `isWarning` booleans.
+isEscalated, hasActiveAlarms, sdcScore`. `sdcScore ∈ [0,1]` (the model's
+`SDC_score(t)`) is rendered by QML as a **percentage** intensity; the tri-state
+colour is driven by the orthogonal `isEscalated` / `hasActiveAlarms` booleans
+(Red = central escalation, Yellow = any local bedside signal, Blue = idle).
 
 ---
 
@@ -506,7 +507,7 @@ that is re-raised to `On`.
 | `DevicePage.qml` | Single-device detail view + silence button |
 | `MetricPage.qml` | Full metric list for one device |
 | `OperationPage.qml` | Operations list + SDC operation invocation |
-| `PatientOverview.qml` | Per-patient ensemble cards. Tri-state colour from `isEscalated` / `isWarning`; **Severity %** badge from `sdcScore` (blinking border/dot only when escalated) |
+| `PatientOverview.qml` | Per-patient ensemble cards. Tri-state colour from `isEscalated` / `hasActiveAlarms`; **Severity %** badge from `sdcScore` (blinking border/dot only when escalated) |
 
 ---
 
