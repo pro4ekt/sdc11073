@@ -186,6 +186,17 @@ class SmartAlertAggregator:
             # Once a crisis is confirmed, every subsequent alarm in the same
             # ensemble must also show as ON — do not re-run the pipeline until all
             # alarms clear.
+            #
+            # INVARIANT:  latched  ⟹  _active_alarms[ensemble] is non-empty
+            #             ⟹  the ensemble's AdaptiveAlarmAggregator exists.
+            # The latch is only ever set by a tick verdict (which builds the
+            # aggregator first) and is cleared in clear_alarm() and
+            # _cleanup_stale_alarms() the moment the cache empties.  The grace
+            # sweep discards an aggregator ONLY for ensembles that are absent
+            # from _active_alarms.  Hence "latched but no aggregator" is
+            # unreachable, and clear_alarm's OFF-edge tick (Fix 6) can rely on
+            # finding the aggregator for a latched ensemble.  Any future change
+            # to the grace / discard logic must preserve this ordering.
             if ensemble_uuid in self._escalated_ensembles:
                 self._active_alarms.setdefault(ensemble_uuid, {})
                 ev = DeviceAlertEvidence(
@@ -331,9 +342,11 @@ class SmartAlertAggregator:
             repo = get_repository()
             horizon_t, alpha = repo.get_filter_params()
             self._engine_config = EngineConfig(horizon_T=horizon_t, alpha=alpha)
+            base_prob = repo.get_base_prob()
             self._clinical_context = ClinicalContext(
-                base_prob_P0=repo.get_base_prob(),
+                base_prob_P0=base_prob,
                 odds_ratios=repo.get_odds_ratios(),
+                source=f'clinical_db.json ({repo.base_prob_source})',
             )
         # Narrow Optional → concrete for the type checker (both are set above).
         assert self._engine_config is not None and self._clinical_context is not None
@@ -345,16 +358,36 @@ class SmartAlertAggregator:
     ) -> Dict[str, SensorSpec]:
         """Translate DeviceAlertEvidence DTOs into per-channel SensorSpec records.
 
-        w_j comes from the pre-fetched reliability_profile (Se/FAR); a missing
-        profile yields a neutral channel (Se = FAR = 0.5 → w_j = 0, fail-open).
-        P_j comes from the BICEPS priority via the repository priority_map.
+        w_j comes from the pre-fetched reliability_profile (TPR/FPR); P_j from
+        the BICEPS priority via the repository priority_map.
+
+        Gateway Admission Rule (math_part1.md §2.1): a channel is admitted to
+        the ensemble M only if ``0 < FPR_j < TPR_j``.  A channel without a
+        reliability profile has no TPR/FPR and is therefore rejected — it would
+        contribute w_j = 0 (no evidence) while still diluting w̄ and lowering
+        Θ_base = k_min·w̄, which opens the door to single-source escalation.
+        Rejected channels still raise the local bedside warning through the
+        ``ttl_active`` branch of ``check_alert_validity`` (Yellow path intact).
         """
         repo = get_repository()
         specs: Dict[str, SensorSpec] = {}
         for ev in ensemble_evidences:
             prof = ev.reliability_profile
-            tpr = prof.true_positive_rate if prof is not None else 0.5
-            fpr = prof.false_positive_rate if prof is not None else 0.5
+            if prof is None:
+                self.logger.info(
+                    f'[Admission] Channel {ev.alert_key!r} rejected: no reliability '
+                    f'profile (TPR/FPR unknown) — excluded from M, bedside only.'
+                )
+                continue
+            tpr = prof.true_positive_rate
+            fpr = prof.false_positive_rate
+            if not (0.0 < fpr < tpr):
+                self.logger.info(
+                    f'[Admission] Channel {ev.alert_key!r} rejected: requires '
+                    f'0 < FPR < TPR, got FPR={fpr}, TPR={tpr} — excluded from M, '
+                    f'bedside only.'
+                )
+                continue
             specs[ev.alert_key] = SensorSpec(
                 sensor_id=ev.alert_key,
                 tpr=tpr,
@@ -374,45 +407,60 @@ class SmartAlertAggregator:
         Return the AdaptiveAlarmAggregator for ``ensemble_uuid``, building it lazily.
 
         The FULL member registry (``member_specs``, supplied by the topology
-        manager) is folded in so SILENT (non-alarming) sensors are part of |M|
-        (fix for |M|=1 / SDC_score=1.0).  Evidence-derived specs act as a fallback
-        for any channel not yet enumerated.  A new channel triggers ``update_specs``
-        (union, preserving FIR history of known channels).
+        manager) defines |M| so SILENT (non-alarming) sensors are part of it
+        (fix for |M|=1 / SDC_score=1.0).  The registry is AUTHORITATIVE: while it
+        exists, channels found only in the TTL alarm cache are NOT admitted.
+        Evidence-derived specs are used solely as a fallback while the registry
+        has not been built yet (empty).  Otherwise a departed device whose alarm
+        is still cached would re-enter M through the cache with a_j = 1 and keep
+        contributing evidence for up to ALARM_TTL_SEC (SPEC_DELTA.md SD-2).
+
+        Membership follows the registry in BOTH directions (Fix 8): the current
+        composition is compared with the required one for EQUALITY, and on any
+        difference the aggregator adopts ``new_specs`` as-is — a union would let
+        departed channels survive in |M| and w̄.  ``update_specs`` preserves the
+        FIR history of channels that stay and drops the ones that left.
 
         FHIR fix: the per-patient ``Context_Log_Odds`` is recomputed from
         ``danger_codes`` and injected via ``set_clinical_context`` on every
         build/update, so each ensemble gets its OWN threshold shift instead of one
         global value.  MUST be called with self._adaptive_lock held.
         """
-        new_specs = self._build_specs_from_evidences(ensemble_evidences)
-        # Registry entries are authoritative (they cover the whole ensemble); the
-        # evidence-derived specs fill any gap for a channel not yet enumerated.
+        # Registry entries are authoritative (they cover the whole ensemble).  The
+        # evidence-derived specs are a fallback ONLY while no registry exists;
+        # once it does, a cache-only channel is a stale entry (departed device
+        # or a channel rejected by the admission rule) and must not enter M.
         registry = member_specs or {}
-        new_specs = {**new_specs, **registry}
+        if registry:
+            new_specs: Dict[str, SensorSpec] = dict(registry)
+        else:
+            new_specs = self._build_specs_from_evidences(ensemble_evidences)
         required: frozenset = frozenset(new_specs.keys())
         existing: frozenset = self._ensemble_sensor_ids.get(ensemble_uuid, frozenset())
-        existing_specs = self._ensemble_specs.get(ensemble_uuid, {})
         agg = self._ensemble_adaptive_aggregators.get(ensemble_uuid)
 
         # V2 — the ensemble is active again: cancel any pending grace-period discard
         # so the aggregator is preserved across a brief OFF→ON jitter.
         self._ensemble_resolved_ts.pop(ensemble_uuid, None)
 
-        # Reuse path — current aggregator already covers every active sensor.
-        if agg is not None and required <= existing:
+        # Reuse path — composition unchanged (equality, not inclusion: a shrunk
+        # ensemble must NOT be treated as "already covered").
+        if agg is not None and required == existing:
             return agg
 
         config, context = self._get_math_core_params()
-        # Merge specs: known channels keep their (possibly updated) calibration.
-        merged: Dict[str, SensorSpec] = {**existing_specs, **new_specs}
 
         if agg is None:
             # First build for this ensemble.
-            agg = AdaptiveAlarmAggregator(merged, config, context)
+            agg = AdaptiveAlarmAggregator(new_specs, config, context)
             self._ensemble_adaptive_aggregators[ensemble_uuid] = agg
         else:
-            # A new channel joined — adopt the union, preserving FIR history.
-            agg.update_specs(merged)
+            # Composition changed (channel joined OR departed) — adopt new_specs,
+            # not a union: update_specs keeps FIR history of survivors and drops
+            # departed channels.  Known consequence: the hysteresis cold-restarts,
+            # so Θ_current steps on a device disconnect (math_part1.md §8.1
+            # declares hot-plug transitions outside the validated scope).
+            agg.update_specs(new_specs)
 
         # ── FHIR individualisation: per-patient Context_Log_Odds ──────────────
         # context is the shared static calculator (baseline P_0 + OR table); the
@@ -423,11 +471,11 @@ class SmartAlertAggregator:
         except Exception as exc:
             self.logger.debug(f'[Adaptive] set_clinical_context failed: {exc}')
 
-        self._ensemble_specs[ensemble_uuid] = merged
-        self._ensemble_sensor_ids[ensemble_uuid] = frozenset(merged.keys())
+        self._ensemble_specs[ensemble_uuid] = new_specs
+        self._ensemble_sensor_ids[ensemble_uuid] = required
         self.logger.info(
             f'[Adaptive] Built aggregator for ensemble={ensemble_uuid[:8]} — '
-            f'{len(merged)} sensor(s), {len(danger_codes)} danger code(s).'
+            f'{len(new_specs)} sensor(s), {len(danger_codes)} danger code(s).'
         )
         return agg
 
@@ -515,11 +563,27 @@ class SmartAlertAggregator:
         new alarm on another device would wrongly include the dead alarm in the
         Bayesian ensemble fusion, artificially inflating the risk score.
 
+        The OFF edge must also reach the math core (Fix 6).  The evidence
+        accumulator applies a zero-order hold, so a channel that is merely
+        removed from the TTL cache would keep integrating as ACTIVE until the
+        next alarm event anywhere in the ensemble — a 10 ms spike would count
+        as lasting until the next tick.  Therefore:
+
+          * PARTIAL clear (other alarms still active): one ``tick()`` is driven
+            here with the updated activation vector so the ZOH sample a_j = 0
+            is recorded now.  The tick's verdict is deliberately NOT used for
+            routing (an alarm going OFF is a state update, not a decision).
+          * FULL clear (cache now empty): handled by ``_reset_adaptive_state``
+            as before — the FIR buffers are flushed, no tick is needed.
+
         Side-effect: if removing this alarm empties _active_alarms for the
         ensemble, the ensemble is removed from _escalated_ensembles (crisis
         fully resolved).
 
-        Thread safety: protected by self.lock.
+        Thread safety / lock order: self.lock → self._adaptive_lock →
+        AdaptiveAlarmAggregator._adaptive_lock, exactly the nesting used by
+        ``check_alert_validity``.  No topology lock is taken while any of
+        these is held; reverse-lookup + notify run after self.lock is released.
         """
         if not ensemble_uuid:
             return
@@ -528,11 +592,13 @@ class SmartAlertAggregator:
         # and _notify_overview take locks internally — calling them inside self.lock
         # would nest/re-enter. threading.Lock() is NOT reentrant.
         crisis_resolved = False
+        removed = False
 
         with self.lock:
             ensemble_cache = self._active_alarms.get(ensemble_uuid)
             if ensemble_cache and alert_key in ensemble_cache:
                 del ensemble_cache[alert_key]
+                removed = True
                 self.logger.debug(
                     f'[ActiveAlarms] Cleared (alarm OFF): ensemble={ensemble_uuid[:8]} '
                     f'alert={alert_key!r}'
@@ -562,6 +628,52 @@ class SmartAlertAggregator:
                     )
                 # Inline reverse-lookup removed — membership now lives in the
                 # topology manager and is fetched outside the lock (below).
+            elif removed:
+                # ── Partial clear: push the OFF edge into the math core ────────
+                # Same lock nesting as check_alert_validity (self.lock held →
+                # acquire _adaptive_lock; tick() then takes the aggregator's own
+                # lock and releases it).  _adaptive_lock never re-acquires
+                # self.lock, so the order stays acyclic.  tick() is pure CPU.
+                active_keys: Set[str] = set(self._active_alarms[ensemble_uuid].keys())
+                now = time.monotonic()
+                with self._adaptive_lock:
+                    aggregator = self._ensemble_adaptive_aggregators.get(ensemble_uuid)
+                    if aggregator is not None:
+                        last_ts = self._last_tick_ts.get(ensemble_uuid)
+                        if last_ts is None:
+                            dt_step = 0.0
+                        else:
+                            dt_step = now - last_ts
+                            if dt_step < 0.0:
+                                dt_step = 0.0          # clock non-monotonicity guard
+                        dt_step = min(dt_step, self.ADAPTIVE_MAX_DT_STEP)
+                        self._last_tick_ts[ensemble_uuid] = now
+
+                        # Activation vector built exactly as in check_alert_validity:
+                        # 1 if the channel is still in the TTL cache, else 0 — the
+                        # cleared channel is now 0, which is the OFF edge itself.
+                        sensor_states: Dict[str, int] = {
+                            sid: (1 if sid in active_keys else 0)
+                            for sid in aggregator.sensor_ids
+                        }
+                        # The verdict is intentionally ignored: routing, the
+                        # _escalated_ensembles latch and the UI are left as they
+                        # are.  An alarm going OFF must never produce an
+                        # escalation by itself.  Known consequence: tick() still
+                        # overwrites the aggregator's internal _last_escalated,
+                        # which gates the τ (Time-in-Alarm) freeze.  If this
+                        # partial clear drops E below Θ, the math core stops
+                        # considering itself escalated and RESUMES accumulating
+                        # τ while the routing latch stays set.  That is correct —
+                        # math_part1.md has no latch at all; the latch is an
+                        # interface-level behaviour — but it is not obvious.
+                        result = aggregator.tick(sensor_states, dt_step)
+                        self.logger.debug(
+                            f'[ActiveAlarms] OFF-edge tick: ensemble={ensemble_uuid[:8]} '
+                            f'alert={alert_key!r} dt={dt_step:.3f}s '
+                            f'E={result.evidence:.3f} theta={result.current_theta:.3f} '
+                            f'(verdict not routed)'
+                        )
 
         # Notify PatientOverview outside the lock — reverse-lookup + notify both
         # take locks internally; calling them inside self.lock would re-enter and

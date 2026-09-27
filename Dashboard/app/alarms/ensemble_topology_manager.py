@@ -174,10 +174,17 @@ class EnsembleTopologyManager:
         """Build {alert_key → SensorSpec} from EVERY alert channel of the given
         member devices (alarming or silent).
 
-        w_j comes from the pre-fetched reliability profile (neutral 0.5/0.5 →
-        w_j = 0 if absent), P_j from the BICEPS priority.  The per-device MDIB read
-        uses a NON-BLOCKING lock, so this is safe to call inside or outside
-        self.lock (device data_lock is a distinct lower lock → acyclic).
+        w_j comes from the pre-fetched reliability profile, P_j from the BICEPS
+        priority.  The per-device MDIB read uses a NON-BLOCKING lock, so this is
+        safe to call inside or outside self.lock (device data_lock is a distinct
+        lower lock → acyclic).
+
+        Gateway Admission Rule (math_part1.md §2.1): only channels with
+        ``0 < FPR_j < TPR_j`` enter the registry (and hence |M| and w̄).  A
+        channel without a profile is rejected rather than admitted as a neutral
+        w_j = 0 member, because a zero-weight member contributes no evidence but
+        dilutes w̄ and lowers Θ_base = k_min·w̄ (single-source escalation risk).
+        Rejected channels are still annunciated locally (Yellow path).
         """
         manager_devices: dict = getattr(self._manager, 'devices', {})
         repo = get_repository()
@@ -197,8 +204,21 @@ class EnsembleTopologyManager:
                 )
                 continue
             for alert_key, _metric_concept, biceps_priority, prof in channels:
-                tpr = prof.true_positive_rate if prof is not None else 0.5
-                fpr = prof.false_positive_rate if prof is not None else 0.5
+                if prof is None:
+                    self.logger.info(
+                        f'[Admission] Channel {alert_key!r} on {epr[-12:]} rejected: '
+                        f'no reliability profile (TPR/FPR unknown) — excluded from M.'
+                    )
+                    continue
+                tpr = prof.true_positive_rate
+                fpr = prof.false_positive_rate
+                if not (0.0 < fpr < tpr):
+                    self.logger.info(
+                        f'[Admission] Channel {alert_key!r} on {epr[-12:]} rejected: '
+                        f'requires 0 < FPR < TPR, got FPR={fpr}, TPR={tpr} — '
+                        f'excluded from M.'
+                    )
+                    continue
                 specs[alert_key] = SensorSpec(
                     sensor_id=alert_key,
                     tpr=tpr,
@@ -238,17 +258,25 @@ class EnsembleTopologyManager:
         topology state (membership, registry) and evicts the patient's FHIR caches
         when the patient has no other ensemble.
 
+        If the ensemble still has other members (PARTIAL departure), the full
+        sensor registry is rebuilt over the survivors (Fix 8), so the departed
+        device's channels leave |M| and w̄ immediately instead of lingering until
+        the whole ensemble is torn down.
+
         Returns the released ensemble UUID (so the caller can discard the matching
         Alert-Processor state), or ``None`` if the ensemble still has members.
 
-        Lock discipline: all mutations under self.lock; no adaptive/processor lock
-        is taken here (that is the Alert Processor's responsibility via
-        ``discard_ensemble``).
+        Lock discipline: membership mutations under self.lock; the registry
+        rebuild follows the existing pattern of ``_refresh_ensemble_channel_specs``
+        (enumeration OUTSIDE self.lock, publication under it).  No
+        adaptive/processor lock is taken here (that is the Alert Processor's
+        responsibility via ``discard_ensemble``).
         """
         if not epr:
             return None
 
         released_ensemble_uuid: Optional[str] = None
+        shrunk_ensemble_uuid: Optional[str] = None
         inactive_patient_id: Optional[str] = None
 
         with self.lock:
@@ -264,6 +292,8 @@ class EnsembleTopologyManager:
                                 inactive_patient_id = key[0]
                                 del self._patient_to_ensemble_map[key]
                                 break
+                    else:
+                        shrunk_ensemble_uuid = eid
                     break
 
             if inactive_patient_id and not any(
@@ -276,6 +306,15 @@ class EnsembleTopologyManager:
             self.logger.info(
                 f'[Topology] release_device: ensemble {released_ensemble_uuid[:8]}... '
                 f'fully released (last device {epr[-12:]} disconnected).'
+            )
+        elif shrunk_ensemble_uuid is not None:
+            # Partial departure: rebuild the registry over the surviving members.
+            # Runs outside self.lock (enumeration touches device data_locks) and
+            # publishes atomically under it — same discipline as bind time.
+            self._refresh_ensemble_channel_specs(shrunk_ensemble_uuid)
+            self.logger.info(
+                f'[Topology] release_device: {epr[-12:]} left ensemble '
+                f'{shrunk_ensemble_uuid[:8]}...; registry rebuilt over survivors.'
             )
         else:
             self.logger.debug(

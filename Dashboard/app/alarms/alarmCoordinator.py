@@ -28,8 +28,10 @@ The core decouples the problem into two orthogonal axes in LOG-ODDS space:
   Urgency axis (RHS):      Θ_current(t)            — hysteresis-smoothed barrier
       v_j(t)       = P_j · a_j(t)                  — instantaneous threat (raw)
       SDC_score(t) = α·(max v_j / P_max) + (1-α)·(Σ v_j / Σ P_j)   ∈ [0,1]
-      k_min(t)     = ⌊|M| − (|M|−2)·SDC_score(t)⌋  clamped to [2,|M|]
-      Θ_target(t)  = k_min(t)·w̄ − Context_Log_Odds
+      k_min(t)     = round_half_up(|M| − (|M|−2)·SDC_score(t))  clamped to [2,|M|]
+      Θ_base(t)    = k_min(t)·w̄
+      Θ_target(t)  = max(ε, Θ_base(t)·δ(t) − Context_Log_Odds),  ε = min_j w_j,
+                     δ(t) = max(δ_min, e^(−λ·max(0, τ−T))) ∈ [δ_min, 1]
       Θ_current(t) = asymmetric IIR (Fast Attack / Context-Aware Slow Release),
                      ρ(t) = (1 − SDC_score(t)) / T
 

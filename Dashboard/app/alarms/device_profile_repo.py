@@ -75,10 +75,14 @@ class DeviceProfileRepository:
     """
 
     # Fail-open defaults — used when clinical_db.json is missing a section entirely.
-    _DEFAULT_BASE_PROB: float = 0.005
+    # P_0 = 0.5 is the NEUTRAL prior (math_part1.md §1): O_0 = 1, ln(O_0) = 0,
+    # Context_Log_Odds = 0 — the threshold is set by the device ensemble alone.
+    # A missing key must not silently tighten the threshold (0.005 would add
+    # +5.29 nat), so the fallback IS the neutral point.
+    _DEFAULT_BASE_PROB: float = 0.5
     _DEFAULT_PRIORITY_MAP: dict[str, int] = {'None': 0, 'Lo': 1, 'Me': 2, 'Hi': 3}
     _DEFAULT_HORIZON_T: float = 10.0
-    _DEFAULT_ALPHA: float = 0.7
+    _DEFAULT_ALPHA: float = 0.5
 
     def __init__(self) -> None:
         self._lock: threading.Lock = threading.Lock()
@@ -94,6 +98,10 @@ class DeviceProfileRepository:
         self._odds_cache: Optional[dict[str, float]] = None
         self._priority_map: Optional[dict[str, int]] = None
         self._filter_params: Optional[tuple[float, float]] = None
+        # Where the last get_base_prob() value came from: 'config' (clinical_db.json)
+        # or 'fallback' (key missing / invalid → _DEFAULT_BASE_PROB).  Exported so
+        # the neutral-context mode is observable in the logs.
+        self._base_prob_source: str = 'unresolved'
 
     # ── private ───────────────────────────────────────────────────────────────
 
@@ -188,18 +196,31 @@ class DeviceProfileRepository:
     # ── Two-axis math-core parameters ─────────────────────────────────────────
 
     def get_base_prob(self) -> float:
-        """Return the baseline crisis probability P_0 (default 0.005 if unspecified).
+        """Return the baseline crisis probability P_0 (default 0.5 if unspecified).
 
         Feeds ClinicalContext, which converts P_0 → baseline odds O_0 = P_0/(1-P_0)
         before Context_Log_Odds = ln(O_0) + Σ R_d·ln(OR_d).
-        Fail-open: a missing key returns the conservative default, never raises.
+        Fail-open: a missing or invalid key returns the NEUTRAL default P_0 = 0.5
+        (Context_Log_Odds = 0), never raises.  ``base_prob_source`` records
+        whether the value came from the configuration or from the fallback.
         """
         self._ensure_loaded()
-        raw = (self._raw_clinical_db or {}).get('base_prob_P0', self._DEFAULT_BASE_PROB)
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
+        section = self._raw_clinical_db or {}
+        if 'base_prob_P0' not in section:
+            self._base_prob_source = 'fallback'
             return self._DEFAULT_BASE_PROB
+        try:
+            value = float(section['base_prob_P0'])
+        except (TypeError, ValueError):
+            self._base_prob_source = 'fallback'
+            return self._DEFAULT_BASE_PROB
+        self._base_prob_source = 'config'
+        return value
+
+    @property
+    def base_prob_source(self) -> str:
+        """'config' | 'fallback' | 'unresolved' — provenance of the last P_0."""
+        return self._base_prob_source
 
     def get_odds_ratios(self) -> dict[str, float]:
         """Return the full {diagnosis_code → OR_d} map (``_``-comment keys skipped).
@@ -258,7 +279,7 @@ class DeviceProfileRepository:
         return self.get_priority_map().get(biceps_priority, 0)
 
     def get_filter_params(self) -> tuple[float, float]:
-        """Return (horizon_T, alpha) for the math core (defaults 10.0 s, 0.7).
+        """Return (horizon_T, alpha) for the math core (defaults 10.0 s, 0.5).
 
         Memoised.  Any missing/invalid value degrades to its individual default.
         """

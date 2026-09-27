@@ -139,13 +139,21 @@ class EngineConfig:
                    smoothing window s_j(t) (Confidence axis) AND the hysteresis
                    relaxation rate ρ(t) = (1 - SDC)/T (Urgency axis).  Coupling
                    them through one constant keeps the two axes time-consistent.
-        alpha:     Blend weight α ∈ [0, 1] in SDC_score(t).  α = 0.7 (default)
-                   biases the severity index toward the single most-urgent active
-                   channel (peak threat, max v_j) over the diffuse ensemble sum.
+        alpha:     Blend weight α ∈ [0, 1] in SDC_score(t).  α = 0.5 (default,
+                   math_part1.md §4) weighs the single most-urgent active channel
+                   (peak threat, max v_j) and the diffuse ensemble sum equally.
+                   All numerical results in the thesis are computed at α = 0.5.
+        delta_min: Melting floor δ_min ∈ (0, 1] of the Time-in-Alarm multiplier
+                   (math_part1.md §6): δ(t) = max(δ_min, e^{−λ·max(0, τ−T)}), so
+                   the threshold can never decay below δ_min·Θ_base.  Without it
+                   δ → 0 and a chronically noisy patient escalates cyclically.
+                   δ_min = 0.5 (default) also bounds single-source escalation to
+                   w_max > δ_min·k_min·w̄ (§8.1).
     """
 
     horizon_T: float = 10.0
-    alpha: float = 0.7
+    alpha: float = 0.5
+    delta_min: float = 0.5
 
 
 # ── Output Ticket ─────────────────────────────────────────────────────────────
@@ -166,11 +174,14 @@ class TickResult:
     Extended telemetry (exported for dissertation analysis / dashboards):
         sdc_score:   SDC_score(t) ∈ [0, 1] — normalised ensemble severity index.
         k_min:       k_min(t) ∈ [2, |M|] — dynamic VMD consensus quorum.
-        theta_target: Θ_target(t) — target threshold AFTER the Time-in-Alarm decay
-                     multiplier δ(t), but BEFORE IIR hysteresis smoothing.
+        theta_target: Θ_target(t) = max(ε, Θ_base·δ(t) − Context_Log_Odds) per
+                     math_part1.md §6 — AFTER the Time-in-Alarm multiplier, the
+                     context shift and the evidence floor, but BEFORE IIR
+                     hysteresis smoothing.  (Θ_base itself is
+                     ``UrgencyResult.theta_base`` and is not exported here.)
         rho_decay:   ρ(t) = (1 - SDC_score)/T [s⁻¹] — hysteresis relaxation rate.
-        delta_penalty: δ(t) = exp(−λ(t)·max(0, τ−T)) ∈ (0, 1] — Time-in-Alarm decay
-                     multiplier applied to the raw target threshold (1.0 = none).
+        delta_penalty: δ(t) = max(δ_min, exp(−λ(t)·max(0, τ−T))) ∈ [δ_min, 1] —
+                     Time-in-Alarm decay multiplier applied to Θ_base (1.0 = none).
         active_alarm_duration: τ [s] — how long evidence has been present WITHOUT
                      escalation (drives δ(t); resets to 0 when E(t) = 0).
     """

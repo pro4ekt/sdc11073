@@ -5,7 +5,8 @@ Per-patient-ensemble orchestrator that fuses the two independent axes of the
 IEEE 11073 SDC + HL7 FHIR adaptive alarm model into a single escalation verdict:
 
     Confidence axis  →  EvidenceAccumulator   E(t) = Σ w_j · s_j(t)
-    Urgency axis     →  UrgencyEngine          Θ_target = k_min·w̄ − Context_Log_Odds
+    Urgency axis     →  UrgencyEngine          Θ_base = k_min·w̄
+    Threshold        →  Θ_target = max(ε, Θ_base·δ(t) − Context_Log_Odds)   (§6)
     Hysteresis       →  HysteresisFilter       Θ_current(t) (Fast Attack / Slow Release)
 
     Escalation condition:
@@ -15,9 +16,10 @@ Per-tick pipeline (all under ``_adaptive_lock``)
 ------------------------------------------------
     1. record activations a_j(t) and push a ZOH sample into the FIR buffers;
     2. E(t) = Σ w_j·s_j(t),  w̄ = mean w_j,  a_raw = {a_j(t)}   (EvidenceAccumulator);
-    3. Θ_target, k_min, SDC_score  from priorities P_j + a_raw    (UrgencyEngine);
-    3b. Time-in-Alarm penalty: τ tracking + δ(t) = exp(−λ·max(0,τ−T)),
-        Θ_target ← Θ_target · δ(t)  (SPOF fail-safe; hysteresis stays untouched);
+    3. Θ_base = k_min·w̄, k_min, SDC_score  from priorities P_j + a_raw  (UrgencyEngine);
+    3b. Time-in-Alarm penalty: τ tracking + δ(t) = max(δ_min, exp(−λ·max(0,τ−T))),
+        Θ_target = max(ε, Θ_base · δ(t) − Context_Log_Odds), ε = min_j w_j
+        (SPOF fail-safe; hysteresis stays untouched);
     4. Θ_current = IIR(Θ_target, SDC_score, Δt)                   (HysteresisFilter);
     5. verdict + full telemetry → TickResult.
 
@@ -53,7 +55,7 @@ class AdaptiveAlarmAggregator:
 
     Construction:
         specs = {'HR.alert': SensorSpec('HR.alert', 0.99, 0.15, 3), ...}
-        agg = AdaptiveAlarmAggregator(specs, EngineConfig(), ClinicalContext(0.005, {}))
+        agg = AdaptiveAlarmAggregator(specs, EngineConfig(), ClinicalContext(0.5, {}))
         result = agg.tick({'HR.alert': 1}, dt_step=1.0)
 
     All three collaborators are composed here; the aggregator owns the recursive
@@ -86,13 +88,17 @@ class AdaptiveAlarmAggregator:
         self._sensor_states: Dict[str, bool] = {sid: False for sid in specs}
 
         # Clinical-context shift Context_Log_Odds.  Always hold a VALID context: if
-        # the caller supplies none, fall back to the canonical low-prior baseline
-        # (P_0 = 0.005) rather than a neutral 0.0.  A raw 0.0 in log-odds space means
-        # O_0 = 1 ⇔ P_0 = 50 %, which would collapse Θ_target by ≈ 5.3 nats and make
-        # the filter hypersensitive.  An empty odds_ratios map is mathematically the
-        # identity (Π OR = 1 ⇒ Σ ln OR = 0), so it preserves the baseline exactly.
+        # the caller supplies none, fall back to the NEUTRAL prior P_0 = 0.5
+        # (math_part1.md §1, note): O_0 = 1 ⇒ ln(O_0) = 0 ⇒ Context_Log_Odds = 0,
+        # so the threshold is determined by the device ensemble alone.  This is the
+        # defined behaviour when no clinical context is available (FHIR side of
+        # the SDC/FHIR coupling absent), not a degraded mode.  A low prior such as
+        # 0.005 would instead inject an unrequested +5.29 nat tightening of the
+        # threshold — comparable to the weight of a whole channel at w̄ ≈ 5.66 —
+        # whenever the configuration key is missing.  An empty odds_ratios map is
+        # the identity (Π OR = 1 ⇒ Σ ln OR = 0), so it preserves the baseline.
         self._context: ClinicalContext = clinical_context or ClinicalContext(
-            base_prob_P0=0.005, odds_ratios={}
+            base_prob_P0=0.5, odds_ratios={}, source='fallback (no ClinicalContext supplied)'
         )
         # Baseline shift ln(O_0) — the log-odds when no FHIR danger codes apply.
         self._ctx_log_odds: float = self._context.baseline_log_odds
@@ -163,9 +169,9 @@ class AdaptiveAlarmAggregator:
             w_avg = self._evidence.w_avg()
             a_raw = self._evidence.raw_activations()
 
-            # (3) Urgency axis: Θ_target (raw), k_min, SDC_score.
-            theta_raw, k_min, sdc = self._urgency.theta_target(
-                m_size, self._priorities, a_raw, w_avg, self._ctx_log_odds
+            # (3) Urgency axis: Θ_base = k_min·w̄ (no context yet), k_min, SDC_score.
+            theta_base, k_min, sdc = self._urgency.theta_target(
+                m_size, self._priorities, a_raw, w_avg
             )
 
             # (3b) Time-in-Alarm penalty (SPOF fail-safe).
@@ -181,9 +187,21 @@ class AdaptiveAlarmAggregator:
             # else: escalated → hold τ unchanged.
 
             delta_penalty = self._urgency.decay_multiplier(
-                sdc, self.active_alarm_duration, self._config.horizon_T
+                sdc, self.active_alarm_duration, self._config.horizon_T,
+                self._config.delta_min,
             )
-            theta_target = theta_raw * delta_penalty
+            # math_part1.md §6: Θ_target = max(ε, Θ_base·δ − Context_Log_Odds).
+            # δ scales the quorum barrier ONLY; the context shift is subtracted
+            # afterwards.  (Scaling (Θ_base − CLO) instead inverts the sign of
+            # melting whenever CLO > Θ_base: a negative quantity times δ < 1
+            # becomes LESS negative.)  ε = min_j w_j is the evidence floor: with a
+            # large positive context shift the barrier would otherwise fall to
+            # zero or below, and since E ≥ 0 always holds that would be permanent
+            # escalation.
+            theta_target = max(
+                self._evidence.w_min(),
+                theta_base * delta_penalty - self._ctx_log_odds,
+            )
 
             # (4) Hysteresis kinetics: Θ_current(t) — filter itself is UNTOUCHED.
             theta_current = self._hysteresis.step(theta_target, sdc, dt_step)

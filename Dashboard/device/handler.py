@@ -25,7 +25,7 @@ import time
 import logging
 from typing import Any, Optional
 
-from sdc11073.consumer import SdcConsumer
+from sdc11073.consumer.consumerimpl import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError
 from sdc11073.xml_types.actions import periodic_actions

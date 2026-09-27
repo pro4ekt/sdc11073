@@ -83,7 +83,7 @@ Dashboard/
 │   └── *.xml                   # MDIB fixture files
 │
 ├── tools/                      # Utility scripts
-├── tests/                      # Unit tests (test_math_core.py — 51 cases)
+├── tests/                      # Unit tests (test_math_core.py, test_alignment_integration.py)
 ├── certs_out/                  # Generated TLS certificates
 ├── logs/                       # Rotating log files (sdc_consumer.log)
 └── data/                       # Persistent data (FHIR cache, etc.)
@@ -227,7 +227,10 @@ Read-only snapshot getters consumed by the Alert Processor (each takes `self.loc
 briefly and returns a copy): `get_member_specs`, `get_members`, `get_member_count`,
 `reverse_lookup_patient_room`, `collect_patient_danger_codes`, `get_fhir_focus`.
 Entry point: `evaluate_and_bind_device(handler)`; teardown:
-`release_device(epr) -> Optional[released_ensemble_uuid]`.
+`release_device(epr) -> Optional[released_ensemble_uuid]`. On a **partial**
+departure (other members remain) `release_device` rebuilds the sensor registry
+over the survivors, so `|M|` and `w̄` shrink immediately; on the **last**
+member it tears the ensemble down and returns its UUID.
 
 #### SmartAlertAggregator (FAST path)
 
@@ -268,7 +271,9 @@ processor lock. No I/O is performed under any lock; `tick()` is pure CPU
 | `evaluate_and_bind_device(handler)` | Topology | Extract (patient, room); form/join the ensemble; refresh the full sensor registry; fetch FHIR; send EnsembleContext SOAP; apply FHIR contexts |
 | `collect_patient_danger_codes(uuid)` | Topology | Reverse-lookup ensemble → patient → normalised FHIR danger codes (feeds per-ensemble `Context_Log_Odds`) |
 | `check_alert_validity(...)` | Processor | Ensemble gate. Pulls member specs + danger codes from topology; registers the alarm in the TTL cache; builds/updates the per-ensemble aggregator; injects the per-patient clinical shift; delegates to `AlarmCoordinator.evaluate()`; returns tri-state `"ESCALATE" / "WARN"` |
-| `_build_specs_from_evidences(evidences)` | Processor | Build `{alert_key → SensorSpec}` from active evidence (fallback): `tpr/fpr` from `reliability_profile` (neutral 0.5/0.5 if absent), `priority = repo.get_priority(biceps_priority)` |
+| `_get_or_build_adaptive_aggregator_locked(...)` | Processor | Membership of the math core. The topology registry is **authoritative**: `new_specs = registry` whenever it exists; cache-derived specs are a fallback only while the registry is empty. Composition is compared for **equality** and any change calls `update_specs(new_specs)` (survivors keep FIR history, departed channels are dropped, hysteresis cold-restarts) |
+| `clear_alarm(uuid, alert_key)` | Processor | Alarm OFF. Removes the key from the TTL cache. **Partial** clear (others still active): drives one `tick()` with the updated activation vector under `self.lock → _adaptive_lock` so the OFF edge reaches the ZOH integral; the verdict is not routed and the escalation latch is untouched. **Full** clear (cache empty): stamps the grace timer, clears the latch and flushes the math core via `_reset_adaptive_state()` |
+| `_build_specs_from_evidences(evidences)` | Processor | Build `{alert_key → SensorSpec}` from active evidence (fallback): `tpr/fpr` from `reliability_profile`, `priority = repo.get_priority(biceps_priority)`. **Gateway Admission Rule** (math_part1 §2.1): a channel is admitted only if `0 < FPR < TPR`; a channel without a profile is rejected (logged at info) and stays bedside-only via the `ttl_active` Yellow path |
 | `_get_math_core_params()` | Processor | Lazily build the shared `EngineConfig` + static `ClinicalContext` (baseline P₀ + OR table) from the repository (fail-open defaults) |
 | `_notify_overview(...)` | Both | Push an ensemble summary to `PatientOverviewModel`. Continuous UI intensity is `sdc_score ∈ [0,1]`; colour is the orthogonal tri-state |
 | `_propagate_escalation_to_devices(uuid)` | Processor | On first crisis, clear device suppression sets so every member device shows Red |
@@ -305,7 +310,7 @@ Escalate  ⇔  E(t) ≥ Θ_current(t)
 | `manufacturer`, `model` | DPWS ThisModel identifiers (logging + profile lookup) |
 | `ensemble_uuid` | UUID of the patient ensemble |
 | `biceps_priority` | BICEPS `AlertCondition.Priority`: `'Hi' / 'Me' / 'Lo' / 'None'` |
-| `reliability_profile` | `DeviceReliabilityProfile | None` — pre-fetched TPR/FPR; the aggregator turns it into `SensorSpec` (`w_j`, `P_j`). `None` → neutral channel (`w_j = 0`) |
+| `reliability_profile` | `DeviceReliabilityProfile | None` — pre-fetched TPR/FPR; the aggregator turns it into `SensorSpec` (`w_j`, `P_j`). `None` (or `FPR ≥ TPR`, or `FPR = 0`) → channel **rejected** by the Gateway Admission Rule: not part of `M`, bedside (Yellow) only |
 
 #### `AlarmDecision` (frozen output DTO)
 
@@ -332,25 +337,27 @@ exactly once, at the SDC↔core boundary.
 | Module | Class | Responsibility |
 |---|---|---|
 | `math_types.py` | `SensorSpec` | Frozen per-channel spec: `sensor_id, tpr, fpr, priority: int`, property `w_j = ln(TPR/FPR)` |
-| | `EngineConfig` | Frozen tuning: `horizon_T = 10.0`, `alpha = 0.7` |
+| | `EngineConfig` | Frozen tuning: `horizon_T = 10.0`, `alpha = 0.5`, `delta_min = 0.5` |
 | | `TickResult` | Verdict + telemetry: `is_escalated, current_theta, evidence, active_delta_t, sdc_score, k_min, theta_target, rho_decay` |
-| `evidence_accumulator.py` | `EvidenceAccumulator` | Confidence axis. ZOH FIR window `s_j(t)`; `E(t) = Σ w_j·s_j(t)`; `w̄`; raw activations `a_j(t)` (BICEPS `bool`) |
-| `urgency_engine.py` | `UrgencyEngine` | Urgency axis. `SDC_score(t)`, `k_min(t)`, `Θ_target(t)`. `theta_target()` returns a `UrgencyResult` NamedTuple |
+| `evidence_accumulator.py` | `EvidenceAccumulator` | Confidence axis. ZOH FIR window `s_j(t)`; `E(t) = Σ w_j·s_j(t)`; `w̄`; `ε = min w_j`; raw activations `a_j(t)` (BICEPS `bool`) |
+| `urgency_engine.py` | `UrgencyEngine` | Urgency axis. `SDC_score(t)`, `k_min(t)` (round-half-up), `Θ_base(t) = k_min·w̄`. `theta_target()` returns a `UrgencyResult(theta_base, k_min, sdc_score)`; `δ(t)`, the context shift and the `ε` floor are applied by the aggregator |
 | `hysteresis_filter.py` | `HysteresisFilter` | Asymmetric IIR: Fast Attack / Context-Aware Slow Release; `ρ(t) = (1−SDC)/T` |
-| `clinical_context.py` | `ClinicalContext` | `Context_Log_Odds = ln(O_0) + Σ R_d·ln(OR_d)`, with `O_0 = P_0/(1−P_0)` |
+| `clinical_context.py` | `ClinicalContext` | FHIR side of the SDC/FHIR coupling: `Context_Log_Odds = ln(O_0) + Σ R_d·ln(OR_d)`, with `O_0 = P_0/(1−P_0)`. One-directional (shifts the threshold, never the evidence). Neutral mode `P_0 = 0.5 → CLO = 0` is the defined behaviour without clinical context and is the current operating mode; logged at INFO on construction |
 | `adaptive_alarm_aggregator.py` | `AdaptiveAlarmAggregator` | Per-ensemble orchestrator composing all four collaborators; owns the recursive hysteresis state and FIR buffers |
 
 **`AdaptiveAlarmAggregator` — per-tick pipeline** (all under its own `_adaptive_lock`):
 
 1. record activations `a_j(t)` (ZOH: an absent known sensor holds its prior state) and push a sample into the FIR buffers;
 2. Confidence: `E(t)`, `w̄`, raw `a_j(t)` from `EvidenceAccumulator`;
-3. Urgency: `Θ_target, k_min, SDC_score` from priorities `P_j` + raw activations;
+3. Urgency: `Θ_base = k_min·w̄, k_min, SDC_score` from priorities `P_j` + raw activations;
+   then `Θ_target = max(ε, Θ_base·δ(t) − Context_Log_Odds)` with `δ ∈ [δ_min, 1]`;
 4. Hysteresis: `Θ_current = IIR(Θ_target, SDC_score, Δt)`;
 5. verdict `E(t) ≥ Θ_current(t)` + full telemetry → `TickResult`.
 
 Notable behaviours: an empty ensemble (`|M| = 0`) returns a safe, non-escalating
-default; a missing `ClinicalContext` falls back to the canonical low-prior
-baseline `P_0 = 0.005` (never a neutral `0.0`, which would mean `P = 50 %`);
+default; a missing `ClinicalContext` falls back to the **neutral** prior
+`P_0 = 0.5` (`ln(O_0) = 0`, `Context_Log_Odds = 0`, threshold set by the device
+ensemble alone — the defined behaviour when no clinical context is available);
 `sensor_ids` is ordered by **descending priority** for UI/logs; `update_specs()`
 rebuilds the ensemble (preserving FIR history for known channels) and cold-restarts
 the hysteresis because the `|M|`-dependent threshold scale changed.
@@ -385,11 +392,11 @@ problems can never *suppress* an alarm.
 
 | Method | Purpose |
 |---|---|
-| `get_profile(manufacturer, model, metric_code)` | Point-query → `DeviceReliabilityProfile | None` (miss → caller uses neutral 0.5/0.5). Memoised |
-| `get_base_prob()` | Baseline crisis probability `P_0` (default `0.005`) → fed to `ClinicalContext` |
+| `get_profile(manufacturer, model, metric_code)` | Point-query → `DeviceReliabilityProfile | None` (miss → channel is rejected by the Gateway Admission Rule and stays bedside-only). Memoised |
+| `get_base_prob()` | Baseline crisis probability `P_0` (default `0.5`, the neutral prior → `Context_Log_Odds = 0`) → fed to `ClinicalContext`; `base_prob_source` reports `config` / `fallback` |
 | `get_odds_ratios()` / `get_odds_ratio(code)` | `{diagnosis_code → OR_d}` map; unknown code → `1.0` (neutral) |
 | `get_priority_map()` / `get_priority(biceps_priority)` | BICEPS→`P_j` map (default `None/Lo/Me/Hi = 0/1/2/3`) |
-| `get_filter_params()` | `(horizon_T, alpha)` for the math core (defaults `10.0`, `0.7`) |
+| `get_filter_params()` | `(horizon_T, alpha)` for the math core (defaults `10.0`, `0.5`) |
 | `get_repository()` | Process-wide singleton; thread-safe; defers I/O to first query |
 
 ---
@@ -523,7 +530,7 @@ that is re-raised to `On`.
 
 | Top-level key | Meaning |
 |---|---|
-| `base_prob_P0` | Baseline ICU crisis probability `P_0` (e.g. `0.005`) → `O_0 = P_0/(1−P_0)` |
+| `base_prob_P0` | Baseline crisis probability `P_0` → `O_0 = P_0/(1−P_0)`. Shipped value `0.5` = neutral prior (`Context_Log_Odds = 0`); a missing key falls back to the same neutral value |
 | `filter_params` | `{ horizon_T, alpha }` for the math core |
 | `priority_map` | BICEPS→`P_j`: `{ None:0, Lo:1, Me:2, Hi:3 }` |
 | `odds_ratios` | `{ diagnosis_code → OR_d }` for `Context_Log_Odds` |
@@ -728,7 +735,9 @@ Context_Log_Odds = ln(O_0) + Σ_{d∈D} R_d(M) · ln(OR_d)
 ### 11.2 Confidence axis — E(t)  (left-hand side)
 
 Each VMD channel `j` has a static reliability weight from its DataSheet, and a
-smoothed activation density over a sliding window `T` (FIR boxcar):
+smoothed activation density over a sliding window `T` (FIR boxcar). Only
+channels satisfying the Gateway Admission Rule `0 < FPR_j < TPR_j` belong to
+`M` (so every admitted `w_j > 0`); the rest are annunciated at the bedside only.
 
 ```
 w_j    = ln(TPR_j / FPR_j)
@@ -751,10 +760,17 @@ Higher severity lowers the required cross-validating quorum (bounded to `[2,|M|]
 — the topological fail-safe against single-sensor artifacts):
 
 ```
-k_min(t)     = ⌊ |M| − (|M| − 2) · SDC_score(t) ⌋
+k_min(t)     = round_half_up( |M| − (|M| − 2) · SDC_score(t) )      (normative, math_part1 §5)
 w̄            = (1/|M|) Σ_{j∈M} w_j
-Θ_target(t)  = k_min(t) · w̄ − Context_Log_Odds
+Θ_base(t)    = k_min(t) · w̄
+δ(t)         = max( δ_min, e^(−λ(t)·max(0, τ − T)) ),   λ(t) = SDC_score(t)/T,  δ_min = 0.5
+Θ_target(t)  = max( ε(t), Θ_base(t) · δ(t) − Context_Log_Odds ),   ε(t) = min_{j∈M} w_j
 ```
+
+`τ` is the time evidence has persisted without escalation (Time-in-Alarm).
+`δ` scales the quorum barrier only; the context shift is subtracted afterwards,
+and the evidence floor `ε` keeps the barrier strictly positive under a large
+positive context shift.
 
 An asymmetric first-order IIR filter turns `Θ_target` into the applied barrier
 `Θ_current`, giving zero-latency response to deterioration and hysteretic
@@ -785,10 +801,16 @@ intensity indicator.
 
 ### 11.5 Unit tests
 
-`tests/test_math_core.py` (51 cases, groups A–I) covers numerical helpers,
+`tests/test_math_core.py` (groups A–L) covers numerical helpers,
 `SensorSpec`/`w_j`, the FIR window, `ClinicalContext` (P→O conversion and
 clipping), `SDC_score`/`k_min`, hysteresis kinetics, full integration ticks
-(including hot-plug and priority ordering), and the repository fail-open paths.
+(including hot-plug and priority ordering), the repository fail-open paths,
+the Time-in-Alarm penalty with its melting floor, the ZOH reset on resolution
+and the `math_part1.md` alignment fixes (δ-before-context order, `ε` floor,
+round-half-up `k_min`, `α = 0.5`).
+`tests/test_alignment_integration.py` exercises `SmartAlertAggregator` and
+`EnsembleTopologyManager` with stubbed devices: the Gateway Admission Rule,
+the OFF edge on `clear_alarm`, and ensemble shrinkage on device departure.
 
 ---
 

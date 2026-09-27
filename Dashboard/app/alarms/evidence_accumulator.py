@@ -16,6 +16,9 @@ Canonical mathematics
     Mean connected-ensemble hardware weight:
         w̄ = (1/|M|) · Σ_{j ∈ M} w_j
 
+    Minimum evidence quantum (hard floor of Θ_target, §6):
+        ε = min_{j ∈ M} w_j
+
 Why a Zero-Order-Hold (ZOH) integral instead of a plain tick average?
 --------------------------------------------------------------------
 SDC notifications are event-driven and irregular — ticks do NOT arrive on a
@@ -157,6 +160,20 @@ class EvidenceAccumulator:
         if not self._specs:
             return 0.0
         return sum(spec.w_j for spec in self._specs.values()) / len(self._specs)
+
+    def w_min(self) -> float:
+        """Return ε = min_{j ∈ M} w_j — the minimum evidence quantum (§6).
+
+        Used as the hard floor of Θ_target: with a positive context shift the
+        barrier could otherwise fall to zero or below, and since E ≥ 0 always
+        holds that would mean permanent escalation.  Under the Gateway Admission
+        Rule (§2.1) every admitted w_j > 0, so the floor is strictly positive.
+
+        Empty ensemble (|M| = 0) → 0.0 (fail-open; no channels ⇒ no floor).
+        """
+        if not self._specs:
+            return 0.0
+        return min(spec.w_j for spec in self._specs.values())
 
     def raw_activations(self) -> Dict[str, bool]:
         """Return a copy of the latest a_j(t) map — the input to v_j(t) = P_j·a_j(t)."""
