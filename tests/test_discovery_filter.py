@@ -30,7 +30,7 @@ import types
 import unittest
 from pathlib import Path
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _APP_DIR = _PROJECT_ROOT / 'Dashboard' / 'app'
 
 

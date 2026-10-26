@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Optional
 from unittest import mock
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _APP_DIR = _PROJECT_ROOT / 'Dashboard' / 'app'
 _ALARMS_DIR = _APP_DIR / 'alarms'
 

@@ -26,7 +26,7 @@ import sys
 import tempfile
 import unittest
 
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _MODULE_PATH = _PROJECT_ROOT / 'Dashboard' / 'app' / 'concept_map.py'
 _MAP_PATH = _PROJECT_ROOT / 'Dashboard' / 'config' / 'conceptmap_mdc_to_loinc.json'
 

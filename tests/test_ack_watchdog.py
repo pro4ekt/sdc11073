@@ -18,7 +18,7 @@ Ziel 2 — remote acknowledgement (Fix 16), technical alarm on connection loss
         SetAlertStateOperation; one transaction per signal, one press_id per
         press; no fallback to the first signal / operation; ackState for the UI
 
-Run with (from Dashboard/):  ..\\.venv\\Scripts\\python -m unittest tests.test_ack_watchdog -v
+Run with (from the repository root):  .venv\\Scripts\\python -m unittest tests.test_ack_watchdog -v
 """
 
 from __future__ import annotations

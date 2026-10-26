@@ -6,7 +6,7 @@ goal maps (`README.md`), goal-specific helper scripts and the journals of
 experiment runs (`logs/`, empty until a run is made). Experiment runners and
 analyzers are not part of these folders yet — the folders are prepared for them.
 
-| Ziel | Production code (file : function) | Tests (run from `Dashboard/`) | Experiment folder |
+| Ziel | Production code (file : function) | Tests (run from the repository root) | Experiment folder |
 |---|---|---|---|
 | **Ziel 1** Topologiefilterung | `Dashboard/app/sdcMyConsumer.py : _discovery_loop` (scope filter, `topology_decision@discovery`); `Dashboard/app/topology_filter.py : room_from_scopes / room_from_context_states / decide_room`; `Dashboard/device/handler.py : _phase_connect / _phase_context_precheck / _confirm_scope_room / _subscribe_reports / _phase_check_location`; `Dashboard/app/metrics/topology_metrics.py : TopologyMetrics` | `tests/test_discovery_filter.py` (R1–R7) | [`ziel1/`](ziel1/README.md) |
 | **Ziel 2** Alarmsteuerung + Fallback | `Dashboard/device/alarm_manager.py : AlarmManager._set_alert_presence / acknowledge_alarm / reactivate_alarm`; `Dashboard/app/qtDeviceHandler.py : silenceAlarm / _select_ack_targets / markConnectionLost`; `Dashboard/device/handler.py : _monitoring_loop / _ping / _record_fallback_metric / _on_subscription_end`; `Dashboard/app/sdcMyConsumer.py : remove_device / _raise_technical_alarm / on_device_connected / dismissConnectionLoss`; `Dashboard/app/patientOverviewModel.py : markLost / clearLost`; `Dashboard/app/metrics/latency_metrics.py : LatencyMetrics` | `tests/test_ack_watchdog.py` (K1–K4), `tests/test_connection_lost.py` (L1–L5), `tests/test_watchdog.py` (W1–W4) | [`ziel2/`](ziel2/README.md) |

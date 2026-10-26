@@ -1,3 +1,10 @@
+# The Dashboard package uses the bare imports ``app.*`` / ``device.*``; put
+# <repo>/Dashboard first on sys.path so the tests run from any working directory.
+import sys as _sys
+from pathlib import Path as _BootPath
+_DASHBOARD_DIR = str(_BootPath(__file__).resolve().parents[1] / 'Dashboard')
+if _DASHBOARD_DIR not in _sys.path:
+    _sys.path.insert(0, _DASHBOARD_DIR)
 
 # Keep the unit tests from writing into Dashboard/logs/events.jsonl: the real
 # metric recorders are exercised by several suites, so the JSON Lines journal

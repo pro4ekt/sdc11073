@@ -21,7 +21,7 @@ removal (DIN EN 60601-1-8 §6.11.2.2.1 b; kapitel3 §3.4.6 "Wegfall einer Quelle
         (A1: escalatedAtLoss), partial loss → lostDevices on the live card, the
         marker survives aggregator updates and leaves only through clearLost
 
-Run with (from Dashboard/):  ..\\.venv\\Scripts\\python -m unittest tests.test_connection_lost -v
+Run with (from the repository root):  .venv\\Scripts\\python -m unittest tests.test_connection_lost -v
 """
 
 from __future__ import annotations

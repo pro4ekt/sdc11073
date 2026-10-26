@@ -13,7 +13,7 @@ Isolated unit-test suite for the two-axis adaptive stochastic alarm core
 Grouped A–I per the approved design report.  Runs standalone (no Qt/SOAP stack)
 via the same isolated-module bootstrap used by test_alarm_pipeline.py.
 
-Run with:  pytest Dashboard/tests/test_math_core.py -v
+Run with:  pytest tests/test_math_core.py -v
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from pathlib import Path
 #  heavy Dashboard.app.__init__ (Qt, SOAP, WSDiscovery …).  See test_alarm_pipeline.
 # ══════════════════════════════════════════════════════════════════════════════
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]          # Master/
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]          # Master/
 _ALARMS_DIR = _PROJECT_ROOT / 'Dashboard' / 'app' / 'alarms'
 
 

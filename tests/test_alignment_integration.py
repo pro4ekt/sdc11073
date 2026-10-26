@@ -33,7 +33,7 @@ from unittest import mock
 #  Isolated module bootstrap (mirrors test_math_core.py)
 # ══════════════════════════════════════════════════════════════════════════════
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _APP_DIR = _PROJECT_ROOT / 'Dashboard' / 'app'
 _ALARMS_DIR = _APP_DIR / 'alarms'
 

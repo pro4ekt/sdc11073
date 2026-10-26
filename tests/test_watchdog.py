@@ -17,7 +17,7 @@ shrunk per instance so the loop runs in milliseconds.
     W4  a SubscriptionEnd from the provider is carried into the fallback event
         (end_status / end_reason)
 
-Run with (from Dashboard/):  ..\\.venv\\Scripts\\python -m unittest tests.test_watchdog -v
+Run with (from the repository root):  .venv\\Scripts\\python -m unittest tests.test_watchdog -v
 """
 
 from __future__ import annotations
