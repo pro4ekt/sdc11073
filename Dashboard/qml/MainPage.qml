@@ -385,7 +385,7 @@ Item {
                         radius: 20
 
                         color: (model.alarm === "On" || model.alarm === "COMM_FAILURE" || model.alarm === "Warning")
-                               ? "transparent" : "#5e6ea5"
+                               ? "transparent" : "#2e7d32"
 
                         gradient: model.alarm === "On"            ? gradOn
                                 : (model.alarm === "Warning"      ? gradWarn
@@ -399,7 +399,7 @@ Item {
                         Gradient { id: gradComm;  GradientStop { position: 0.0; color: "#4a3030" } GradientStop { position: 1.0; color: "#7a3030" } }
                         Gradient { id: gradAck;   GradientStop { position: 0.0; color: "#2e4a6e" } GradientStop { position: 1.0; color: "#3d5f8a" } }
                         Gradient { id: gradLatch; GradientStop { position: 0.0; color: "#303d60" } GradientStop { position: 1.0; color: "#3e4f7a" } }
-                        Gradient { id: gradOff;   GradientStop { position: 0.0; color: "#5e6ea5" } GradientStop { position: 1.0; color: "#7487c4" } }
+                        Gradient { id: gradOff;   GradientStop { position: 0.0; color: "#2e7d32" } GradientStop { position: 1.0; color: "#388e3c" } }
 
                         SequentialAnimation on opacity {
                             // Blink ONLY for hard clinical alerts: Escalated (On) and COMM_FAILURE.

@@ -198,7 +198,7 @@ Item {
                         height: 130
                         radius: 18
 
-                        // Base colour: tri-state — red / yellow / blue
+                        // Base colour: tri-state — red / yellow / green
                         color: "transparent"
 
                         // Fix 17: a fully lost patient (connectionLost) is a technical
@@ -225,8 +225,8 @@ Item {
                         }
                         Gradient {
                             id: gradNormal
-                            GradientStop { position: 0.0; color: "#5e6ea5" }
-                            GradientStop { position: 1.0; color: "#7487c4" }
+                            GradientStop { position: 0.0; color: "#2e7d32" }
+                            GradientStop { position: 1.0; color: "#388e3c" }
                         }
 
                         // ── Escalation border glow ─────────────────────────────
@@ -266,7 +266,7 @@ Item {
                             anchors.rightMargin: 18
                             color: modelData.isEscalated ? "#af3c3c"
                                  : modelData.hasActiveAlarms   ? "#ebd234"
-                                 :                         "#4caf50"
+                                 :                         "#a5d6a7"
 
                             // Pulse ONLY when escalated (Red). Warning is static.
                             SequentialAnimation on scale {

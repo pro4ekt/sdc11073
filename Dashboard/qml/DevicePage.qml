@@ -95,7 +95,7 @@ Item {
             for (var i = 0; i < ops.length; i++) {
                 opListModel.append({
                     "opname": ops[i].name,
-                    "alarm": "Off", // Operations typically don't have "Alarms", defaults to Blue/Off
+                    "alarm": "Off", // Operations typically don't have "Alarms", defaults to Green/Off
                     "timeout": 0
                 })
             }
@@ -495,8 +495,8 @@ Item {
                             //Градиент для Alarm Off
                             Gradient {
                                 id: gradOff
-                                GradientStop { position: 0.0; color: "#5e6ea5" }
-                                GradientStop { position: 1.0; color: "#7487c4" }
+                                GradientStop { position: 0.0; color: "#2e7d32" }
+                                GradientStop { position: 1.0; color: "#388e3c" }
                             }
 
                             // Мигаем только если Alarm On
@@ -681,8 +681,8 @@ Item {
                             //Градиент для Alarm Off
                             Gradient {
                                 id: gradOffOp
-                                GradientStop { position: 0.0; color: "#5e6ea5" }
-                                GradientStop { position: 1.0; color: "#7487c4" }
+                                GradientStop { position: 0.0; color: "#2e7d32" }
+                                GradientStop { position: 1.0; color: "#388e3c" }
                             }
 
                             // Мигаем только если Alarm On

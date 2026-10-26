@@ -423,7 +423,7 @@ Each ensemble dict exposes: `ensembleUuid, patientName, room, deviceCount,
 isEscalated, hasActiveAlarms, sdcScore`. `sdcScore ∈ [0,1]` (the model's
 `SDC_score(t)`) is rendered by QML as a **percentage** intensity; the tri-state
 colour is driven by the orthogonal `isEscalated` / `hasActiveAlarms` booleans
-(Red = central escalation, Yellow = any local bedside signal, Blue = idle).
+(Red = central escalation, Yellow = any local bedside signal, Green = idle).
 
 ---
 

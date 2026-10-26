@@ -42,7 +42,7 @@ The dashboard forms the two ensembles itself from (patient, room).
 
 | Phase | Script sends | Screenshot |
 |---|---|---|
-| 0 | nothing (providers bound) | both cards Blau |
+| 0 | nothing (providers bound) | both cards Grün |
 | 1 | `alarm desaturation on` on both monitors | both cards Gelb, Severity ≈ 75 % |
 | 2 | `alarm vt_low on` on the ventilator of bed 1 | bed 1 Rot (≈ 83 %), bed 2 Gelb — main screenshot |
 | 3 | nothing; acknowledge by hand on the device page of bed 1 | acknowledgement status |
