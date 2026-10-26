@@ -22,9 +22,9 @@ self._adaptive_lock.  No topology lock is ever nested inside a processor lock.
 import logging
 import threading
 import time
-from typing import Optional, Tuple, Set, Dict, TYPE_CHECKING
+from typing import Iterable, Optional, Tuple, Set, Dict, TYPE_CHECKING
 
-from .alarmCoordinator import AlarmCoordinator, DeviceAlertEvidence
+from .alarmCoordinator import AlarmCoordinator, DeviceAlertEvidence, device_of_alert_key
 from .adaptive_alarm_aggregator import AdaptiveAlarmAggregator
 from .clinical_context import ClinicalContext
 from .device_profile_repo import DeviceReliabilityProfile, get_repository
@@ -45,6 +45,8 @@ class SmartAlertAggregator:
                          full sensor registry and FHIR danger codes.
     ``overview_model`` — Qt/QML PatientOverviewModel bridge (status/severity
                          updates); may be None (headless / tests).
+    ``periodic_eval``  — start the T_P evaluation thread (default True); tests
+                         that drive ``evaluate_periodic`` by hand pass False.
     """
 
     def __init__(
@@ -52,6 +54,7 @@ class SmartAlertAggregator:
         manager: 'SdcMyConsumer',
         topology: 'EnsembleTopologyManager',
         overview_model: Optional['PatientOverviewModel'] = None,
+        periodic_eval: bool = True,
     ) -> None:
         self.logger = logging.getLogger('sdc.consumer.aggregator')
         self._manager = manager
@@ -112,6 +115,10 @@ class SmartAlertAggregator:
         # resolves so a rapidly re-firing (jittering) alarm reuses the SAME aggregator
         # instead of rebuilding on every ON/OFF cycle.
         self._ensemble_resolved_ts: Dict[str, float] = {}
+        # Fix 9 — last SDC_score pushed to the patient card per ensemble, so a
+        # departure-driven re-push (on_member_departed) keeps the severity shown
+        # until the next tick recomputes it.
+        self._last_sdc_score: Dict[str, float] = {}
 
         # V4 — cap the per-tick persistence credit so a starved/paused notification
         # thread cannot advance the tick clock by an arbitrarily large jump.
@@ -136,6 +143,20 @@ class SmartAlertAggregator:
             target=self._gc_loop, daemon=True, name='AggregatorGC'
         )
         self._gc_thread.start()
+
+        # ── Periodic evaluation grid T_P (thesis 3.4.5) ───────────────────────
+        # Δ_eval from clinical_db.json (filter_params.delta_eval, default 1 s,
+        # validated 0 < Δ_eval ≤ T by the repository).  One pass every Δ_eval over
+        # all ensembles with active alarms; see evaluate_periodic().  Disabled
+        # only for deterministic tests that drive evaluate_periodic() themselves.
+        self.DELTA_EVAL_SEC: float = get_repository().get_eval_interval()
+        self._last_periodic_ts: Optional[float] = None
+        self._eval_thread: Optional[threading.Thread] = None
+        if periodic_eval:
+            self._eval_thread = threading.Thread(
+                target=self._eval_loop, daemon=True, name='AggregatorEval'
+            )
+            self._eval_thread.start()
 
 
     def check_alert_validity(
@@ -180,6 +201,9 @@ class SmartAlertAggregator:
         # and self.lock un-nested (acyclic ordering → deadlock-free).
         member_specs = self._topology.get_member_specs(ensemble_uuid)
         danger_codes = self._topology.collect_patient_danger_codes(ensemble_uuid)
+        # Device truth for a_j (Fix 11): AlertConditionState.Presence of every
+        # member MDIB, read non-blocking BEFORE any processor lock.
+        presence = self._snapshot_presence(ensemble_uuid)
 
         with self.lock:
             # ── Early return: ensemble already escalated ──────────────────────────
@@ -212,6 +236,11 @@ class SmartAlertAggregator:
                 # Latched hot path runs UNDER self.lock → counters only, no CSV I/O.
                 self._record_arr_metric(ensemble_uuid, alert_key, True, 1.0,
                                         write_row=False)
+                # Fix 12 — the filter keeps tracking during the latch (3.4.6):
+                # the same tick as on the normal path, verdict NOT routed; the
+                # telemetry line is written by AlarmCoordinator.evaluate.
+                self._drive_tick_locked(ensemble_uuid, member_specs, danger_codes,
+                                        now, presence, forced={alert_key: 1})
                 return 'ESCALATE'
 
             # ── Active alarm cache (TTL) ──────────────────────────────────────
@@ -230,50 +259,156 @@ class SmartAlertAggregator:
 
             # TTL-GC is handled exclusively by the background _gc_loop.
 
-            ensemble_evidences: list[DeviceAlertEvidence] = [
-                ev for ev, _ts in self._active_alarms[ensemble_uuid].values()
-            ]
+            # ── Adaptive drive (T_E: alarm event) — shared with the periodic
+            # evaluation T_P (evaluate_periodic); see _drive_tick_locked.
+            decision = self._drive_tick_locked(
+                ensemble_uuid, member_specs, danger_codes, now, presence,
+                forced={alert_key: 1},          # the ON report itself is device truth
+            )
 
-            # Snapshot everything the tick needs while still under self.lock so the
-            # adaptive drive below never touches self.lock-protected structures.
-            active_keys: Set[str] = set(self._active_alarms[ensemble_uuid].keys())
-            contributing_devices: int = len(ensemble_evidences)
+        return self._route_decision(ensemble_uuid, alert_key, decision)
 
-            # ── Adaptive drive — executed while STILL holding self.lock to close
-            # the TOCTOU gap with the GC daemon.  Lock hierarchy A → B: acquiring
-            # _adaptive_lock while holding self.lock is permitted; _adaptive_lock
-            # never re-acquires self.lock, so the order is acyclic.  tick() is pure
-            # CPU, so holding self.lock for the microseconds it takes is safe.
-            with self._adaptive_lock:
-                last_ts = self._last_tick_ts.get(ensemble_uuid)
-                if last_ts is None:
-                    dt_step = 0.0                  # first tick of this ensemble
+    # ── Device truth for a_j (Fix 11) ─────────────────────────────────────────
+
+    def _snapshot_presence(
+        self, ensemble_uuid: str,
+    ) -> Tuple[Dict[str, bool], Set[str], Set[str]]:
+        """Read ``AlertConditionState.Presence`` of every member device.
+
+        Returns ``(presence, readable, busy)``: ``presence`` maps the channel
+        key ``(epr, handle)`` to the current Presence; ``readable`` holds the
+        EPRs whose MDIB was read; ``busy`` the EPRs whose MDIB lock was taken
+        (non-blocking read failed) — their channels keep their last known value.
+        Devices without ``snapshot_alert_presence`` (stubs) appear in neither
+        set and fall back to the TTL-cache rule.  Takes only the topology lock
+        (snapshot of the member set) and each device's ``data_lock``
+        non-blocking; MUST be called before ``self.lock`` (Tabelle 3.2 order).
+        """
+        presence: Dict[str, bool] = {}
+        readable: Set[str] = set()
+        busy: Set[str] = set()
+        manager_devices: dict = getattr(self._manager, 'devices', {}) or {}
+        for epr in self._topology.get_members(ensemble_uuid):
+            handler = manager_devices.get(epr)
+            fn = getattr(handler, 'snapshot_alert_presence', None)
+            if fn is None:
+                continue
+            try:
+                snap = fn()
+            except Exception:
+                snap = None
+            if snap is None:
+                busy.add(epr)
+            else:
+                readable.add(epr)
+                presence.update(snap)
+        return presence, readable, busy
+
+    @staticmethod
+    def _activation_vector(
+        sensor_ids,
+        active_keys: Set[str],
+        presence: Optional[Tuple[Dict[str, bool], Set[str], Set[str]]],
+        forced: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, int]:
+        """Build ``{sensor_id → a_j}`` for one tick.
+
+        Precedence per channel: (1) ``forced`` — the report that triggered this
+        evaluation (ON → 1, OFF → 0) is device truth by definition; (2) the
+        Presence snapshot of a readable device; (3) a channel of a busy device
+        is omitted so the aggregator holds its last known value (ZOH, thesis
+        3.3), except that a cached report still counts as 1; (4) a channel of
+        a device without snapshot support follows the TTL-cache rule (1 iff
+        cached).  A readable device whose MDIB lacks the channel is treated
+        like a busy one (hold).
+        """
+        present, readable, busy = presence if presence is not None else ({}, set(), set())
+        forced = forced or {}
+        states: Dict[str, int] = {}
+        for sid in sensor_ids:
+            if sid in forced:
+                states[sid] = 1 if forced[sid] else 0
+            elif sid in present:
+                states[sid] = 1 if present[sid] else 0
+            else:
+                epr = device_of_alert_key(sid)
+                if epr is not None and (epr in busy or epr in readable):
+                    if sid in active_keys:
+                        states[sid] = 1
+                    # else: hold last known value (key omitted → ZOH in tick)
                 else:
-                    dt_step = now - last_ts
-                    if dt_step < 0.0:
-                        dt_step = 0.0              # guard against clock non-monotonicity
-                # V4 — cap the per-tick credit so thread starvation cannot inject an
-                # arbitrarily large dt jump into the aggregator.
-                dt_step = min(dt_step, self.ADAPTIVE_MAX_DT_STEP)
-                self._last_tick_ts[ensemble_uuid] = now
+                    states[sid] = 1 if sid in active_keys else 0
+        return states
 
-                aggregator = self._get_or_build_adaptive_aggregator_locked(
-                    ensemble_uuid, ensemble_evidences, member_specs, danger_codes
-                )
-                # Binary activation vector for this tick: 1 if the sensor's alarm is
-                # currently in the TTL cache, else 0 (sensor fell silent → decays).
-                sensor_states: Dict[str, int] = {
-                    sid: (1 if sid in active_keys else 0)
-                    for sid in aggregator.sensor_ids
-                }
+    # ── Evaluation drive and routing (shared by T_E and T_P) ────────────────
 
-                decision = self.alarm_coordinator.evaluate(
-                    aggregator,
-                    sensor_states,
-                    dt_step,
-                    contributing_devices,
-                )
+    def _drive_tick_locked(
+        self,
+        ensemble_uuid: str,
+        member_specs: Dict[str, SensorSpec],
+        danger_codes: Set[str],
+        now: float,
+        presence: Optional[Tuple[Dict[str, bool], Set[str], Set[str]]] = None,
+        forced: Optional[Dict[str, int]] = None,
+    ):
+        """Drive exactly one tick() for ``ensemble_uuid`` and return the decision.
 
+        MUST be called with ``self.lock`` held and with a non-empty
+        ``_active_alarms[ensemble_uuid]``.  Acquires ``_adaptive_lock`` (B → B')
+        while still holding ``self.lock`` — the same nesting as before the
+        refactoring (the adaptive lock never re-acquires ``self.lock``, so the
+        order stays acyclic).  tick() is pure CPU.
+
+        This is the single evaluation path of the model: an alarm event
+        (``check_alert_validity``, T_E) and the periodic grid
+        (``evaluate_periodic``, T_P) both end here, so Δt bookkeeping, the
+        registry-authoritative composition and the clinical context are applied
+        identically.
+        """
+        ensemble_evidences: list[DeviceAlertEvidence] = [
+            ev for ev, _ts in self._active_alarms[ensemble_uuid].values()
+        ]
+        # Snapshot everything the tick needs while still under self.lock so the
+        # adaptive drive below never touches self.lock-protected structures.
+        active_keys: Set[str] = set(self._active_alarms[ensemble_uuid].keys())
+        contributing_devices: int = len(ensemble_evidences)
+
+        with self._adaptive_lock:
+            last_ts = self._last_tick_ts.get(ensemble_uuid)
+            if last_ts is None:
+                dt_step = 0.0                  # first tick of this ensemble
+            else:
+                dt_step = now - last_ts
+                if dt_step < 0.0:
+                    dt_step = 0.0              # guard against clock non-monotonicity
+            # V4 — cap the per-tick credit so thread starvation cannot inject an
+            # arbitrarily large dt jump into the aggregator (docs/model/SPEC_DELTA.md SD-7).
+            dt_step = min(dt_step, self.ADAPTIVE_MAX_DT_STEP)
+            self._last_tick_ts[ensemble_uuid] = now
+
+            aggregator = self._get_or_build_adaptive_aggregator_locked(
+                ensemble_uuid, ensemble_evidences, member_specs, danger_codes
+            )
+            # Binary activation vector for this tick from device truth (Fix 11);
+            # see _activation_vector for the precedence rules.
+            sensor_states: Dict[str, int] = self._activation_vector(
+                aggregator.sensor_ids, active_keys, presence, forced
+            )
+
+            return self.alarm_coordinator.evaluate(
+                aggregator,
+                sensor_states,
+                dt_step,
+                contributing_devices,
+            )
+
+    def _route_decision(self, ensemble_uuid: str, alert_key: str, decision) -> str:
+        """Map a tick decision onto the tri-state routing and the patient card.
+
+        Called WITHOUT ``self.lock`` (takes it briefly for the latch and the
+        TTL-active check; topology reverse-lookup and the overview push take
+        their own locks).  Identical for T_E and T_P.
+        """
         # ── Route based on tri-state decision ────────────────────────────────────
         if decision.escalate:
             with self.lock:
@@ -302,6 +437,81 @@ class SmartAlertAggregator:
                                   has_active_alarms=True)
         self._record_arr_metric(ensemble_uuid, alert_key, False, decision.sdc_score)
         return 'WARN'
+
+    # ── Periodic evaluation grid T_P ──────────────────────────────────────────
+
+    def evaluate_periodic(self, now: Optional[float] = None) -> int:
+        """One pass of the periodic evaluation grid T_P (thesis 3.4.5).
+
+        The model is evaluated at T = T_E ∪ T_P: at every alarm event
+        (``check_alert_validity`` / ``clear_alarm``) and on a periodic grid with
+        step ``DELTA_EVAL_SEC`` (``filter_params.delta_eval`` in
+        ``clinical_db.json``, Δ_eval ≤ T).  The grid is required by the model: a
+        source contributes s_j = 0 at the instant it switches on, so an ensemble
+        whose sources switch on together and then stay unchanged would never be
+        evaluated with a filled window — and never escalate — without it.
+
+        Scope: every ensemble that currently holds at least one active alarm in
+        the TTL cache and is not latched.  Latched ensembles are skipped exactly
+        as the event path skips them (the latch holds the routed decision until
+        the cache empties); ensembles without active alarms are not evaluated.
+        Each candidate takes the SAME path as an alarm event: topology snapshots
+        before any processor lock, then ``self.lock`` → ``_adaptive_lock`` →
+        ``_drive_tick_locked`` → ``_route_decision`` (Δt from ``_last_tick_ts``,
+        20 s clamp, latch set on an escalating verdict, Yellow push otherwise).
+
+        A pass is a no-op when the clock has not advanced since the previous
+        pass (``now`` ≤ last pass): the grid is a set of distinct instants, and
+        this also keeps a frozen test clock from producing spurious ticks.
+
+        Returns the number of ensembles evaluated.
+        """
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            if self._last_periodic_ts is not None and now <= self._last_periodic_ts:
+                return 0
+            self._last_periodic_ts = now
+            candidates = [eid for eid, cache in self._active_alarms.items() if cache]
+        evaluated = 0
+        for ensemble_uuid in candidates:
+            # Topology and device snapshots BEFORE any processor lock (A never
+            # nested in B; device data_locks non-blocking).
+            member_specs = self._topology.get_member_specs(ensemble_uuid)
+            danger_codes = self._topology.collect_patient_danger_codes(ensemble_uuid)
+            presence = self._snapshot_presence(ensemble_uuid)
+            present = presence[0]
+            with self.lock:
+                cache = self._active_alarms.get(ensemble_uuid)
+                # Re-check under the lock: the cache may have emptied meanwhile
+                # (clear_alarm, GC, departure).
+                if not cache:
+                    continue
+                # Fix 11 — a cached report whose condition is still present on
+                # the device is refreshed, so the TTL never expires an active
+                # alarm of a reachable device.  Entries whose Presence cannot be
+                # confirmed (device busy / unreadable / Presence false without
+                # an OFF report) are left to the TTL as a safety net.
+                for key, (ev, _ts) in list(cache.items()):
+                    if present.get(key) is True:
+                        cache[key] = (ev, now)
+                latched = ensemble_uuid in self._escalated_ensembles
+                decision = self._drive_tick_locked(
+                    ensemble_uuid, member_specs, danger_codes, now, presence
+                )
+            if not latched:
+                self._route_decision(ensemble_uuid, '<periodic>', decision)
+            # Fix 12 — a latched ensemble is evaluated (telemetry written by the
+            # coordinator) but not routed: the latch holds the decision (3.4.6).
+            evaluated += 1
+        return evaluated
+
+    def _eval_loop(self) -> None:
+        """Daemon thread: one ``evaluate_periodic`` pass every DELTA_EVAL_SEC."""
+        while not self._stop_gc.wait(timeout=self.DELTA_EVAL_SEC):
+            try:
+                self.evaluate_periodic()
+            except Exception as exc:
+                self.logger.warning(f'[AggregatorEval] Unhandled exception in periodic evaluation: {exc}')
 
     # ── Adaptive aggregator support ───────────────────────────────────────────
 
@@ -361,7 +571,7 @@ class SmartAlertAggregator:
         w_j comes from the pre-fetched reliability_profile (TPR/FPR); P_j from
         the BICEPS priority via the repository priority_map.
 
-        Gateway Admission Rule (math_part1.md §2.1): a channel is admitted to
+        Gateway Admission Rule (docs/model/math_part1.md §2.1): a channel is admitted to
         the ensemble M only if ``0 < FPR_j < TPR_j``.  A channel without a
         reliability profile has no TPR/FPR and is therefore rejected — it would
         contribute w_j = 0 (no evidence) while still diluting w̄ and lowering
@@ -413,7 +623,7 @@ class SmartAlertAggregator:
         Evidence-derived specs are used solely as a fallback while the registry
         has not been built yet (empty).  Otherwise a departed device whose alarm
         is still cached would re-enter M through the cache with a_j = 1 and keep
-        contributing evidence for up to ALARM_TTL_SEC (SPEC_DELTA.md SD-2).
+        contributing evidence for up to ALARM_TTL_SEC (docs/model/SPEC_DELTA.md SD-2).
 
         Membership follows the registry in BOTH directions (Fix 8): the current
         composition is compared with the required one for EQUALITY, and on any
@@ -458,7 +668,7 @@ class SmartAlertAggregator:
             # Composition changed (channel joined OR departed) — adopt new_specs,
             # not a union: update_specs keeps FIR history of survivors and drops
             # departed channels.  Known consequence: the hysteresis cold-restarts,
-            # so Θ_current steps on a device disconnect (math_part1.md §8.1
+            # so Θ_current steps on a device disconnect (docs/model/math_part1.md §8.1
             # declares hot-plug transitions outside the validated scope).
             agg.update_specs(new_specs)
 
@@ -526,9 +736,95 @@ class SmartAlertAggregator:
             self._active_alarms.pop(ensemble_uuid, None)
             self._escalated_ensembles.discard(ensemble_uuid)
             self._ensemble_resolved_ts.pop(ensemble_uuid, None)
+            self._last_sdc_score.pop(ensemble_uuid, None)
         self.logger.debug(
             f'[Adaptive] Discarded processor state for ensemble {ensemble_uuid[:8]}...'
         )
+
+    def on_member_departed(
+        self,
+        ensemble_uuid: str,
+        orphaned: bool,
+        departed_alert_keys: Optional[Iterable[str]] = None,
+    ) -> None:
+        """Propagate a device departure to the patient card and the TTL cache (Fix 9).
+
+        Called by ``SdcMyConsumer.remove_device()`` AFTER the topology manager has
+        released the device (membership / registry already shrunk, Fix 8) and —
+        for a full release — after ``discard_ensemble()``.
+
+        ``orphaned`` (last member left):
+            the ensemble no longer exists anywhere in the model; the card is
+            removed from ``PatientOverviewModel`` (``removeEnsemble``).  Without
+            this call the card stayed on the Patient Overview for ever, with its
+            last colour.
+
+        Partial departure (``orphaned`` False):
+            1. the departed device's alert keys are purged from
+               ``_active_alarms[ensemble]`` (docs/model/SPEC_DELTA.md SD-2 residual): a departed
+               channel is not in the registry-derived ``M`` any more, but its
+               cache entry kept ``ttl_active`` True (card Yellow for up to
+               ALARM_TTL_SEC) and inflated ``contributing_devices``;
+            2. if the purge emptied the cache the ensemble is resolved exactly as
+               in ``clear_alarm`` (latch cleared, grace stamp, FIR flush, Blue);
+            3. the card is re-pushed with the CURRENT status (member count from
+               the topology, latch, TTL-active flag, last SDC_score) so
+               ``deviceCount`` and the colour update immediately instead of at
+               the next alarm event.
+
+        No tick is driven: the departed channel leaves the aggregator's sensor
+        set on the next event through the registry-authoritative rebuild
+        (``_get_or_build_adaptive_aggregator_locked``), which also resets the
+        hysteresis (documented hot-plug step, docs/model/math_part1.md §8.1).
+
+        Lock order: self.lock (A) released before ``_reset_adaptive_state``
+        (B → C) and before the topology reverse-lookup — identical to
+        ``clear_alarm``.
+        """
+        if not ensemble_uuid:
+            return
+        if orphaned:
+            with self.lock:
+                self._last_sdc_score.pop(ensemble_uuid, None)
+            if self._overview_model is not None:
+                try:
+                    self._overview_model.removeEnsemble(ensemble_uuid)
+                except Exception as exc:
+                    self.logger.debug(f'[PatientOverview] removeEnsemble failed: {exc}')
+            self.logger.info(
+                f'[Departure] ensemble={ensemble_uuid[:8]} fully released — patient card removed.'
+            )
+            return
+
+        keys = set(departed_alert_keys or ())
+        resolved = False
+        purged: list[str] = []
+        with self.lock:
+            cache = self._active_alarms.get(ensemble_uuid)
+            if cache:
+                purged = [k for k in keys if k in cache]
+                for k in purged:
+                    del cache[k]
+                if not cache:
+                    # Purge emptied the cache → resolve like clear_alarm's full clear.
+                    del self._active_alarms[ensemble_uuid]
+                    self._escalated_ensembles.discard(ensemble_uuid)
+                    self._ensemble_resolved_ts[ensemble_uuid] = time.monotonic()
+                    resolved = True
+            is_escalated = ensemble_uuid in self._escalated_ensembles
+            has_active = bool(self._active_alarms.get(ensemble_uuid))
+            sdc_score = 0.0 if resolved else self._last_sdc_score.get(ensemble_uuid, 0.0)
+        if purged:
+            self.logger.info(
+                f'[Departure] ensemble={ensemble_uuid[:8]}: purged {len(purged)} stale alarm '
+                f'key(s) of the departed device from the TTL cache: {purged}'
+            )
+        if resolved:
+            self._reset_adaptive_state(ensemble_uuid)
+        patient_id, room = self._topology.reverse_lookup_patient_room(ensemble_uuid)
+        self._notify_overview(ensemble_uuid, patient_id, room,
+                              is_escalated=is_escalated, sdc_score=sdc_score,
+                              has_active_alarms=has_active)
 
     def is_ensemble_escalated(self, ensemble_uuid: Optional[str]) -> bool:
         """Return True if the ensemble is currently in an escalated (crisis) state."""
@@ -593,6 +889,9 @@ class SmartAlertAggregator:
         # would nest/re-enter. threading.Lock() is NOT reentrant.
         crisis_resolved = False
         removed = False
+        # Device truth for the surviving channels of a partial clear (Fix 11);
+        # read before self.lock.
+        presence = self._snapshot_presence(ensemble_uuid)
 
         with self.lock:
             ensemble_cache = self._active_alarms.get(ensemble_uuid)
@@ -649,13 +948,13 @@ class SmartAlertAggregator:
                         dt_step = min(dt_step, self.ADAPTIVE_MAX_DT_STEP)
                         self._last_tick_ts[ensemble_uuid] = now
 
-                        # Activation vector built exactly as in check_alert_validity:
-                        # 1 if the channel is still in the TTL cache, else 0 — the
-                        # cleared channel is now 0, which is the OFF edge itself.
-                        sensor_states: Dict[str, int] = {
-                            sid: (1 if sid in active_keys else 0)
-                            for sid in aggregator.sensor_ids
-                        }
+                        # Activation vector built exactly as in check_alert_validity;
+                        # the cleared channel is forced to 0 — the OFF report is
+                        # device truth and is the OFF edge itself.
+                        sensor_states: Dict[str, int] = self._activation_vector(
+                            aggregator.sensor_ids, active_keys, presence,
+                            forced={alert_key: 0},
+                        )
                         # The verdict is intentionally ignored: routing, the
                         # _escalated_ensembles latch and the UI are left as they
                         # are.  An alarm going OFF must never produce an
@@ -665,7 +964,7 @@ class SmartAlertAggregator:
                         # partial clear drops E below Θ, the math core stops
                         # considering itself escalated and RESUMES accumulating
                         # τ while the routing latch stays set.  That is correct —
-                        # math_part1.md has no latch at all; the latch is an
+                        # docs/model/math_part1.md has no latch at all; the latch is an
                         # interface-level behaviour — but it is not obvious.
                         result = aggregator.tick(sensor_states, dt_step)
                         self.logger.debug(
@@ -772,6 +1071,8 @@ class SmartAlertAggregator:
           is_escalated=False, has_active_alarms  → Yellow (local bedside signal)
           both False                            → Blue   (no active alarms)
         """
+        with self.lock:
+            self._last_sdc_score[ensemble_uuid] = float(sdc_score)
         if self._overview_model is None:
             return
         device_count = self._topology.get_member_count(ensemble_uuid)
@@ -900,5 +1201,5 @@ class SmartAlertAggregator:
                         )
 
     def stop(self) -> None:
-        """Signal the GC daemon thread to exit. Call on application shutdown."""
+        """Signal the GC and periodic-evaluation daemon threads to exit."""
         self._stop_gc.set()

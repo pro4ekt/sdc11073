@@ -1,0 +1,71 @@
+{
+  "_comment": "Campaign PC1: headless dashboard + tshark + per-phase journals. Step 1 = local providers (harness.Prov); step 2 adds providers.source = remote (agent on PC2) and ziel2_fault.netdown.",
+  "ip": "192.168.0.106",
+  "room": "ICU-1",
+  "other_room": "ICU-2",
+  "tls": "auto",
+
+  "providers": {
+    "source": "local",
+    "host": "192.168.0.105",
+    "port": 5555,
+    "iface": "Ethernet",
+    "_comment": "source: local = testbed_provider.py started on this PC by the runners; remote = via provider_agent on PC2 (step 2, not implemented yet)"
+  },
+
+  "background": {
+    "expect": 0,
+    "room": "ICU-1",
+    "patient": "P009",
+    "_comment": "C++ providers in VirtualBox (bridged), started by hand with --room ICU-1 --patient-id P009. Not controlled, not measured; only their discovery/decision is noted. Fewer than 'expect' discovered = warning."
+  },
+
+  "capture": {
+    "enabled": "auto",
+    "tshark": null,
+    "interface": "auto",
+    "filter": "auto",
+    "ring_file_kb": 200000,
+    "ring_files": 3,
+    "provider_ports": [10000, 11999],
+    "_comment": "interface: auto = Npcap loopback when providers are local, else the adapter that owns 'ip'; or an index / device string / alias substring from 'tshark -D'. filter: auto = 'host {ip}' (local) or 'host {provider_host} or udp port 3702' (remote); placeholders {ip} {provider_host} allowed in an explicit filter. provider_ports = TCP ports counted as request/response; other TCP = notifications to the dashboard. enabled: auto|off."
+  },
+
+  "network": {
+    "pc2_ip": "192.168.0.100",
+    "schedule": "schedule_c.json",
+    "capture_filter": "host {provider_host} or udp port 3702",
+    "interface": "auto",
+    "ring_files": 6,
+    "max_hours": 10,
+    "wait_start_min": 60,
+    "idle_exit_min": 30,
+    "dossier_target": "experiments/campaign_2pc/logs/campaign_netz_ergebnisse.md",
+    "_comment": "variant C (campaign.py --listen / --merge): PC 2 runs pc2_scheduler.py with schedule_c.json; the capture on the NIC that owns 'ip' keeps only traffic with PC 2 plus discovery multicast; the local full run keeps dossier_target above"
+  },
+  "resources_interval_s": 60,
+
+  "phases": {
+    "smoke": {
+      "ziel1": {"trials": "foreign=1,mismatch=1,own=1,nolocation=1", "port_base": 10050},
+      "ack":   {"accept": 2, "refuse": 1, "port": 10090},
+      "fault": {"methods": "shutdown=1,kill=1", "port_base": 10060}
+    },
+    "ziel1_filtered": {"trials": "foreign=150,mismatch=150,own=5,nolocation=5", "port_base": 10100},
+    "ziel1_baseline": {"trials": "foreign=20,mismatch=20,own=2,nolocation=2", "port_base": 10500},
+    "ziel2_ack":      {"accept": 300, "refuse": 20, "port": 10600},
+    "ziel2_fault":    {"methods": "kill=30,shutdown=30,suspend=10,reconnect=5", "port_base": 10700,
+                       "netdown": {"enabled": false, "n": 30, "seconds": 45, "_comment": "step 2: real network loss via the PC2 agent"}}
+  },
+
+  "pilot": {
+    "smoke":          {"ziel1": {"trials": "foreign=1,mismatch=1,own=1,nolocation=1"}, "ack": {"accept": 2, "refuse": 1}, "fault": {"methods": "shutdown=1,kill=1"}},
+    "ziel1_filtered": {"trials": "foreign=3,mismatch=3,own=1,nolocation=1"},
+    "ziel1_baseline": {"trials": "foreign=2,mismatch=2,own=1,nolocation=1"},
+    "ziel2_ack":      {"accept": 3, "refuse": 2},
+    "ziel2_fault":    {"methods": "kill=1,shutdown=1,suspend=1,reconnect=1"}
+  },
+
+  "bounds_s": {"shutdown": 10.0, "kill": 15.0, "suspend": 30.0, "netdown": 30.0},
+  "dossier_target": "experiments/campaign_2pc/logs/campaign_2pc_ergebnisse.md"
+}

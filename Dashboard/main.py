@@ -17,7 +17,7 @@ TLS MODE (--tls / --no_tls):
 Examples:
   python main.py
   python main.py --room="Room_1"
-  python main.py --no_tls
+  python main.py --no_tls   
   python main.py --tls --room="ICU-3"
 
 """
@@ -69,6 +69,16 @@ if __name__ == "__main__":
         ),
     )
 
+    parser.add_argument(
+        "--event-log",
+        default=None,
+        metavar="PATH",
+        help=(
+            "JSON Lines event journal (topology decisions, subscriptions, "
+            "ack RTT, fallbacks, verdicts). Default: logs/events.jsonl."
+        ),
+    )
+
     # -- TLS strategy (mutually exclusive group) ------------------------------
     _tls_group = parser.add_mutually_exclusive_group()
     _tls_group.add_argument(
@@ -88,7 +98,7 @@ if __name__ == "__main__":
         help=(
             "Disable TLS -- plain HTTP, no TLS-fallback. "
             "Useful for testing Providers without certificates. "
-            "Equivalent to running sdcProvider/sdcX with --no_tls."
+            "Use with providers that were started without TLS."
         ),
     )
 
@@ -147,6 +157,7 @@ if __name__ == "__main__":
         override_ip=override_ip,
         tls_mode=tls_mode,
         overview_model=overview_model,
+        event_log=args.event_log,
     )
     manager.start()
 

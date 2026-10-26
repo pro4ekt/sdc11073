@@ -1,0 +1,69 @@
+{
+  "_comment": "Variant C: shared schedule of the two-PC night run. The SAME file is read by pc2_scheduler.py (PC 2), pc1_listener.py / campaign.py --listen (PC 1) and campaign.py --merge. Times in seconds, all on the clock of the PC that acts.",
+  "scenario": "netc",
+  "pc1_ip": "192.168.0.106",
+  "pc2_ip": "192.168.0.100",
+  "room": "ICU-1",
+  "other_room": "ICU-2",
+  "tls": "auto",
+  "clock_port": 5558,
+  "clock_poll_s": 10,
+
+  "ports": {
+    "_comment": "provider ports on PC 2, one per trial (12xxx so they never collide with the local campaign 10xxx/11xxx); reconnect uses port + reconnect_offset",
+    "z1_filtered": 12100,
+    "z2_ack": 12600,
+    "z2_fault": 12700,
+    "z1_baseline": 12500,
+    "reconnect_offset": 1000,
+    "capture_range": [12000, 13999]
+  },
+
+  "timing": {
+    "ready_timeout_s": 40,
+    "z1_window_s": 18,
+    "z1_gap_s": 4,
+    "bind_timeout_s": 90,
+    "bind_settle_s": 3,
+    "ack_settle_s": 5,
+    "ack_hold_s": 4,
+    "ack_pause_s": 2,
+    "suspend_hold_s": 45,
+    "netdown_hold_s": 45,
+    "netdown_watchdog_extra_s": 15,
+    "reconnect_wait_s": 20,
+    "reconnect_hold_s": 40,
+    "gap_after_kill_s": 25,
+    "gap_after_shutdown_s": 15,
+    "gap_after_suspend_s": 10,
+    "gap_after_netdown_s": 15,
+    "phase_gap_s": 30,
+    "window_switch_s": 90,
+    "linger_s": 600
+  },
+
+  "phases": [
+    {"name": "z1_filtered", "window": "filtered", "kind": "ziel1", "mode": "filtered",
+     "trials": "foreign=150,mismatch=150,own=5,nolocation=5"},
+    {"name": "z2_ack",      "window": "filtered", "kind": "ack",   "device": "ecg", "accept": 300, "refuse": 20},
+    {"name": "z2_fault",    "window": "filtered", "kind": "fault", "device": "ecg",
+     "methods": "kill=30,shutdown=30,suspend=10,reconnect=5,netdown=30"},
+    {"name": "z1_baseline", "window": "baseline", "kind": "ziel1", "mode": "baseline",
+     "trials": "foreign=20,mismatch=20,own=2,nolocation=2"}
+  ],
+
+  "pilot": {
+    "z1_filtered": {"trials": "foreign=3,mismatch=3,own=1,nolocation=1"},
+    "z2_ack":      {"accept": 3, "refuse": 2},
+    "z2_fault":    {"methods": "kill=1,shutdown=1,suspend=1,reconnect=1,netdown=1"},
+    "z1_baseline": {"trials": "foreign=2,mismatch=2,own=1,nolocation=1"},
+    "timing":      {"phase_gap_s": 10, "window_switch_s": 60, "linger_s": 120}
+  },
+
+  "bounds_s": {"shutdown": 10.0, "kill": 15.0, "suspend": 30.0, "netdown": 30.0},
+
+  "roles": {
+    "_comment": "role -> device of harness.DEVICES (same as experiments/ziel1/ziel1_experiment.py ROLES)",
+    "own": "ecg", "foreign": "spo2", "nolocation": "abp", "mismatch": "vent"
+  }
+}

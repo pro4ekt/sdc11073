@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  vent_mdib_v2.xml - testbed ventilator, variant with FOUR VMDs (second testbed device
+  next to the pulse oximeter)
+  Wrapper msg:GetMdibResponse: identical to spo2_mdib_v2.xml; verified live with both stacks and
+  the Dashboard (2026-09-29).
+    VMD vent_vmd_rr    : respiratory rate            LOINC 9279-1  UCUM /min     alert rr_high    (SNOMED 271823003, Me)
+    VMD vent_vmd_ppeak : peak airway pressure        LOINC 19976-0 UCUM cm[H2O]  alert ppeak_high (SNOMED 405495005, Me)
+    VMD vent_vmd_vt    : expired tidal volume        LOINC 76007-4 UCUM mL       alert vt_low     (SNOMED 31515003, Lo)
+    VMD vent_vmd_mv    : expired minute volume       LOINC 76008-2 UCUM L/min    alert mv_low     (SNOMED 31515003, Hi)
+  Derived from the first single-VMD version (not kept) after the pattern of spo2_mdib_v2.xml: four VMDs each with
+  its own AlertSystem (SelfCheckPeriod PT10S), four SetAlertState operations, no MDS Type.
+  Constraints: MDIB_ANALYSIS.md Part C. All handles carry the prefix "vent_".
+  Per-run identity (patient, location, workflow context states, DPWS
+  Manufacturer/ModelName/FriendlyName) is NOT in this file; the provider
+  creates it at startup from its arguments. No static timestamps in this file.
+  Terminology verified 2026-09-29 (NLM Clinical Tables, tx.fhir.org LOINC 2.82,
+  SNOMED CT International 20250201, UCUM $validate-code). SNOMED CT has no
+  "low tidal volume" / "low minute volume" finding; both use 31515003 Hypoventilation.
+-->
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    MdibVersion="0"
+    SequenceId="urn:uuid:a704dfd9-4fda-4999-ac4c-bcfe92edaae0">
+  <msg:Mdib MdibVersion="0" SequenceId="urn:uuid:a704dfd9-4fda-4999-ac4c-bcfe92edaae0">
+    <pm:MdDescription DescriptionVersion="0">
+      <pm:Mds Handle="vent_mds">
+
+        <pm:Sco Handle="vent_sco">
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="vent_op_ack_rr_high"
+                        OperationTarget="vent_alert_signal_rr_high" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="vent_op_ack_ppeak_high"
+                        OperationTarget="vent_alert_signal_ppeak_high" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="vent_op_ack_vt_low"
+                        OperationTarget="vent_alert_signal_vt_low" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="vent_op_ack_mv_low"
+                        OperationTarget="vent_alert_signal_mv_low" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="vent_op_set_ensemble_ctx"
+                        OperationTarget="vent_ctx_ensemble" Retriggerable="true"/>
+          <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="vent_op_set_workflow_ctx"
+                        OperationTarget="vent_ctx_workflow" Retriggerable="true"/>
+        </pm:Sco>
+
+        <pm:SystemContext Handle="vent_system_context">
+          <pm:PatientContext  xsi:type="pm:PatientContextDescriptor"  Handle="vent_ctx_patient"/>
+          <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="vent_ctx_location"/>
+          <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="vent_ctx_ensemble"/>
+          <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="vent_ctx_workflow"/>
+        </pm:SystemContext>
+
+        <pm:Clock Handle="vent_clock"/>
+
+        <!-- VMD 1: respiratory rate -->
+        <pm:Vmd Handle="vent_vmd_rr">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="vent_alert_system_rr" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="vent_alert_cond_rr_high" Kind="Phy" Priority="Me">
+              <pm:Type Code="271823003" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">Tachypnea</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>vent_metric_rr</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="vent_alert_signal_rr_high"
+                            ConditionSignaled="vent_alert_cond_rr_high"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="vent_channel_rr">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="vent_metric_rr"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1" DeterminationPeriod="PT1S">
+              <pm:Type Code="9279-1" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Respiratory rate</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="/min" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">per minute</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="120"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+        <!-- VMD 2: peak airway pressure -->
+        <pm:Vmd Handle="vent_vmd_ppeak">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="vent_alert_system_ppeak" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="vent_alert_cond_ppeak_high" Kind="Phy" Priority="Me">
+              <pm:Type Code="405495005" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">High airway pressure</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>vent_metric_ppeak</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="vent_alert_signal_ppeak_high"
+                            ConditionSignaled="vent_alert_cond_ppeak_high"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="vent_channel_ppeak">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="vent_metric_ppeak"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1" DeterminationPeriod="PT1S">
+              <pm:Type Code="19976-0" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Maximum [Pressure] Respiratory system airway opening --during inspiration on ventilator</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="cm[H2O]" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">centimetre of water</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="100"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+        <!-- VMD 3: expired tidal volume -->
+        <pm:Vmd Handle="vent_vmd_vt">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="vent_alert_system_vt" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="vent_alert_cond_vt_low" Kind="Phy" Priority="Lo">
+              <pm:Type Code="31515003" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">Hypoventilation</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>vent_metric_vt</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="vent_alert_signal_vt_low"
+                            ConditionSignaled="vent_alert_cond_vt_low"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="vent_channel_vt">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="vent_metric_vt"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1" DeterminationPeriod="PT1S">
+              <pm:Type Code="76007-4" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Tidal volume expired Respiratory system airway --on ventilator</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="mL" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">millilitre</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="2000"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+        <!-- VMD 4: expired minute volume -->
+        <pm:Vmd Handle="vent_vmd_mv">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="vent_alert_system_mv" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="vent_alert_cond_mv_low" Kind="Phy" Priority="Hi">
+              <pm:Type Code="31515003" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">Hypoventilation</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>vent_metric_mv</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="vent_alert_signal_mv_low"
+                            ConditionSignaled="vent_alert_cond_mv_low"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="vent_channel_mv">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="vent_metric_mv"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="0.1" DeterminationPeriod="PT1S">
+              <pm:Type Code="76008-2" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Expired minute Volume during Mechanical ventilation</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="L/min" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">litre per minute</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="60"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+      </pm:Mds>
+    </pm:MdDescription>
+
+    <pm:MdState StateVersion="0">
+      <!-- components -->
+      <pm:State xsi:type="pm:MdsState"           DescriptorHandle="vent_mds"            ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="vent_vmd_rr"         ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="vent_vmd_ppeak"      ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="vent_vmd_vt"         ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="vent_vmd_mv"         ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="vent_channel_rr"     ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="vent_channel_ppeak"  ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="vent_channel_vt"     ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="vent_channel_mv"     ActivationState="On"/>
+      <pm:State xsi:type="pm:ClockState"         DescriptorHandle="vent_clock"          ActivationState="On" RemoteSync="false"/>
+      <pm:State xsi:type="pm:SystemContextState" DescriptorHandle="vent_system_context" ActivationState="On"/>
+      <pm:State xsi:type="pm:ScoState"           DescriptorHandle="vent_sco"            ActivationState="On"/>
+
+      <!-- alert systems: LastSelfCheck is set and refreshed by the provider at runtime (all four) -->
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="vent_alert_system_rr"          ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="vent_alert_cond_rr_high"       ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="vent_alert_signal_rr_high"     ActivationState="On" Presence="Off"/>
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="vent_alert_system_ppeak"       ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="vent_alert_cond_ppeak_high"    ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="vent_alert_signal_ppeak_high"  ActivationState="On" Presence="Off"/>
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="vent_alert_system_vt"          ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="vent_alert_cond_vt_low"        ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="vent_alert_signal_vt_low"      ActivationState="On" Presence="Off"/>
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="vent_alert_system_mv"          ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="vent_alert_cond_mv_low"        ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="vent_alert_signal_mv_low"      ActivationState="On" Presence="Off"/>
+
+      <!-- operations -->
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="vent_op_ack_rr_high"      OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="vent_op_ack_ppeak_high"   OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="vent_op_ack_vt_low"       OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="vent_op_ack_mv_low"       OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="vent_op_set_ensemble_ctx" OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="vent_op_set_workflow_ctx" OperatingMode="En"/>
+
+      <!-- metrics: initial values; DeterminationTime is set by the provider on every update -->
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="vent_metric_rr" ActivationState="On">
+        <pm:MetricValue Value="16">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="vent_metric_ppeak" ActivationState="On">
+        <pm:MetricValue Value="20">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="vent_metric_vt" ActivationState="On">
+        <pm:MetricValue Value="450">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="vent_metric_mv" ActivationState="On">
+        <pm:MetricValue Value="7">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+
+      <!-- ensemble slot: unassociated, no identification; the Dashboard updates it in place -->
+      <pm:State xsi:type="pm:EnsembleContextState" DescriptorHandle="vent_ctx_ensemble" Handle="vent_ctx_ensemble_state" ContextAssociation="No"/>
+    </pm:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

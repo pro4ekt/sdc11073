@@ -1,0 +1,110 @@
+{
+  "resourceType": "ConceptMap",
+  "id": "mdc-to-loinc-vitals",
+  "url": "https://github.com/pro4ekt/sdc11073/blob/master/Dashboard/config/conceptmap_mdc_to_loinc.json",
+  "version": "0.1.0",
+  "name": "MdcToLoincVitals",
+  "title": "IEEE 11073-10101 (MDC) metric codes to LOINC — bedside monitoring parameters",
+  "status": "draft",
+  "experimental": true,
+  "date": "2026-10-06",
+  "publisher": "SDC Testbed (Masterarbeit)",
+  "description": "Consumer-side translation of device-native metric codes to LOINC. BICEPS NumericMetricDescriptor/Type is a CodedValue whose default CodingSystem (when the attribute is omitted) is the IEEE 11073-10101 nomenclature, urn:oid:1.2.840.10004.1.1.1.0.0.1. The Dashboard resolves such codes through this map before it looks up per-channel reliability profiles in clinical_db.json, which are keyed by LOINC. Codes already delivered in LOINC bypass the map. Numeric MDC codes are the 32-bit form (partition 2 SCADA: 2*65536 + term code); the symbolic reference ID is kept in 'display'. Equivalence follows FHIR R4 ConceptMapEquivalence. Mappings were cross-checked against the IHE PCD Rosetta Terminology Mapping tables; 'unmatched' marks a target that was NOT confirmed and is therefore deliberately not translated.",
+  "sourceUri": "urn:oid:1.2.840.10004.1.1.1.0.0.1",
+  "targetUri": "http://loinc.org",
+  "group": [
+    {
+      "source": "urn:oid:1.2.840.10004.1.1.1.0.0.1",
+      "target": "http://loinc.org",
+      "element": [
+        {
+          "code": "147842",
+          "display": "MDC_ECG_HEART_RATE",
+          "target": [
+            { "code": "8867-4", "display": "Heart rate", "equivalence": "equivalent" }
+          ]
+        },
+        {
+          "code": "149514",
+          "display": "MDC_PULS_RATE",
+          "target": [
+            { "code": "60978-4", "display": "Heart rate Intravascular line by Pressure", "equivalence": "wider",
+              "comment": "MDC_PULS_RATE is method-agnostic; 60978-4 is the arterial-line pulse rate used by the ABP monitor fixture." }
+          ]
+        },
+        {
+          "code": "149530",
+          "display": "MDC_PULS_OXIM_PULS_RATE",
+          "target": [
+            { "code": "8889-8", "display": "Heart rate by Pulse oximetry", "equivalence": "equivalent" }
+          ]
+        },
+        {
+          "code": "150456",
+          "display": "MDC_PULS_OXIM_SAT_O2",
+          "target": [
+            { "code": "59408-5", "display": "Oxygen saturation in Arterial blood by Pulse oximetry", "equivalence": "equivalent" }
+          ]
+        },
+        {
+          "code": "151562",
+          "display": "MDC_RESP_RATE",
+          "target": [
+            { "code": "9279-1", "display": "Respiratory rate", "equivalence": "equivalent" }
+          ]
+        },
+        {
+          "code": "151578",
+          "display": "MDC_TTHOR_RESP_RATE",
+          "target": [
+            { "code": "76270-8", "display": "Respiratory rate by Transthoracic impedance", "equivalence": "equivalent" }
+          ]
+        },
+        {
+          "code": "150033",
+          "display": "MDC_PRESS_BLD_ART_ABP_SYS",
+          "target": [
+            { "code": "8480-6", "display": "Systolic blood pressure", "equivalence": "wider",
+              "comment": "8480-6 does not state the invasive method; LOINC has no dedicated invasive-arterial systolic term in the fixture scope." }
+          ]
+        },
+        {
+          "code": "150034",
+          "display": "MDC_PRESS_BLD_ART_ABP_DIA",
+          "target": [
+            { "code": "8462-4", "display": "Diastolic blood pressure", "equivalence": "wider" }
+          ]
+        },
+        {
+          "code": "150037",
+          "display": "MDC_PRESS_BLD_ART_ABP_MEAN",
+          "target": [
+            { "code": "8478-0", "display": "Mean blood pressure", "equivalence": "wider" }
+          ]
+        },
+        {
+          "code": "152612",
+          "display": "MDC_VOL_AWAY_TIDAL",
+          "target": [
+            { "code": "76007-4", "display": "Tidal volume expired Respiratory system airway --on ventilator", "equivalence": "equivalent" }
+          ]
+        },
+        {
+          "code": "152616",
+          "display": "MDC_VOL_MINUTE_AWAY",
+          "target": [
+            { "code": "76008-2", "display": "Expired minute Volume during Mechanical ventilation", "equivalence": "equivalent" }
+          ]
+        },
+        {
+          "code": "MDC_PRESS_AWAY_INSP_PEAK",
+          "display": "Peak inspiratory airway pressure (symbolic reference ID; numeric 10101a code not yet verified)",
+          "target": [
+            { "equivalence": "unmatched",
+              "comment": "Intended target LOINC 19976-0 (Pressure.max Respiratory system airway --on ventilator). Left unmatched until the IEEE 11073-10101a numeric code is confirmed; the consumer therefore keeps the device code as-is (fail-open) for this channel." }
+          ]
+        }
+      ]
+    }
+  ]
+}

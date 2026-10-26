@@ -89,7 +89,7 @@ class AdaptiveAlarmAggregator:
 
         # Clinical-context shift Context_Log_Odds.  Always hold a VALID context: if
         # the caller supplies none, fall back to the NEUTRAL prior P_0 = 0.5
-        # (math_part1.md §1, note): O_0 = 1 ⇒ ln(O_0) = 0 ⇒ Context_Log_Odds = 0,
+        # (docs/model/math_part1.md §1, note): O_0 = 1 ⇒ ln(O_0) = 0 ⇒ Context_Log_Odds = 0,
         # so the threshold is determined by the device ensemble alone.  This is the
         # defined behaviour when no clinical context is available (FHIR side of
         # the SDC/FHIR coupling absent), not a degraded mode.  A low prior such as
@@ -190,7 +190,7 @@ class AdaptiveAlarmAggregator:
                 sdc, self.active_alarm_duration, self._config.horizon_T,
                 self._config.delta_min,
             )
-            # math_part1.md §6: Θ_target = max(ε, Θ_base·δ − Context_Log_Odds).
+            # docs/model/math_part1.md §6: Θ_target = max(ε, Θ_base·δ − Context_Log_Odds).
             # δ scales the quorum barrier ONLY; the context shift is subtracted
             # afterwards.  (Scaling (Θ_base − CLO) instead inverts the sign of
             # melting whenever CLO > Θ_base: a negative quantity times δ < 1

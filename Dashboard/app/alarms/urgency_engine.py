@@ -19,14 +19,14 @@ Canonical mathematics
 
     Self-consistent dynamic consensus quorum, strictly in [2, |M|]:
         k_min(t) = round_half_up( |M| − (|M| − 2) · SDC_score(t) )
-        (rounding convention normative per math_part1.md §5)
+        (rounding convention normative per docs/model/math_part1.md §5)
 
-    Baseline energy quorum threshold (math_part1.md §5):
+    Baseline energy quorum threshold (docs/model/math_part1.md §5):
         Θ_base(t) = k_min(t) · w̄
 
     The engine stops at Θ_base.  The Time-in-Alarm multiplier δ(t), the context
     shift and the evidence floor are applied by ``AdaptiveAlarmAggregator.tick``
-    in the order fixed by math_part1.md §6:
+    in the order fixed by docs/model/math_part1.md §6:
         Θ_target(t) = max(ε(t), Θ_base(t) · δ(t) − Context_Log_Odds)
 
 Clinical intuition
@@ -52,7 +52,7 @@ class UrgencyResult(NamedTuple):
     self-documenting field access (``result.theta_base`` etc.).
 
     Fields (positional order preserved for backward-compatible unpacking):
-        theta_base: Θ_base(t) = k_min·w̄ (math_part1.md §5) — the quorum barrier
+        theta_base: Θ_base(t) = k_min·w̄ (docs/model/math_part1.md §5) — the quorum barrier
                     BEFORE δ(t), the context shift and the ε floor, which the
                     aggregator applies to obtain Θ_target(t) (§6).  Distinct from
                     ``TickResult.theta_target``, which carries the post-δ/CLO value.
@@ -122,7 +122,7 @@ class UrgencyEngine:
 
         k_min = clamp( round_half_up( |M| − (|M| − 2)·SDC_score ),  2,  |M| ).
 
-        Rounding convention (normative, math_part1.md §5): half-UP, so 2.5 → 3.
+        Rounding convention (normative, docs/model/math_part1.md §5): half-UP, so 2.5 → 3.
         Neither ``math.floor`` (systematically softer quorum: |M|=4, SDC=0.6
         gives 2 instead of the specified 3) nor Python's built-in ``round()``
         (banker's rounding: 2.5 → 2) is acceptable.  The argument is routed
@@ -157,7 +157,7 @@ class UrgencyEngine:
     ) -> UrgencyResult:
         """Return an ``UrgencyResult`` (Θ_base, k_min, SDC_score) for this tick.
 
-        Contract (math_part1.md §5):
+        Contract (docs/model/math_part1.md §5):
             Θ_base(t) = k_min(t) · w̄
 
         No context subtraction happens here.  The caller (``tick``) applies the
@@ -195,7 +195,7 @@ class UrgencyEngine:
             without escalation, so a genuinely sustained condition eventually
             crosses the barrier.
 
-        Canonical mathematics (math_part1.md §6):
+        Canonical mathematics (docs/model/math_part1.md §6):
             λ(t) = 1/T − ρ(t) = SDC_score(t) / T        (decay rate, symmetric to ρ)
             δ(t) = max( δ_min, exp( −λ(t) · max(0, τ − T) ) )   (τ = active_alarm_duration)
 

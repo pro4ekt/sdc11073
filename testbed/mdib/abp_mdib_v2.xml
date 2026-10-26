@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  abp_mdib_v2.xml - testbed invasive arterial blood pressure monitor, variant with FOUR VMDs
+  (Python provider testbed/providers/testbed_provider.py on sdc11073 3.0.0)
+    VMD abp_vmd_map : mean arterial pressure          LOINC 8478-0  UCUM mm[Hg]  alert hypotension (SNOMED 45007003, Hi)
+    VMD abp_vmd_sys : systolic blood pressure         LOINC 8480-6  UCUM mm[Hg]  alert sys_low     (SNOMED 81010002, Me)
+    VMD abp_vmd_dia : diastolic blood pressure        LOINC 8462-4  UCUM mm[Hg]  alert dia_low     (SNOMED 42689008, Lo)
+    VMD abp_vmd_pr  : heart rate by intra-arterial line LOINC 60978-4 UCUM /min  alert tachycardia (SNOMED 3424008, Me)
+  Derived from the first single-VMD version (not kept) after the pattern of vent_mdib_v2.xml: four VMDs each with
+  its own AlertSystem (SelfCheckPeriod PT10S), four SetAlertState operations, no MDS Type,
+  complete MdState, explicit CodingSystem everywhere, no static timestamps.
+  Wrapper msg:GetMdibResponse: identical to spo2_mdib_v2.xml / vent_mdib_v2.xml.
+  Constraints: MDIB_ANALYSIS.md Part C. All handles carry the prefix "abp_".
+  Per-run identity (patient, location, workflow context states, DPWS
+  Manufacturer/ModelName/FriendlyName) is NOT in this file; the provider
+  creates it at startup from its arguments.
+  Terminology verified 2026-09-30 (NLM Clinical Tables LOINC search, tx.fhir.org
+  LOINC $lookup, SNOMED CT International 20250201 $lookup, UCUM $validate-code).
+  LOINC 60978-4 "Heart rate Intra arterial line by Invasive" is the LOINC term for the
+  pulse rate derived from the arterial line (METHOD_TYP Invasive).
+-->
+<msg:GetMdibResponse
+    xmlns:msg="http://standards.ieee.org/downloads/11073/11073-10207-2017/message"
+    xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant"
+    xmlns:ext="http://standards.ieee.org/downloads/11073/11073-10207-2017/extension"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    MdibVersion="0"
+    SequenceId="urn:uuid:cbe6ba2e-7a66-4dbc-b9b6-60e9f039168a">
+  <msg:Mdib MdibVersion="0" SequenceId="urn:uuid:cbe6ba2e-7a66-4dbc-b9b6-60e9f039168a">
+    <pm:MdDescription DescriptionVersion="0">
+      <pm:Mds Handle="abp_mds">
+
+        <pm:Sco Handle="abp_sco">
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="abp_op_ack_hypotension"
+                        OperationTarget="abp_alert_signal_hypotension" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="abp_op_ack_sys_low"
+                        OperationTarget="abp_alert_signal_sys_low" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="abp_op_ack_dia_low"
+                        OperationTarget="abp_alert_signal_dia_low" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetAlertStateOperationDescriptor" Handle="abp_op_ack_tachycardia"
+                        OperationTarget="abp_alert_signal_tachycardia" Retriggerable="true">
+            <pm:ModifiableData>Presence</pm:ModifiableData>
+          </pm:Operation>
+          <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="abp_op_set_ensemble_ctx"
+                        OperationTarget="abp_ctx_ensemble" Retriggerable="true"/>
+          <pm:Operation xsi:type="pm:SetContextStateOperationDescriptor" Handle="abp_op_set_workflow_ctx"
+                        OperationTarget="abp_ctx_workflow" Retriggerable="true"/>
+        </pm:Sco>
+
+        <pm:SystemContext Handle="abp_system_context">
+          <pm:PatientContext  xsi:type="pm:PatientContextDescriptor"  Handle="abp_ctx_patient"/>
+          <pm:LocationContext xsi:type="pm:LocationContextDescriptor" Handle="abp_ctx_location"/>
+          <pm:EnsembleContext xsi:type="pm:EnsembleContextDescriptor" Handle="abp_ctx_ensemble"/>
+          <pm:WorkflowContext xsi:type="pm:WorkflowContextDescriptor" Handle="abp_ctx_workflow"/>
+        </pm:SystemContext>
+
+        <pm:Clock Handle="abp_clock"/>
+
+        <!-- VMD 1: mean arterial pressure -->
+        <pm:Vmd Handle="abp_vmd_map">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="abp_alert_system_map" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="abp_alert_cond_hypotension" Kind="Phy" Priority="Hi">
+              <pm:Type Code="45007003" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">Low blood pressure</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>abp_metric_map</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="abp_alert_signal_hypotension"
+                            ConditionSignaled="abp_alert_cond_hypotension"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="abp_channel_map">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="abp_metric_map"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1" DeterminationPeriod="PT1S">
+              <pm:Type Code="8478-0" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Mean blood pressure</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="mm[Hg]" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">millimetre of mercury</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="300"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+        <!-- VMD 2: systolic blood pressure -->
+        <pm:Vmd Handle="abp_vmd_sys">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="abp_alert_system_sys" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="abp_alert_cond_sys_low" Kind="Phy" Priority="Me">
+              <pm:Type Code="81010002" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">Decreased systolic arterial pressure</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>abp_metric_sys</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="abp_alert_signal_sys_low"
+                            ConditionSignaled="abp_alert_cond_sys_low"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="abp_channel_sys">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="abp_metric_sys"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1" DeterminationPeriod="PT1S">
+              <pm:Type Code="8480-6" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Systolic blood pressure</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="mm[Hg]" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">millimetre of mercury</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="300"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+        <!-- VMD 3: diastolic blood pressure -->
+        <pm:Vmd Handle="abp_vmd_dia">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="abp_alert_system_dia" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="abp_alert_cond_dia_low" Kind="Phy" Priority="Lo">
+              <pm:Type Code="42689008" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">Decreased diastolic arterial pressure</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>abp_metric_dia</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="abp_alert_signal_dia_low"
+                            ConditionSignaled="abp_alert_cond_dia_low"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="abp_channel_dia">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="abp_metric_dia"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1" DeterminationPeriod="PT1S">
+              <pm:Type Code="8462-4" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Diastolic blood pressure</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="mm[Hg]" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">millimetre of mercury</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="300"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+        <!-- VMD 4: pulse rate from the arterial line -->
+        <pm:Vmd Handle="abp_vmd_pr">
+          <pm:AlertSystem xsi:type="pm:AlertSystemDescriptor" Handle="abp_alert_system_pr" SelfCheckPeriod="PT10S">
+            <pm:AlertCondition xsi:type="pm:AlertConditionDescriptor" Handle="abp_alert_cond_tachycardia" Kind="Phy" Priority="Me">
+              <pm:Type Code="3424008" CodingSystem="http://snomed.info/sct">
+                <pm:ConceptDescription Lang="en">Tachycardia</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Source>abp_metric_pr</pm:Source>
+            </pm:AlertCondition>
+            <pm:AlertSignal xsi:type="pm:AlertSignalDescriptor" Handle="abp_alert_signal_tachycardia"
+                            ConditionSignaled="abp_alert_cond_tachycardia"
+                            Manifestation="Aud" Latching="false" AcknowledgementSupported="true"/>
+          </pm:AlertSystem>
+          <pm:Channel Handle="abp_channel_pr">
+            <pm:Metric xsi:type="pm:NumericMetricDescriptor" Handle="abp_metric_pr"
+                       MetricCategory="Msrmt" MetricAvailability="Cont" Resolution="1" DeterminationPeriod="PT1S">
+              <pm:Type Code="60978-4" CodingSystem="http://loinc.org">
+                <pm:ConceptDescription Lang="en">Heart rate Intra arterial line by Invasive</pm:ConceptDescription>
+              </pm:Type>
+              <pm:Unit Code="/min" CodingSystem="http://unitsofmeasure.org">
+                <pm:ConceptDescription Lang="en">per minute</pm:ConceptDescription>
+              </pm:Unit>
+              <pm:TechnicalRange Lower="0" Upper="300"/>
+            </pm:Metric>
+          </pm:Channel>
+        </pm:Vmd>
+
+      </pm:Mds>
+    </pm:MdDescription>
+
+    <pm:MdState StateVersion="0">
+      <!-- components -->
+      <pm:State xsi:type="pm:MdsState"           DescriptorHandle="abp_mds"            ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="abp_vmd_map"        ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="abp_vmd_sys"        ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="abp_vmd_dia"        ActivationState="On"/>
+      <pm:State xsi:type="pm:VmdState"           DescriptorHandle="abp_vmd_pr"         ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="abp_channel_map"    ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="abp_channel_sys"    ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="abp_channel_dia"    ActivationState="On"/>
+      <pm:State xsi:type="pm:ChannelState"       DescriptorHandle="abp_channel_pr"     ActivationState="On"/>
+      <pm:State xsi:type="pm:ClockState"         DescriptorHandle="abp_clock"          ActivationState="On" RemoteSync="false"/>
+      <pm:State xsi:type="pm:SystemContextState" DescriptorHandle="abp_system_context" ActivationState="On"/>
+      <pm:State xsi:type="pm:ScoState"           DescriptorHandle="abp_sco"            ActivationState="On"/>
+
+      <!-- alert systems: LastSelfCheck is set and refreshed by the provider at runtime (all four) -->
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="abp_alert_system_map"          ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="abp_alert_cond_hypotension"    ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="abp_alert_signal_hypotension"  ActivationState="On" Presence="Off"/>
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="abp_alert_system_sys"          ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="abp_alert_cond_sys_low"        ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="abp_alert_signal_sys_low"      ActivationState="On" Presence="Off"/>
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="abp_alert_system_dia"          ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="abp_alert_cond_dia_low"        ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="abp_alert_signal_dia_low"      ActivationState="On" Presence="Off"/>
+      <pm:State xsi:type="pm:AlertSystemState"    DescriptorHandle="abp_alert_system_pr"           ActivationState="On"/>
+      <pm:State xsi:type="pm:AlertConditionState" DescriptorHandle="abp_alert_cond_tachycardia"    ActivationState="On" Presence="false"/>
+      <pm:State xsi:type="pm:AlertSignalState"    DescriptorHandle="abp_alert_signal_tachycardia"  ActivationState="On" Presence="Off"/>
+
+      <!-- operations -->
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="abp_op_ack_hypotension"  OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="abp_op_ack_sys_low"      OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="abp_op_ack_dia_low"      OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetAlertStateOperationState"   DescriptorHandle="abp_op_ack_tachycardia"  OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="abp_op_set_ensemble_ctx" OperatingMode="En"/>
+      <pm:State xsi:type="pm:SetContextStateOperationState" DescriptorHandle="abp_op_set_workflow_ctx" OperatingMode="En"/>
+
+      <!-- metrics: initial values; DeterminationTime is set by the provider on every update -->
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="abp_metric_map" ActivationState="On">
+        <pm:MetricValue Value="85">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="abp_metric_sys" ActivationState="On">
+        <pm:MetricValue Value="120">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="abp_metric_dia" ActivationState="On">
+        <pm:MetricValue Value="70">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+      <pm:State xsi:type="pm:NumericMetricState" DescriptorHandle="abp_metric_pr" ActivationState="On">
+        <pm:MetricValue Value="75">
+          <pm:MetricQuality Validity="Vld"/>
+        </pm:MetricValue>
+      </pm:State>
+
+      <!-- ensemble slot: unassociated, no identification; the Dashboard updates it in place -->
+      <pm:State xsi:type="pm:EnsembleContextState" DescriptorHandle="abp_ctx_ensemble" Handle="abp_ctx_ensemble_state" ContextAssociation="No"/>
+    </pm:MdState>
+  </msg:Mdib>
+</msg:GetMdibResponse>

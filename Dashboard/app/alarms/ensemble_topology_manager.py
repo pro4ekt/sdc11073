@@ -179,7 +179,7 @@ class EnsembleTopologyManager:
         safe to call inside or outside self.lock (device data_lock is a distinct
         lower lock → acyclic).
 
-        Gateway Admission Rule (math_part1.md §2.1): only channels with
+        Gateway Admission Rule (docs/model/math_part1.md §2.1): only channels with
         ``0 < FPR_j < TPR_j`` enter the registry (and hence |M| and w̄).  A
         channel without a profile is rejected rather than admitted as a neutral
         w_j = 0 member, because a zero-weight member contributes no evidence but

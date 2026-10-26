@@ -45,6 +45,7 @@ Dashboard/
 │   ├── patientOverviewModel.py # QObject model backing PatientOverview.qml
 │   ├── operationLogger.py      # OR session file logger
 │   ├── fhirData.py             # HL7 FHIR REST client
+│   ├── concept_map.py          # MDC → LOINC translation via FHIR R4 ConceptMap
 │   │
 │   └── alarms/                 # Adaptive stochastic alarm sub-package
 │       ├── __init__.py               # Package exports (facade + math core)
@@ -80,13 +81,11 @@ Dashboard/
 ├── config/                     # Runtime configuration
 │   ├── rules.json              # Alert rule definitions
 │   ├── clinical_db.json        # Calibration DB (device profiles + math-core params)
+│   ├── conceptmap_mdc_to_loinc.json  # FHIR R4 ConceptMap: IEEE 11073-10101 codes → LOINC
 │   └── *.xml                   # MDIB fixture files
 │
-├── tools/                      # Utility scripts
-├── tests/                      # Unit tests (test_math_core.py, test_alignment_integration.py)
-├── certs_out/                  # Generated TLS certificates
-├── logs/                       # Rotating log files (sdc_consumer.log)
-└── data/                       # Persistent data (FHIR cache, etc.)
+├── logs/                       # Rotating log files (sdc_consumer.log, events.jsonl); not in git
+└── (unit tests: ../tests/ in the repository root, 194 tests)
 ```
 
 ---
@@ -112,6 +111,7 @@ Dashboard/
 | `app.alarms.device_profile_repo` | **Lazy-loading DAO** over `config/clinical_db.json`; process-wide singleton; exports `DeviceReliabilityProfile` |
 | `app.operationLogger` | Thread-safe OR-session file logger |
 | `app.fhirData` | Fetches Patient/Condition/Observation from a FHIR R4 server |
+| `app.concept_map` | Lazy loader for `config/conceptmap_mdc_to_loinc.json` (FHIR R4 `ConceptMap`); `normalize_concept()` passes LOINC through, translates MDC codes (BICEPS default CodingSystem) to LOINC, keeps unknown codes as-is (fail-open) |
 | `device.handler` | Background thread: full SDC connect → monitor → disconnect |
 | `device.alarm_manager` | Alarm Ack and Ack-timeout tracking per device |
 | `device.context_ops` | SOAP SetContextState calls (EnsembleContext, WorkflowContext) |
@@ -159,7 +159,10 @@ Top-level manager. Runs the WSDiscovery loop in a background thread and maintain
 | Signal | Payload | Fired When |
 |---|---|---|
 | `deviceConnected` | `QtDeviceHandler` | New device handler ready in main thread |
-| `deviceDisconnected` | `str` (epr) | Device worker stopped |
+| `deviceDisconnected` | `str` (epr) | Device worker stopped gracefully, room switch, or staff dismissed a technical alarm |
+| `deviceConnectionLost` | `str, str` (epr, cause) | Fix 17: communication failure → device stays listed as technical alarm (COMM_FAILURE) |
+| `deviceReconnected` | `str` (epr) | Fix 17: the lost EPR connected again, technical alarm cleared |
+| `lostDevicesChanged` | — | `lostDevices` property changed |
 | `roomChanged` | — | `currentRoom` property changed |
 | `availableRoomsChanged` | — | Set of known rooms updated |
 
@@ -168,8 +171,15 @@ Top-level manager. Runs the WSDiscovery loop in a background thread and maintain
 | `start()` | Spawn the discovery thread and begin scanning |
 | `stop()` | Stop all active `DeviceHandler` workers, join thread |
 | `_discovery_loop()` | Async: WSDiscovery scan → spawn `DeviceHandler` per new device |
-| `remove_device(epr, …)` | Called by a `DeviceHandler` on exit; cleans up maps |
+| `remove_device(epr, …)` | Called by a `DeviceHandler` on exit; cleans up maps; on an error of a device shown to staff raises the technical alarm (`_raise_technical_alarm`) AFTER the aggregator path |
+| `on_device_connected(qt)` | Called by `DeviceHandler._phase_setup_qt`; clears a pending technical alarm of the EPR, emits `deviceConnected` |
+| `dismissConnectionLoss(epr)` | Qt Slot: staff dismiss the technical alarm → `deviceDisconnected` |
 | `switchRoom(new_room)` | Qt Slot: changes `currentRoom`, stops devices outside the new room |
+
+The technical-alarm state (Fix 17) lives only here, in `QtDeviceHandler`
+(`connectionLost`, `lostCause`, `lostSince`, `escalatedAtLoss`) and in
+`PatientOverviewModel` (`markLost` / `clearLost`); it never enters the
+aggregator, `M`, `E(t)` or `SDC_score`.
 
 ---
 
@@ -273,7 +283,7 @@ processor lock. No I/O is performed under any lock; `tick()` is pure CPU
 | `check_alert_validity(...)` | Processor | Ensemble gate. Pulls member specs + danger codes from topology; registers the alarm in the TTL cache; builds/updates the per-ensemble aggregator; injects the per-patient clinical shift; delegates to `AlarmCoordinator.evaluate()`; returns tri-state `"ESCALATE" / "WARN"` |
 | `_get_or_build_adaptive_aggregator_locked(...)` | Processor | Membership of the math core. The topology registry is **authoritative**: `new_specs = registry` whenever it exists; cache-derived specs are a fallback only while the registry is empty. Composition is compared for **equality** and any change calls `update_specs(new_specs)` (survivors keep FIR history, departed channels are dropped, hysteresis cold-restarts) |
 | `clear_alarm(uuid, alert_key)` | Processor | Alarm OFF. Removes the key from the TTL cache. **Partial** clear (others still active): drives one `tick()` with the updated activation vector under `self.lock → _adaptive_lock` so the OFF edge reaches the ZOH integral; the verdict is not routed and the escalation latch is untouched. **Full** clear (cache empty): stamps the grace timer, clears the latch and flushes the math core via `_reset_adaptive_state()` |
-| `_build_specs_from_evidences(evidences)` | Processor | Build `{alert_key → SensorSpec}` from active evidence (fallback): `tpr/fpr` from `reliability_profile`, `priority = repo.get_priority(biceps_priority)`. **Gateway Admission Rule** (math_part1 §2.1): a channel is admitted only if `0 < FPR < TPR`; a channel without a profile is rejected (logged at info) and stays bedside-only via the `ttl_active` Yellow path |
+| `_build_specs_from_evidences(evidences)` | Processor | Build `{alert_key → SensorSpec}` from active evidence (fallback): `tpr/fpr` from `reliability_profile`, `priority = repo.get_priority(biceps_priority)`. **Gateway Admission Rule** (docs/model/math_part1.md §2.1): a channel is admitted only if `0 < FPR < TPR`; a channel without a profile is rejected (logged at info) and stays bedside-only via the `ttl_active` Yellow path |
 | `_get_math_core_params()` | Processor | Lazily build the shared `EngineConfig` + static `ClinicalContext` (baseline P₀ + OR table) from the repository (fail-open defaults) |
 | `_notify_overview(...)` | Both | Push an ensemble summary to `PatientOverviewModel`. Continuous UI intensity is `sdc_score ∈ [0,1]`; colour is the orthogonal tri-state |
 | `_propagate_escalation_to_devices(uuid)` | Processor | On first crisis, clear device suppression sets so every member device shows Red |
@@ -478,7 +488,7 @@ full lifecycle: discovery → TLS → MDIB init → subscription → monitoring 
 | Method | Purpose |
 |---|---|
 | `_phase_init_mdib()` | Init `ConsumerMdib`; call `_build_semantic_map()`, `_prefetch_device_calibration()`, `_log_alert_map()` |
-| `_build_semantic_map()` | Map each `NumericMetricDescriptor` handle → LOINC concept |
+| `_build_semantic_map()` | Map each `NumericMetricDescriptor` handle → LOINC concept. Reads `Type/@Code` + `Type/@CodingSystem`; LOINC used as delivered, MDC codes translated via `app.concept_map` (FHIR ConceptMap), unmapped codes kept as-is and logged as `WARNING` |
 | `_prefetch_device_calibration()` | Repository pattern: one `get_profile()` point-query per concept; cache the profile so the hot path never hits the DB |
 | `on_metric_update(...)` | Push new values to `SmartAlertAggregator`; rate-limited UI refresh (≤1 Hz) |
 | `on_alert_update(...)` | Adaptive alarm filter: `check_alert_validity()` → map tri-state verdict onto the routing sets → log transition → ack tracking |
@@ -760,7 +770,7 @@ Higher severity lowers the required cross-validating quorum (bounded to `[2,|M|]
 — the topological fail-safe against single-sensor artifacts):
 
 ```
-k_min(t)     = round_half_up( |M| − (|M| − 2) · SDC_score(t) )      (normative, math_part1 §5)
+k_min(t)     = round_half_up( |M| − (|M| − 2) · SDC_score(t) )      (normative, docs/model/math_part1.md §5)
 w̄            = (1/|M|) Σ_{j∈M} w_j
 Θ_base(t)    = k_min(t) · w̄
 δ(t)         = max( δ_min, e^(−λ(t)·max(0, τ − T)) ),   λ(t) = SDC_score(t)/T,  δ_min = 0.5
@@ -806,7 +816,7 @@ intensity indicator.
 clipping), `SDC_score`/`k_min`, hysteresis kinetics, full integration ticks
 (including hot-plug and priority ordering), the repository fail-open paths,
 the Time-in-Alarm penalty with its melting floor, the ZOH reset on resolution
-and the `math_part1.md` alignment fixes (δ-before-context order, `ε` floor,
+and the `docs/model/math_part1.md` alignment fixes (δ-before-context order, `ε` floor,
 round-half-up `k_min`, `α = 0.5`).
 `tests/test_alignment_integration.py` exercises `SmartAlertAggregator` and
 `EnsembleTopologyManager` with stubbed devices: the Gateway Admission Rule,

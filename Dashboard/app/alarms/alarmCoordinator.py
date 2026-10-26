@@ -56,6 +56,29 @@ from .adaptive_alarm_aggregator import AdaptiveAlarmAggregator
 from .device_profile_repo import DeviceReliabilityProfile
 
 
+# ── Channel identity ──────────────────────────────────────────────────────────
+
+ALERT_KEY_SEP: str = '|'
+
+
+def alert_key_for(device_epr: str, condition_handle: str) -> str:
+    """Return the ensemble-wide channel key for one AlertCondition.
+
+    BICEPS descriptor handles are unique only within one MDIB, so two devices of
+    the same type share handles.  The channel key that identifies a source in
+    the registry, the TTL cache and the activation vector is therefore the pair
+    ``(device EPR, handle)``, encoded as ``'<epr>|<handle>'`` (Fix 13 / SD-11).
+    """
+    return f'{device_epr}{ALERT_KEY_SEP}{condition_handle}'
+
+
+def device_of_alert_key(alert_key: str) -> Optional[str]:
+    """Return the device EPR encoded in ``alert_key``, or None for a bare handle."""
+    if ALERT_KEY_SEP in alert_key:
+        return alert_key.split(ALERT_KEY_SEP, 1)[0]
+    return None
+
+
 # ── Shared Data Structures ────────────────────────────────────────────────────
 
 @dataclass(frozen=True)

@@ -28,9 +28,11 @@ from typing import Any, Optional
 from sdc11073.consumer.consumerimpl import SdcConsumer
 from sdc11073.mdib import ConsumerMdib
 from sdc11073.pysoap.soapclient import HTTPReturnCodeError
-from sdc11073.xml_types.actions import periodic_actions
+from sdc11073.xml_types.actions import periodic_actions, Actions
 from sdc11073.xml_types import pm_qnames as pm
 from sdc11073.xml_types import pm_types
+from sdc11073.xml_types import eventing_types
+from sdc11073.xml_types.dpws_types import DeviceEventingFilterDialectURI
 from sdc11073 import observableproperties
 
 from PySide6.QtCore import QCoreApplication
@@ -39,11 +41,27 @@ from .alarm_manager import AlarmManager
 from . import context_ops
 from .ssl_builder import build_ssl_container
 from app.alarms.device_profile_repo import get_repository, DeviceReliabilityProfile
+from app.alarms.alarmCoordinator import alert_key_for
+from app.concept_map import normalize_concept
+from app.topology_filter import room_from_context_states, decide_room
+
+# Every BICEPS action: passing this as ``not_subscribed_actions`` makes
+# ``SdcConsumer.start_all`` connect, read the metadata and start the event sink
+# WITHOUT creating any WS-Eventing subscription (Ziel 1, context precheck).
+_ALL_ACTIONS = [a.value for a in Actions]
 
 
 class DeviceHandler(threading.Thread):
     """
     Worker thread that manages the full lifecycle of ONE SDC device connection.
+
+    Watchdog constants (Ziel 2, unchanged values; class attributes since Fix 18
+    so that tests can shrink them — see ``_monitoring_loop``):
+      SLEEP_INTERVAL      ping period (GetContextStates), s
+      T_FALLBACK          fallback interval, s
+      MAX_MISSED          consecutive failed pings → connection lost
+      METRIC_SILENCE_SEC  no EpisodicMetricReport for this long → reconnect
+      (the request timeout τ_sock = 5 s is sdc11073's ``socket_timeout`` default)
 
     Public API (called by Manager / QtDeviceHandler):
       start()                   — inherited from Thread; kicks off run()
@@ -54,12 +72,20 @@ class DeviceHandler(threading.Thread):
       _get_device_room()        — read LocationContext from MDIB (thread-safe)
     """
 
+    SLEEP_INTERVAL: float = 5.0
+    T_FALLBACK: float = 15.0
+    MAX_MISSED: int = int(T_FALLBACK / SLEEP_INTERVAL)
+    # 120 s instead of 30 s — prevents false reconnects for devices that publish
+    # slow vital-sign metrics (e.g. SpO₂ at 0.016 Hz = once per 60 s).
+    METRIC_SILENCE_SEC: float = 120.0
+
     def __init__(
         self,
         wsd_service: Any,
         manager: Any,
         target_room: str | None = None,
         tls_mode: str = 'auto',
+        scope_room: str | None = None,
     ) -> None:
         """
         Parameters:
@@ -67,11 +93,24 @@ class DeviceHandler(threading.Thread):
           manager      — SdcMyConsumer (Manager) reference.
           target_room  — LocationContext.Room filter; None = accept all rooms.
           tls_mode     — 'auto' | 'force_tls' | 'no_tls'
+          scope_room   — room named by the WS-Discovery location scope, if any.
+                         With a target_room the handler always runs the context
+                         precheck (GetContextStates BEFORE subscribing): without a
+                         scope_room it decides the room there, with a scope_room it
+                         CONFIRMS the unauthenticated scope over the authenticated
+                         connection (2f); a discrepancy is rejected without a
+                         subscription.
         """
         threading.Thread.__init__(self, daemon=True)
 
         self.tls_mode: str = tls_mode
         self.target_room: str | None = target_room
+        self.scope_room: str | None = scope_room
+        # Ziel 1 (2f): with a filter the room is always decided/confirmed over the
+        # authenticated connection before the first subscription; WS-Discovery is
+        # not authenticated, so a matching scope alone is not sufficient.
+        self._precheck: bool = bool(target_room)
+        self._reject_phase: str = ''
         self.wsd_service = wsd_service
         self.epr: str = str(wsd_service.epr)
         self.manager = manager
@@ -120,6 +159,11 @@ class DeviceHandler(threading.Thread):
         # 0.0 = no metric report received yet (device may not publish metrics).
         # Used by _monitoring_loop to detect silent WS-Events subscription loss.
         self._last_metric_ts: float = 0.0
+        # Fix 16: (status, reason) of a WS-Eventing SubscriptionEnd sent by the
+        # provider; None/None if the loss was detected by the watchdog alone.
+        self._subscription_end_info: tuple[str | None, str | None] = (None, None)
+        # Cause of the last fallback entry (t_fallback | is_connected | metric_silence)
+        self.fallback_cause: str | None = None
 
         # --- Synchronisation ---
         self.data_lock = threading.Lock()
@@ -143,13 +187,21 @@ class DeviceHandler(threading.Thread):
     def _ack_timestamps(self) -> dict[str, float]:
         return self.alarm_manager._ack_timestamps
 
-    def acknowledge_alarm(self, operation_handle: str, alert_signal_handle: str) -> None:
-        """Delegate to AlarmManager (DEV-31)."""
-        self.alarm_manager.acknowledge_alarm(operation_handle, alert_signal_handle)
+    def acknowledge_alarm(self, operation_handle: str, alert_signal_handle: str,
+                          press_id: str | None = None) -> str:
+        """Delegate to AlarmManager (DEV-31).  Returns the outcome (Fix 16)."""
+        return self.alarm_manager.acknowledge_alarm(operation_handle, alert_signal_handle,
+                                                    press_id=press_id)
 
-    def _reactivate_alarm(self, operation_handle: str, alert_signal_handle: str) -> None:
+    def acknowledge_alarm_detailed(self, operation_handle: str, alert_signal_handle: str,
+                                   press_id: str | None = None) -> tuple[str, str | None, str]:
+        """Delegate to AlarmManager; returns (outcome, invocation_state, message) for the UI."""
+        return self.alarm_manager.acknowledge_alarm_detailed(operation_handle, alert_signal_handle,
+                                                             press_id=press_id)
+
+    def _reactivate_alarm(self, operation_handle: str, alert_signal_handle: str) -> str:
         """Delegate to AlarmManager (ack-timeout re-raise)."""
-        self.alarm_manager.reactivate_alarm(operation_handle, alert_signal_handle)
+        return self.alarm_manager.reactivate_alarm(operation_handle, alert_signal_handle)
 
     def apply_ensemble_context(self, ensemble_uuid: str) -> bool:
         """Delegate to context_ops."""
@@ -213,7 +265,8 @@ class DeviceHandler(threading.Thread):
         """
         self.logger.info('Connecting...')
         try:
-            await self._phase_connect()
+            if await self._phase_connect():
+                return  # rejected in the context precheck → exit without subscription
 
             with self.data_lock:
                 self._phase_init_mdib()
@@ -244,6 +297,19 @@ class DeviceHandler(threading.Thread):
             self.logger.error(f'Critical Error ({type(e).__name__}): {e}', exc_info=True)
             self.error_occurred = True
         finally:
+            # Fix 17: the technical alarm "Verbindung verloren" is raised BEFORE
+            # the graceful-unsubscribe attempt (up to 5 s), so the safe state is
+            # visible to staff at the moment of the watchdog decision:
+            # loss → technical_alarm{raised} ≈ loss → fallback.  The aggregator
+            # path still runs later in manager.remove_device (latch read before
+            # release_device → discard → on_member_departed).
+            if self.error_occurred and self._ui_connected and not self._location_filtered:
+                notify = getattr(self.manager, 'notify_connection_lost', None)
+                if callable(notify):
+                    try:
+                        notify(self.epr, self, str(self.fallback_cause or 'error'))
+                    except Exception as exc:
+                        self.logger.warning(f'notify_connection_lost failed: {exc}')
             if self.consumer:
                 self.logger.info('Stopping consumer resources (DEV-49 graceful)...')
                 try:
@@ -262,8 +328,17 @@ class DeviceHandler(threading.Thread):
     # Phase 1: Connect — SdcConsumer + TLS auto-detect / fallback
     # =========================================================================
 
-    async def _phase_connect(self) -> None:
-        """Create SdcConsumer, start subscriptions.  TLS fallback on ConnectionReset."""
+    async def _phase_connect(self) -> bool:
+        """Create SdcConsumer and connect.  TLS fallback on ConnectionReset.
+
+        Without a room filter ``start_all`` subscribes to all episodic reports
+        as before.  With a room filter (``self._precheck``) the consumer is
+        started WITHOUT subscriptions, the context states are read
+        (GetContextStates) and the room is decided — or, after an accept by
+        scope, confirmed — before any subscription is created (Ziel 1, 2f).
+
+        Returns True if the device was rejected in the precheck (caller exits).
+        """
         x_addrs = getattr(self.wsd_service, 'x_addrs', 'unknown')
         self.logger.debug(f'Transport addresses (x_addrs): {x_addrs}')
 
@@ -272,9 +347,10 @@ class DeviceHandler(threading.Thread):
             wsd_service=self.wsd_service,
             ssl_context_container=ssl_container,
         )
+        not_subscribed = _ALL_ACTIONS if self._precheck else periodic_actions
 
         try:
-            self.consumer.start_all(not_subscribed_actions=periodic_actions)
+            self.consumer.start_all(not_subscribed_actions=not_subscribed)
             self._extract_dpws_metadata()
         except Exception as connect_err:
             cause = connect_err.__cause__ or connect_err
@@ -294,10 +370,164 @@ class DeviceHandler(threading.Thread):
                     wsd_service=self.wsd_service,
                     ssl_context_container=ssl_container,
                 )
-                self.consumer.start_all(not_subscribed_actions=periodic_actions)
+                self.consumer.start_all(not_subscribed_actions=not_subscribed)
                 self._extract_dpws_metadata()
             else:
                 raise
+
+        if self._precheck:
+            if self._phase_context_precheck():
+                return True
+            n = self._subscribe_reports()
+            self._record_subscription_created(n, 'context_precheck')
+        else:
+            # baseline mode (no --room): start_all already subscribed, no check at all.
+            sub_mgr = getattr(self.consumer, 'subscription_mgr', None)
+            subs = list((getattr(sub_mgr, 'subscriptions', {}) or {}).values())
+            n = sum(len((getattr(x, '_filter_text', '') or '').split()) for x in subs)
+            self._record_decision('accept', 'no_filter', 'filter_disabled', self.scope_room)
+            self._record_subscription_created(n, 'no_filter')
+        return False
+
+    def _record_subscription_created(self, n_actions: int, phase: str) -> None:
+        try:
+            from app.metrics.topology_metrics import get_topology_metrics
+            get_topology_metrics().record_subscription_created(self.epr, n_actions, phase)
+        except Exception:
+            pass
+
+    def _record_decision(self, decision: str, phase: str, reason: str, room: str | None) -> None:
+        try:
+            from app.metrics.topology_metrics import get_topology_metrics
+            get_topology_metrics().record_decision(self.epr, decision, phase, reason,
+                                                   room=room, target_room=self.target_room)
+        except Exception:
+            pass
+
+    # =========================================================================
+    # Phase 1b (Ziel 1): context precheck BEFORE any subscription
+    # =========================================================================
+
+    def _phase_context_precheck(self) -> bool:
+        """Read the context states over GetContextStates and decide the room.
+
+        Runs whenever a room filter is active.  Returns True if the device is
+        rejected: no subscription was created, the worker exits and
+        ``remove_device`` records the EPR as location-rejected for the session.
+
+        Two modes:
+          * no location scope announced → the room is DECIDED here
+            (accept / reject / unknown);
+          * accepted by scope at discovery → the scope is CONFIRMED here (2f):
+            WS-Discovery is unauthenticated, so the room read over the
+            authenticated connection must name the same room.  Any discrepancy
+            (other room, or no LocationContext at all) → ``scope_mismatch``,
+            rejected without a subscription.
+        """
+        room: str | None = None
+        try:
+            if self.consumer.context_service_client is None:
+                self.logger.warning('[Precheck] no ContextService — room unknown.')
+            else:
+                result = self.consumer.context_service_client.get_context_states()
+                room = room_from_context_states(result.result.ContextState)
+        except Exception as exc:
+            self.logger.warning(f'[Precheck] GetContextStates failed ({exc}) — room unknown.')
+
+        if room and hasattr(self.manager, 'register_device_room'):
+            self.manager.register_device_room(self.epr, room)
+
+        if self.scope_room is not None:
+            return self._confirm_scope_room(room)
+
+        decision = decide_room(self.target_room, room)
+        if decision == 'reject':
+            self.logger.info(
+                f"[Precheck] room '{room}' != target '{self.target_room}' — rejected before "
+                f"any subscription (no WS-Eventing subscription was created)."
+            )
+            if hasattr(self.manager, '_rejected_room_map'):
+                self.manager._rejected_room_map[self.epr] = room
+            self._location_filtered = True
+            self._reject_phase = 'context_precheck'
+            self._record_decision('reject', 'context_precheck', 'context_room_mismatch', room)
+            try:
+                from app.metrics.topology_metrics import get_topology_metrics
+                get_topology_metrics().record_subscription_avoided(
+                    self.epr, 'context_precheck', 'context_room_mismatch')
+            except Exception:
+                pass
+            return True
+        if decision == 'unknown':
+            self.logger.warning(
+                f"[Precheck] no LocationContext in GetContextStates (target '{self.target_room}') "
+                f'— accepted as UNKNOWN.'
+            )
+            self._record_decision('unknown', 'context_precheck', 'no_location', None)
+        else:
+            self.logger.info(f"[Precheck] room '{room}' matches. Subscribing.")
+            self._record_decision('accept', 'context_precheck', 'context_room_match', room)
+        return False
+
+    def _confirm_scope_room(self, context_room: str | None) -> bool:
+        """2f: confirm the discovery-phase accept (scope == target) against the
+        LocationContext read over the authenticated connection.  Returns True
+        (rejected, no subscription) on any discrepancy."""
+        if context_room == self.scope_room:
+            self.logger.info(
+                f"[Precheck] scope room '{self.scope_room}' confirmed by LocationContext. Subscribing."
+            )
+            self._record_decision('accept', 'context_precheck', 'scope_confirmed', context_room)
+            return False
+
+        self.logger.warning(
+            f"[Precheck] SCOPE MISMATCH: discovery scope names '{self.scope_room}', "
+            f"LocationContext says '{context_room}' — rejected before any subscription."
+        )
+        if hasattr(self.manager, '_rejected_room_map'):
+            self.manager._rejected_room_map[self.epr] = context_room or self.scope_room
+        self._location_filtered = True
+        self._reject_phase = 'context_precheck'
+        try:
+            from app.metrics.topology_metrics import get_topology_metrics
+            tm = get_topology_metrics()
+            tm.record_scope_mismatch(self.epr, scope_room=self.scope_room, context_room=context_room,
+                                     target_room=self.target_room)
+            tm.record_decision(self.epr, 'reject', 'context_precheck', 'scope_mismatch',
+                               room=context_room, target_room=self.target_room)
+            tm.record_subscription_avoided(self.epr, 'context_precheck', 'scope_mismatch')
+        except Exception:
+            pass
+        return True
+
+    def _subscribe_reports(self) -> int:
+        """Create the WS-Eventing subscriptions that ``start_all`` would have created
+        (every available action except the periodic reports).  Mirrors the
+        subscription loop of ``SdcConsumer.start_all``; returns the number of
+        subscribed actions.
+        """
+        consumer = self.consumer
+        excluded = {a.value if hasattr(a, 'value') else str(a) for a in periodic_actions}
+        n_actions = 0
+        for dpws_hosted in consumer.host_description.relationship.Hosted:
+            available = []
+            if dpws_hosted.Types is not None:
+                for port_type_qname in dpws_hosted.Types:
+                    client = consumer.client(port_type_qname.localname)
+                    if client is not None:
+                        available.extend(client.get_available_subscriptions())
+            subscribe_actions = {a for a in available if a.action not in excluded}
+            if not subscribe_actions:
+                continue
+            filter_type = eventing_types.FilterType()
+            filter_type.text = ' '.join(x.action for x in subscribe_actions)
+            filter_type.Dialect = DeviceEventingFilterDialectURI.ACTION
+            consumer.do_subscribe(dpws_hosted, filter_type, subscribe_actions)
+            n_actions += len(subscribe_actions)
+        # Only the periodic reports are excluded → mdib version gaps are errors.
+        consumer.all_subscribed = True
+        self.logger.info(f'[Precheck] subscribed to {n_actions} action(s) after the room check.')
+        return n_actions
 
     def _extract_dpws_metadata(self) -> None:
         """
@@ -372,27 +602,55 @@ class DeviceHandler(threading.Thread):
         )
 
     def _build_semantic_map(self) -> None:
-        """Map NumericMetricDescriptor handles → BICEPS/LOINC concept codes."""
+        """Map NumericMetricDescriptor handles → LOINC concept codes.
+
+        Type/@Code is taken together with Type/@CodingSystem.  LOINC codes are
+        used as delivered; IEEE 11073-10101 (MDC) codes — the BICEPS default when
+        CodingSystem is omitted — are translated through the FHIR R4 ConceptMap
+        in config/conceptmap_mdc_to_loinc.json (app.concept_map).  Anything the
+        map does not cover is kept as-is (fail-open) so the channel still alarms
+        locally; it merely misses its clinical_db.json reliability profile.
+        """
+        n_translated = n_unmapped = 0
         for desc in self.mdib.descriptions.NODETYPE.get(pm.NumericMetricDescriptor, []):
             try:
                 code: str | None = None
+                coding_system: str | None = None
                 t = getattr(desc, 'Type', None)
                 if t is not None:
                     code = getattr(t, 'Code', None)
+                    coding_system = getattr(t, 'CodingSystem', None)
                     if not code:
                         cd = getattr(t, 'ConceptDescription', None) or []
                         if cd:
                             code = getattr(cd[0], 'text', None)
-                if not code:
-                    code = desc.Handle   # last resort: use handle as the code
-                if code:
-                    self._handle_to_concept[desc.Handle] = str(code)
-                    self.logger.debug(f'[SemanticMap]   handle={desc.Handle!r} → concept={code!r}')
+                res = normalize_concept(code, coding_system, fallback=desc.Handle)
+                self._handle_to_concept[desc.Handle] = res.concept
+                if res.action == 'translated' and res.translation is not None:
+                    n_translated += 1
+                    self.logger.info(
+                        f'[SemanticMap]   handle={desc.Handle!r} '
+                        f'{res.translation.source_display or res.translation.source_code} '
+                        f'({res.translation.source_code}, {coding_system or "MDC default"}) '
+                        f'→ LOINC {res.concept} [{res.translation.equivalence}]'
+                    )
+                elif res.action in ('unmapped', 'unmatched'):
+                    n_unmapped += 1
+                    self.logger.warning(
+                        f'[SemanticMap]   handle={desc.Handle!r} code={res.concept!r} '
+                        f'system={coding_system!r} has no LOINC translation ({res.action}) — '
+                        f'kept as-is; no reliability profile will match.'
+                    )
+                else:
+                    self.logger.debug(
+                        f'[SemanticMap]   handle={desc.Handle!r} → concept={res.concept!r} ({res.action})'
+                    )
             except Exception:
                 pass
         self.logger.info(
             f'[SemanticMap] Mapped {len(self._handle_to_concept)} '
-            f'NumericMetricDescriptor handle(s) to concept codes.'
+            f'NumericMetricDescriptor handle(s) to concept codes '
+            f'({n_translated} translated MDC→LOINC, {n_unmapped} without translation).'
         )
 
     def _prefetch_device_calibration(self) -> None:
@@ -471,8 +729,9 @@ class DeviceHandler(threading.Thread):
         if device_room == '':
             self.logger.warning(
                 f'No LocationContext found in MDIB. '
-                f"Room filter (target='{self.target_room}') skipped — accepting device."
+                f"Room filter (target='{self.target_room}') skipped — accepting device (UNKNOWN)."
             )
+            self._record_decision('unknown', 'mdib', 'no_location', None)
             return False
 
         if device_room != self.target_room:
@@ -483,9 +742,12 @@ class DeviceHandler(threading.Thread):
             if hasattr(self.manager, '_rejected_room_map'):
                 self.manager._rejected_room_map[self.epr] = device_room
             self._location_filtered = True
+            self._reject_phase = 'mdib'
+            self._record_decision('reject', 'mdib', 'mdib_room_mismatch', device_room)
             return True  # → caller returns from _worker_logic
 
         self.logger.info(f"Location filter: room '{device_room}' matches. Accepting.")
+        self._record_decision('accept', 'mdib', 'mdib_room_match', device_room)
         return False
 
     # =========================================================================
@@ -501,6 +763,11 @@ class DeviceHandler(threading.Thread):
         )
         observableproperties.bind(self.mdib, metrics_by_handle=self.on_metric_update)
         observableproperties.bind(self.mdib, alert_by_handle=self.on_alert_update)
+        # Fix 16: SubscriptionEnd status/reason for the fallback event (Ziel 2)
+        try:
+            observableproperties.bind(self.consumer, subscription_end_data=self._on_subscription_end)
+        except Exception as exc:
+            self.logger.debug(f'subscription_end_data not bindable: {exc}')
 
     # =========================================================================
     # Phase 3b: Ensemble context binding (SmartAlertAggregator)
@@ -581,7 +848,13 @@ class DeviceHandler(threading.Thread):
             self.logger.warning('Could not find Main Thread!')
 
         self._ui_connected = True
-        self.manager.deviceConnected.emit(self.qtDeviceHandler)
+        # Fix 17: the manager clears a pending "Verbindung verloren" alarm of this
+        # EPR (reconnect) before announcing the device to the UI.
+        notify = getattr(self.manager, 'on_device_connected', None)
+        if callable(notify):
+            notify(self.qtDeviceHandler)
+        else:
+            self.manager.deviceConnected.emit(self.qtDeviceHandler)
 
     # =========================================================================
     # Phase 5: Main monitoring loop  (T_fallback / IHE SDPi)
@@ -594,14 +867,20 @@ class DeviceHandler(threading.Thread):
         T_fallback implementation (IHE SDPi):
           Active ping (GetContextStates) every SLEEP_INTERVAL seconds.
           If MAX_MISSED consecutive pings fail → declare the connection lost.
+
+        Upper bound for fallback entry after a silent loss (Ziel 2, Fix 18):
+          Δt ≤ MAX_MISSED · (SLEEP_INTERVAL + τ_sock) = T_FALLBACK + MAX_MISSED · τ_sock
+          with τ_sock = sdc11073 ``socket_timeout`` (5 s default) → 30 s.
+        The technical alarm (technical_alarm{raised}, the safe state visible to
+        staff) is raised right after this loop exits, BEFORE the graceful
+        unsubscribe, so the same bound holds for loss → technical_alarm{raised}:
+        graceful shutdown ≈ 10 s, killed process ≈ 15 s, silent loss ≤ 30 s.
         """
-        SLEEP_INTERVAL    = 5.0
-        T_FALLBACK        = 15.0
-        MAX_MISSED        = int(T_FALLBACK / SLEEP_INTERVAL)
-        # 120 s instead of 30 s — prevents false reconnects for devices that publish
-        # slow vital-sign metrics (e.g. SpO₂ at 0.016 Hz = once per 60 s).
-        METRIC_SILENCE_SEC = 120.0
-        missed            = 0
+        SLEEP_INTERVAL     = self.SLEEP_INTERVAL
+        T_FALLBACK         = self.T_FALLBACK
+        MAX_MISSED         = self.MAX_MISSED
+        METRIC_SILENCE_SEC = self.METRIC_SILENCE_SEC
+        missed             = 0
 
         while self.running:
             if not self.consumer.is_connected:
@@ -638,12 +917,38 @@ class DeviceHandler(threading.Thread):
             await asyncio.sleep(SLEEP_INTERVAL)
 
     def _record_fallback_metric(self, cause: str) -> None:
-        """Ziel 2 metric (best-effort): record Δt_safe when the watchdog fires."""
+        """Ziel 2 metric (best-effort): record Δt_safe when the watchdog fires.
+        Carries the SubscriptionEnd status/reason if the provider ended the
+        subscription itself (graceful shutdown) — Fix 16."""
+        self.fallback_cause = cause
         try:
             from app.metrics.latency_metrics import get_latency_metrics
-            get_latency_metrics().record_fallback(self.epr, cause=cause)
+            status, reason = self._subscription_end_info
+            get_latency_metrics().record_fallback(self.epr, cause=cause,
+                                                  end_status=status, end_reason=reason)
         except Exception:
             pass
+
+    def _on_subscription_end(self, data: Any) -> None:
+        """sdc11073 observable ``subscription_end_data``: the provider sent a
+        WS-Eventing SubscriptionEnd (e.g. SourceShuttingDown).  Remember status
+        and reason for the ``fallback`` event; ``is_connected`` drops on its own."""
+        if data is None:
+            return
+        try:
+            sub = getattr(data, 'subscription', None)
+            status = getattr(sub, 'end_status', None)
+            reason = getattr(sub, 'end_reason', None)
+            self._subscription_end_info = (
+                None if status is None else str(status),
+                None if reason is None else str(getattr(reason, 'text', reason)),
+            )
+            self.logger.warning(
+                f'[COMM] SubscriptionEnd from provider: status={self._subscription_end_info[0]} '
+                f'reason={self._subscription_end_info[1]}'
+            )
+        except Exception as exc:
+            self.logger.debug(f'_on_subscription_end: {exc}')
 
     async def _ping(self, missed: int, max_missed: int, interval: float, t_fallback: float) -> int:
         """
@@ -712,11 +1017,15 @@ class DeviceHandler(threading.Thread):
             op_handle = self.alarm_manager.find_operation_handle(sig_handle)
             if op_handle:
                 try:
-                    await asyncio.to_thread(
+                    outcome = await asyncio.to_thread(
                         self.alarm_manager.reactivate_alarm, op_handle, sig_handle
                     )
+                    if outcome != 'accepted':
+                        self.logger.error(f'[Ack-timeout] Re-raise of {sig_handle} not executed: {outcome}')
                 except Exception as e:
                     self.logger.error(f'[Ack-timeout] Re-raise failed: {e}')
+            else:
+                self.logger.warning(f'[Ack-timeout] {sig_handle}: no SetAlertStateOperation targets this signal.')
             self.alarm_manager.clear_ack(sig_handle)
 
     # =========================================================================
@@ -817,7 +1126,7 @@ class DeviceHandler(threading.Thread):
                     self._warning_handles.discard(handle)
                 if aggregator is not None and self.ensemble_uuid:
                     try:
-                        aggregator.clear_alarm(self.ensemble_uuid, handle)
+                        aggregator.clear_alarm(self.ensemble_uuid, alert_key_for(self.epr, handle))
                     except Exception as _e:
                         self.logger.debug(f'[ALARM FILTER] clear_alarm failed: {_e}')
 
@@ -826,7 +1135,7 @@ class DeviceHandler(threading.Thread):
                 try:
                     _rel_profile = self._device_calibration.get(metric_concept)
                     _result = aggregator.check_alert_validity(
-                        self.ensemble_uuid, handle, metric_concept,
+                        self.ensemble_uuid, alert_key_for(self.epr, handle), metric_concept,
                         biceps_priority=biceps_priority,
                         manufacturer=self.manufacturer,
                         model=self.model,
@@ -960,7 +1269,9 @@ class DeviceHandler(threading.Thread):
                 return channels
             cond_descs = self.mdib.descriptions.NODETYPE.get(pm.AlertConditionDescriptor, [])
             for desc in cond_descs:
-                alert_key = str(desc.Handle)
+                # Channel key = (device EPR, handle): handles are unique only
+                # within one MDIB (Fix 13 / SD-11).
+                alert_key = alert_key_for(self.epr, str(desc.Handle))
                 # Resolve the source metric concept (drives the calibration profile).
                 metric_concept = ''
                 for src_handle in (getattr(desc, 'Source', None) or []):
@@ -981,6 +1292,36 @@ class DeviceHandler(threading.Thread):
         finally:
             self.data_lock.release()
         return channels
+
+    def snapshot_alert_presence(self) -> Optional[dict[str, bool]]:
+        """Return ``{alert_key → Presence}`` for every AlertConditionState in the
+        consumer MDIB, or ``None`` if the MDIB is busy or absent.
+
+        This is the device truth for a_j(t) (thesis 3.3: a source holds its
+        state until the next report): the aggregator reads it at every
+        evaluation instant instead of inferring activity from the TTL cache
+        (Fix 11 / SD-9).  Non-blocking, like ``enumerate_alert_channels``, so
+        it is safe to call before any aggregator lock; a ``None`` result means
+        "keep the last known value", never "inactive".
+        """
+        if not self.data_lock.acquire(blocking=False):
+            return None
+        try:
+            if not self.mdib:
+                return None
+            result: dict[str, bool] = {}
+            for s in self.mdib.states.objects:
+                node_type = getattr(s, 'NODETYPE', None)
+                name = getattr(node_type, 'localname', '') if node_type else ''
+                if name in ('AlertConditionState', 'LimitAlertConditionState'):
+                    result[alert_key_for(self.epr, str(s.DescriptorHandle))] = bool(
+                        getattr(s, 'Presence', False)
+                    )
+            return result
+        except Exception:
+            return None
+        finally:
+            self.data_lock.release()
 
     @staticmethod
     def _is_alert_active(raw_presence: Any) -> bool:
@@ -1029,6 +1370,19 @@ class DeviceHandler(threading.Thread):
                 f'{prefix}[ALARM] 🔕 ACK | {type_label} handle={handle!r}'
                 f'{concept_hint}{ens} | device={dev}'
             )
+            # Fix 16 (Ziel 2): the provider confirmed Presence=Ack in its report —
+            # the analysis matches this to the preceding ack_rtt by (epr, handle).
+            try:
+                from app.metrics.latency_metrics import get_latency_metrics
+                get_latency_metrics().record_ack_confirmed(self.epr, handle)
+            except Exception:
+                pass
+            qt = self.qtDeviceHandler
+            if qt is not None and hasattr(qt, 'on_ack_confirmed'):
+                try:
+                    qt.on_ack_confirmed(handle)
+                except Exception:
+                    pass
         else:
             # Latch or genuinely unknown non-empty state — DEBUG to avoid noise
             self.logger.debug(

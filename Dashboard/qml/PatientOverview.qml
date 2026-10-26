@@ -201,7 +201,10 @@ Item {
                         // Base colour: tri-state — red / yellow / blue
                         color: "transparent"
 
-                        gradient: modelData.isEscalated ? gradEscalated
+                        // Fix 17: a fully lost patient (connectionLost) is a technical
+                        // alarm — dark red/grey, never Red/Yellow (no E(t) behind it)
+                        gradient: modelData.connectionLost ? gradLost
+                                : modelData.isEscalated ? gradEscalated
                                 : modelData.hasActiveAlarms   ? gradWarning
                                 :                         gradNormal
 
@@ -209,6 +212,11 @@ Item {
                             id: gradEscalated
                             GradientStop { position: 0.0; color: "#8c2f2f" }
                             GradientStop { position: 1.0; color: "#af3c3c" }
+                        }
+                        Gradient {
+                            id: gradLost
+                            GradientStop { position: 0.0; color: "#4a3030" }
+                            GradientStop { position: 1.0; color: "#7a3030" }
                         }
                         Gradient {
                             id: gradWarning
@@ -297,7 +305,9 @@ Item {
 
                                 Text {
                                     text: "Devices: " + modelData.deviceCount
-                                    color: "#ccd0e8"
+                                          + (modelData.lostDevices > 0
+                                             ? " (" + modelData.lostDevices + " ohne Verbindung)" : "")
+                                    color: modelData.lostDevices > 0 ? "#ffb3b3" : "#ccd0e8"
                                     font.pixelSize: 17
                                     font.family: "Tahoma"
                                 }
@@ -320,6 +330,52 @@ Item {
                                 color: modelData.isEscalated ? "#ffcccc" : "#ebd234"
                                 font.pixelSize: 14
                                 font.family: "Tahoma"
+                            }
+
+                            // Fix 17 / A1: technical alarm line (DIN EN 60601-1-8 §6.11.2.2.1 b)
+                            Text {
+                                visible: modelData.connectionLost || modelData.lostDevices > 0
+                                text: (modelData.connectionLost
+                                       ? "⚠ VERBINDUNG VERLOREN"
+                                       : "⚠ " + modelData.lostDevices + " Gerät(e) ohne Verbindung")
+                                      + (modelData.escalatedAtLoss ? " WÄHREND ESKALATION" : "")
+                                      + (modelData.lostSince > 0
+                                         ? " — seit " + new Date(modelData.lostSince * 1000).toLocaleTimeString(Qt.locale(), "HH:mm:ss")
+                                         : "")
+                                color: "#ffb3b3"
+                                font.pixelSize: 14
+                                font.family: "Tahoma"
+                                font.bold: modelData.escalatedAtLoss
+                            }
+                        }
+
+                        // Fix 17: dismiss the technical alarm for every lost device of this card
+                        Rectangle {
+                            visible: modelData.lostDevices > 0
+                            anchors.right: parent.right
+                            anchors.rightMargin: 18
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 12
+                            width: 120
+                            height: 34
+                            radius: 8
+                            color: "#2b2b2b"
+                            border.color: "#ffffff"
+                            border.width: 1
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Quittieren ✕"
+                                color: "white"
+                                font.pixelSize: 14
+                                font.family: "Tahoma"
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: {
+                                    var eprs = modelData.lostEprs
+                                    for (var i = 0; i < eprs.length; i++)
+                                        sdcManager.dismissConnectionLoss(eprs[i])
+                                }
                             }
                         }
 

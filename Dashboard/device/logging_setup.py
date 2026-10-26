@@ -20,7 +20,7 @@ class _SuppressGetContextStates400(logging.Filter):
     """
     Suppress repetitive 'GetContextStates HTTP 400' ERROR spam from sdc11073.
 
-    sdcX returns HTTP 400 for GetContextStates when the consumer is not
+    Some provider stacks return HTTP 400 for GetContextStates when the consumer is not
     authorized (no mTLS). We handle this in the ping loop already and log
     a one-time warning — the sdc11073 internal ERROR is redundant and noisy.
     """

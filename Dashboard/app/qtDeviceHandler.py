@@ -20,7 +20,9 @@ HOW Qt SIGNALS WORK (for reference):
   event loop of the thread that owns the receiver object (Qt::QueuedConnection).
 """
 
+import threading
 import time
+import uuid
 from decimal import Decimal, ROUND_HALF_UP
 
 from PySide6.QtCore import QObject, Signal, Slot, Property
@@ -72,11 +74,19 @@ class QtDeviceHandler(QObject):
     operationsChanged   = Signal()   # Available operations list updated
     eprChanged          = Signal()   # EPR (device ID) changed (theoretically never changes)
     connectedChanged    = Signal()   # Connection status changed (reserved)
+    ackStateChanged     = Signal()   # Fix 16 / Q2: result of the last bell press changed
 
     # Internal signal for cross-thread update delivery.
     # Worker thread emits updateTick -> Qt queues the call into the main thread
     # -> handleUpdateTick() executes in the main thread -> update_data() reads MDIB.
     updateTick = Signal()
+    # Fix 16 (A3): the ack worker thread reports (press_id, verdict, detail);
+    # Qt queues it into the main thread → _applyAckResult.
+    _ackResult = Signal(str, str, str)
+    # Fix 16: DeviceHandler's notification thread saw Presence=Ack for a handle.
+    _ackConfirmed = Signal(str)
+    # Fix 17: the manager (worker thread) declares the connection lost.
+    _connectionLostTick = Signal(str, float, bool)
 
     def __init__(self, device: 'DeviceHandler'):
         """
@@ -102,9 +112,29 @@ class QtDeviceHandler(QObject):
         self._metrics      = []   # list of dicts: {metricname, value, samples, alarm, timestamp_ms}
         self._operations   = []   # list of dicts: {name, handle, mode, type}
 
+        # Fix 16 / Q2: state of the operator's acknowledgement (IEC 60601-1-8
+        # §6.11.2.4 a): idle | pending | accepted | confirmed | failed | timeout |
+        # error | no_active_alarm | not_remote_ackable | unavailable
+        self._ackState   = 'idle'
+        self._ackMessage = ''
+        self._ackPressId = ''
+        self._ack_synchronous = False   # tests: run the transactions inline
+
+        # Fix 17: technical alarm "Verbindung verloren" (DIN EN 60601-1-8
+        # §6.11.2.2.1 b).  While True the card shows COMM_FAILURE, update_data()
+        # no longer touches the (dead) worker's MDIB, and the state stays until
+        # the manager replaces this object (reconnect) or staff dismiss it.
+        self._connectionLost = False
+        self._lostCause = ''
+        self._lostSince = 0.0            # time.time() of the loss
+        self._escalatedAtLoss = False    # A1: ensemble was Red / latched at the loss
+
         # Connect the internal signal: any emit() from any thread will automatically
         # call handleUpdateTick() in the thread that owns this object.
         self.updateTick.connect(self.handleUpdateTick)
+        self._ackResult.connect(self._applyAckResult)
+        self._ackConfirmed.connect(self._applyAckConfirmed)
+        self._connectionLostTick.connect(self._applyConnectionLost)
 
         # Initial synchronous read (directly at object creation time).
         # At this point the object is still in the worker thread, but MDIB is ready.
@@ -130,67 +160,208 @@ class QtDeviceHandler(QObject):
         """
         self.update_data()
 
+    # =========================================================================
+    # Fix 17: technical alarm "Verbindung verloren"
+    # =========================================================================
+
+    def markConnectionLost(self, cause: str, t_abs: float, escalated_at_loss: bool = False):
+        """
+        Called by SdcMyConsumer (worker thread) when the watchdog declared the
+        connection lost.  Applied in the thread that owns this object: directly
+        when already there (headless / tests), otherwise queued via the signal.
+        """
+        # The object lives in the main (GUI) thread after moveToThread; a call
+        # from the main thread (headless runner, tests) is applied directly.
+        if threading.current_thread() is threading.main_thread():
+            self._applyConnectionLost(cause, float(t_abs), bool(escalated_at_loss))
+        else:
+            self._connectionLostTick.emit(cause, float(t_abs), bool(escalated_at_loss))
+
+    @Slot(str, float, bool)
+    def _applyConnectionLost(self, cause: str, t_abs: float, escalated_at_loss: bool):
+        self._connectionLost = True
+        self._lostCause = cause
+        self._lostSince = t_abs
+        self._escalatedAtLoss = escalated_at_loss
+        if self._alarmStatus != "COMM_FAILURE":
+            self._alarmStatus = "COMM_FAILURE"
+            self.alarmStatusChanged.emit()
+        self._deviceValue = "VERBINDUNG VERLOREN"
+        self.deviceValueChanged.emit()
+        self.connectedChanged.emit()
+        try:
+            self._device.logger.error(
+                f'[TECH-ALARM] card → COMM_FAILURE (cause={cause}'
+                f"{', during escalation' if escalated_at_loss else ''})"
+            )
+        except Exception:
+            pass
+
+    # =========================================================================
+    # Acknowledgement (bell) — Fix 16: only ACTIVE signals, exact operation,
+    # one transaction per signal, press_id groups a bell press (A4).
+    # =========================================================================
+
+    def _select_ack_targets(self) -> tuple[list[tuple[str, str]], str, list[str]]:
+        """
+        Select the AlertSignals to acknowledge for one bell press.
+
+        A signal is a candidate when its Presence is On or Latch, its
+        AlertCondition (``ConditionSignaled``) is not artifact-suppressed, and —
+        for Presence=On — that condition is still present in the MDIB.  Each
+        candidate needs a SetAlertStateOperationDescriptor whose
+        ``OperationTarget`` is exactly that signal; there is NO fallback to the
+        first signal or the first operation any more (an ack of an inactive or
+        foreign signal is a wrong transaction).
+
+        Returns (targets, reason, not_ackable):
+          targets     list of (operation_handle, signal_handle)
+          reason      'ok' | 'no_active_alarm' | 'not_remote_ackable' | 'unavailable'
+          not_ackable candidate signals without a matching operation
+        """
+        device = self._device
+        if not device or not hasattr(device, 'data_lock'):
+            return [], 'unavailable', []
+        with device.data_lock:
+            mdib = device.mdib
+            if not mdib:
+                return [], 'unavailable', []
+
+            suppressed: frozenset
+            if hasattr(device, 'get_suppression_snapshot'):
+                suppressed, _warn = device.get_suppression_snapshot()
+            else:
+                suppressed = frozenset(getattr(device, '_artifact_suppressed', ()))
+
+            on_str = str(pm_types.AlertSignalPresence.ON)
+            latch_str = str(pm_types.AlertSignalPresence.LATCH)
+
+            candidates: list[str] = []
+            for sig in [s for s in mdib.states.objects if s.NODETYPE == pm.AlertSignalState]:
+                presence = str(getattr(sig, 'Presence', ''))
+                if presence not in (on_str, latch_str):
+                    continue
+                desc = mdib.descriptions.handle.get_one(sig.DescriptorHandle, allow_none=True)
+                cond = getattr(desc, 'ConditionSignaled', None) if desc is not None else None
+                if cond and str(cond) in suppressed:
+                    continue
+                if presence == on_str and cond:
+                    cond_state = None
+                    try:
+                        cond_state = mdib.states.descriptor_handle.get_one(str(cond), allow_none=True)
+                    except Exception:
+                        cond_state = None
+                    if cond_state is not None and not getattr(cond_state, 'Presence', True):
+                        continue  # signal On but its condition already ended → nothing to ack
+                candidates.append(sig.DescriptorHandle)
+
+            op_by_target: dict[str, str] = {}
+            for op in mdib.descriptions.NODETYPE.get(pm.SetAlertStateOperationDescriptor, []):
+                target = getattr(op, 'OperationTarget', None)
+                if target and target not in op_by_target:
+                    op_by_target[str(target)] = op.Handle
+
+        targets = [(op_by_target[h], h) for h in candidates if h in op_by_target]
+        not_ackable = [h for h in candidates if h not in op_by_target]
+        if not candidates:
+            return [], 'no_active_alarm', []
+        if not targets:
+            return [], 'not_remote_ackable', not_ackable
+        return targets, 'ok', not_ackable
+
+    def _run_ack_press(self, press_id: str, targets: list[tuple[str, str]]) -> None:
+        """Send one SetAlertState transaction per target (sequentially) and
+        report the combined result through the queued ``_ackResult`` signal."""
+        device = self._device
+        outcomes: list[tuple[str, str, str | None, str]] = []
+        for op_handle, sig_handle in targets:
+            try:
+                outcome, state, msg = device.acknowledge_alarm_detailed(
+                    op_handle, sig_handle, press_id=press_id)
+            except Exception as e:  # pragma: no cover — defensive
+                outcome, state, msg = 'error', None, f'{type(e).__name__}: {e}'
+            outcomes.append((sig_handle, outcome, state, msg))
+        # Combined verdict for the bell: accepted only if every transaction was.
+        if all(o[1] == 'accepted' for o in outcomes):
+            verdict = 'accepted'
+        else:
+            # Most severe first: failed > timeout > error
+            kinds = [o[1] for o in outcomes]
+            verdict = next((k for k in ('failed', 'timeout', 'error', 'unavailable') if k in kinds), 'error')
+        detail = '; '.join(
+            f'{sig}: {out}' + (f' ({state})' if state else '') + (f' {msg}' if msg and out != 'accepted' else '')
+            for sig, out, state, msg in outcomes
+        )
+        self._ackResult.emit(press_id, verdict, detail)
+
     @Slot()
     def silenceAlarm(self):
         """
         Called from QML when the Bell (Silence) button is pressed.
-        Automatically locates the SetAlertStateOperation and AlertSignalState
-        handles in the MDIB and calls acknowledge_alarm() on DeviceHandler,
-        which sends SetAlertState(Presence=Ack) to the provider.
 
-        IMPORTANT: the SetAlertStateOperationDescriptor has an OperationTarget
-        that points to a specific AlertSignal handle.  We must use the operation
-        whose OperationTarget matches the active signal — otherwise the provider
-        rejects the call (wrong operation for the wrong target).
+        Selects every ACTIVE AlertSignal that has its own
+        SetAlertStateOperation (``_select_ack_targets``) and sends one
+        SetAlertState(Presence=Ack) transaction per signal, all tagged with the
+        same ``press_id``.  The transactions run OFF the Qt main thread (A3);
+        the result arrives through ``_ackResult`` → ``_applyAckResult`` and is
+        shown as ``ackState`` / ``ackMessage`` (Q2, IEC 60601-1-8 §6.11.2.4 a).
         """
         if not self._device:
             return
         try:
-            with self._device.data_lock:
-                if not self._device.mdib:
-                    return
-
-                # Step 1 — find the active (Presence=On) AlertSignalState.
-                signal_handle = None
-                alert_signals = [s for s in self._device.mdib.states.objects
-                                 if s.NODETYPE == pm.AlertSignalState]
-                for sig in alert_signals:
-                    if str(sig.Presence) == str(pm_types.AlertSignalPresence.ON):
-                        signal_handle = sig.DescriptorHandle
-                        break
-                # Fallback: first signal if none is active
-                if not signal_handle and alert_signals:
-                    signal_handle = alert_signals[0].DescriptorHandle
-
-                # Step 2 — find the SetAlertStateOperationDescriptor whose
-                # OperationTarget == signal_handle.  This guarantees we call the
-                # correct operation entry point for the active signal.
-                op_handle = None
-                if signal_handle:
-                    op_descs = self._device.mdib.descriptions.NODETYPE.get(
-                        pm.SetAlertStateOperationDescriptor, []
-                    )
-                    for op in op_descs:
-                        if op.OperationTarget == signal_handle:
-                            op_handle = op.Handle
-                            break
-                    # Fallback: first available operation
-                    if not op_handle and op_descs:
-                        op_handle = op_descs[0].Handle
-
-            if op_handle is not None and signal_handle is not None:
-                self._device.logger.info(
-                    f'silenceAlarm: op={op_handle}  signal={signal_handle}'
-                )
-                self._device.acknowledge_alarm(op_handle, signal_handle)
-            else:
-                self._device.logger.warning(
-                    f'silenceAlarm: cannot acknowledge — handle(s) not found in MDIB '
-                    f'(op={op_handle!r}, signal={signal_handle!r}). '
-                    f'Device may not publish SetAlertStateOperationDescriptor.'
-                )
+            targets, reason, not_ackable = self._select_ack_targets()
         except Exception as e:
             self._device.logger.error(f'silenceAlarm error: {e}', exc_info=True)
+            self._set_ack_state('error', str(e), '')
+            return
+
+        press_id = uuid.uuid4().hex[:8]
+        if reason != 'ok':
+            self._device.logger.warning(
+                f'silenceAlarm: nothing sent — {reason}'
+                + (f' (signals without SetAlertStateOperation: {not_ackable})' if not_ackable else '')
+            )
+            self._set_ack_state(reason, ', '.join(not_ackable), press_id)
+            return
+
+        self._device.logger.info(
+            f'silenceAlarm: press={press_id} targets={[s for _o, s in targets]}'
+            + (f' not_ackable={not_ackable}' if not_ackable else '')
+        )
+        self._set_ack_state('pending', f'{len(targets)} transaction(s)', press_id)
+        if getattr(self, '_ack_synchronous', False):
+            self._run_ack_press(press_id, targets)          # tests / headless
+            return
+        threading.Thread(
+            target=self._run_ack_press, args=(press_id, targets),
+            name=f'ack-{press_id}', daemon=True,
+        ).start()
+
+    def _set_ack_state(self, state: str, message: str, press_id: str) -> None:
+        """Set the acknowledgement state shown by the UI (main thread or tests)."""
+        changed = (state != self._ackState) or (message != self._ackMessage)
+        self._ackState = state
+        self._ackMessage = message
+        self._ackPressId = press_id
+        if changed:
+            self.ackStateChanged.emit()
+
+    @Slot(str, str, str)
+    def _applyAckResult(self, press_id: str, verdict: str, detail: str) -> None:
+        """Main-thread slot (queued from the ack worker thread)."""
+        if press_id != self._ackPressId:
+            return  # a newer press superseded this result
+        self._set_ack_state(verdict, detail, press_id)
+
+    def on_ack_confirmed(self, handle: str) -> None:
+        """Called by DeviceHandler (notification thread) when the provider's
+        report shows Presence=Ack for ``handle``: accepted → confirmed."""
+        self._ackConfirmed.emit(handle)
+
+    @Slot(str)
+    def _applyAckConfirmed(self, handle: str) -> None:
+        if self._ackState in ('accepted', 'timeout'):
+            self._set_ack_state('confirmed', f'{handle}: Presence=Ack reported', self._ackPressId)
 
     # =========================================================================
     # Main method: read MDIB and update all properties
@@ -217,6 +388,8 @@ class QtDeviceHandler(QObject):
         """
         if not self._device:
             return
+        if self._connectionLost:
+            return  # Fix 17: the worker is gone; the card holds COMM_FAILURE
 
         # Try to acquire the lock without blocking.
         # If the worker thread is writing to MDIB -- return; the next updateTick will refresh.
@@ -367,7 +540,8 @@ class QtDeviceHandler(QObject):
 
                 # TTL cross-reference: skip stale MDIB entries already expired by Watchdog GC
                 if priority > 0 and cond_handle and _aggregator is not None and _ens_uuid:
-                    if not _aggregator.is_alarm_active(_ens_uuid, str(cond_handle)):
+                    from app.alarms.alarmCoordinator import alert_key_for
+                    if not _aggregator.is_alarm_active(_ens_uuid, alert_key_for(self._device.epr, str(cond_handle))):
                         continue  # stale MDIB state — alarm TTL-expired in aggregator
 
                 # WARN-routed condition (E(t) < Theta_current) — record but do not inflate priority
@@ -745,3 +919,53 @@ class QtDeviceHandler(QObject):
         QML renders them as control buttons.
         """
         return self._operations
+
+    @Property(str, notify=ackStateChanged)
+    def ackState(self):
+        """
+        State of the last acknowledgement (bell press) — Fix 16 / Q2:
+          idle, pending, accepted (Fin/FinMod), confirmed (Presence=Ack reported
+          back by the provider), failed (Fail/Cnclld/CnclldMan), timeout,
+          error, no_active_alarm, not_remote_ackable, unavailable.
+        """
+        return self._ackState
+
+    @Property(str, notify=ackStateChanged)
+    def ackMessage(self):
+        """Human-readable detail of ``ackState`` (provider error text, handles)."""
+        return self._ackMessage
+
+    @Property(str, notify=ackStateChanged)
+    def ackPressId(self):
+        """press_id of the last bell press (groups its ack_rtt journal events)."""
+        return self._ackPressId
+
+    @Property(bool, notify=connectedChanged)
+    def connectionLost(self):
+        """Fix 17: True while the device is in the technical-alarm state."""
+        return self._connectionLost
+
+    @Property(bool, notify=connectedChanged)
+    def connected(self):
+        return not self._connectionLost
+
+    @Property(str, notify=connectedChanged)
+    def lostCause(self):
+        """t_fallback | is_connected | metric_silence | error — see device/handler.py."""
+        return self._lostCause
+
+    @Property(float, notify=connectedChanged)
+    def lostSince(self):
+        """time.time() of the loss (0.0 while connected)."""
+        return self._lostSince
+
+    @Property(str, notify=connectedChanged)
+    def lostSinceText(self):
+        if not self._connectionLost or not self._lostSince:
+            return ""
+        return time.strftime('%H:%M:%S', time.localtime(self._lostSince))
+
+    @Property(bool, notify=connectedChanged)
+    def escalatedAtLoss(self):
+        """A1: the patient's ensemble was escalated (Red / latched) at the loss."""
+        return self._escalatedAtLoss

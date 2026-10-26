@@ -202,14 +202,37 @@ Item {
                     if (audible) {
                         // Send Ack to the provider via SetAlertState (audio pause).
                         // Does not affect the aggregator risk score / Red-Yellow state.
+                        // Fix 16 / Q2: the silence tint follows the RESULT (see the
+                        // Connections below), not the press.
                         if (devicePage && devicePage.currentDevice
                                 && typeof devicePage.currentDevice.silenceAlarm === "function") {
                             devicePage.currentDevice.silenceAlarm()
                         }
-                        timeout = timeout === 0 ? 1 : 0
                     } else if (alarm === "Ack") {
                         timeout = timeout === 0 ? 1 : 0
                     }
+                }
+            }
+
+            // Fix 16 / Q2: state of the operator response (IEC 60601-1-8 §6.11.2.4 a)
+            Text {
+                anchors.top: parent.bottom
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.topMargin: 2
+                visible: devicePage && devicePage.ackState !== "" && devicePage.ackState !== "idle"
+                text: devicePage ? devicePage.ackStateText(devicePage.ackState) : ""
+                color: devicePage ? devicePage.ackStateColor(devicePage.ackState) : "white"
+                font.pixelSize: 14
+                font.family: "Tahoma"
+            }
+
+            Connections {
+                target: (devicePage && devicePage.currentDevice) ? devicePage.currentDevice : null
+                ignoreUnknownSignals: true
+                function onAckStateChanged() {
+                    var s = devicePage.currentDevice.ackState
+                    if (s === "accepted" || s === "confirmed") timeout = 1
+                    else if (s === "failed" || s === "timeout" || s === "error") timeout = 0
                 }
             }
         }

@@ -43,8 +43,12 @@ Item {
                 "timeout":      "0"
             }
 
-            // 1. Push into master array (permanent for the session)
-            var arr = mainPage.masterDeviceArray
+            // 1. Push into master array (permanent for the session).
+            //    Fix 17: a RECONNECT of an EPR that is still shown as
+            //    "Verbindung verloren" replaces the old entry (new QtDeviceHandler).
+            var arr = mainPage.masterDeviceArray.filter(
+                function(e) { return e.epr !== device.epr }
+            )
             arr.push(entry)
             mainPage.masterDeviceArray = arr   // reassign to notify QML bindings
 
@@ -55,13 +59,25 @@ Item {
         function onDeviceDisconnected(epr) {
             console.log("QML: Device disconnected: " + epr)
 
-            // Remove from master array (device truly gone from network)
+            // Remove from master array (graceful departure, room switch, or the
+            // staff dismissed a "Verbindung verloren" technical alarm — Fix 17)
             mainPage.masterDeviceArray = mainPage.masterDeviceArray.filter(
                 function(e) { return e.epr !== epr }
             )
 
             // Rebuild proxy
             applyFilters()
+        }
+
+        // Fix 17: communication failure → the device STAYS in the list as a
+        // technical alarm (its QtDeviceHandler switched to COMM_FAILURE).
+        function onDeviceConnectionLost(epr, cause) {
+            console.log("QML: TECHNICAL ALARM — Verbindung verloren: " + epr + " (" + cause + ")")
+            applyFilters()
+        }
+
+        function onDeviceReconnected(epr) {
+            console.log("QML: reconnected, technical alarm cleared: " + epr)
         }
 
         // Room filter change — no longer destructive; just re-applies filters
@@ -396,26 +412,37 @@ Item {
                             onRunningChanged: { if (!running) delegateButton.opacity = 1.0 }
                         }
 
+                        // Fix 17: technical alarm "Verbindung verloren" (COMM_FAILURE)
+                        property bool lost: model.deviceObj ? model.deviceObj.connectionLost : false
+
                         Text {
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.leftMargin: 20
                             font.pixelSize: 24
                             font.family: "Tahoma"
-                            text: "Room: "       + (model.room       ? model.room       : "?")       + " | " +
-                                  (model.devicename  ? model.devicename  : "Unknown") + " | " +
-                                  (model.value       ? model.value       : "---")     + " | " +
-                                  (model.patientname ? model.patientname : "Unknown")
+                            text: delegateButton.lost
+                                  ? ("Room: " + (model.room ? model.room : "?") + " | " +
+                                     (model.devicename ? model.devicename : "Unknown") + " | " +
+                                     "⚠ VERBINDUNG VERLOREN seit " + model.deviceObj.lostSinceText +
+                                     (model.deviceObj.escalatedAtLoss ? " (während Eskalation)" : "") + " | " +
+                                     (model.patientname ? model.patientname : "Unknown"))
+                                  : ("Room: "       + (model.room       ? model.room       : "?")       + " | " +
+                                     (model.devicename  ? model.devicename  : "Unknown") + " | " +
+                                     (model.value       ? model.value       : "---")     + " | " +
+                                     (model.patientname ? model.patientname : "Unknown"))
                             color: "white"
                         }
 
                         Text {
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            anchors.rightMargin: 20
+                            anchors.rightMargin: delegateButton.lost ? 150 : 20
                             font.pixelSize: 24
                             font.family: "Tahoma"
-                            text: "Priority: " + model.priority
+                            // The source priority is not shown (Kapitel 3.2.5); the
+                            // 'priority' role stays in the model for list sorting only.
+                            text: delegateButton.lost ? ("Ursache: " + model.deviceObj.lostCause) : ""
                             color: "white"
                         }
 
@@ -427,6 +454,32 @@ Item {
                                     mainPage.visible = false
                                     mainPage.devicePage.visible = true
                                 }
+                            }
+                        }
+
+                        // Fix 17: staff dismiss the technical alarm (the visual state
+                        // is not clearable any other way; a reconnect clears it itself)
+                        Rectangle {
+                            visible: delegateButton.lost
+                            anchors.right: parent.right
+                            anchors.rightMargin: 20
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 110
+                            height: 44
+                            radius: 10
+                            color: "#2b2b2b"
+                            border.color: "#ffffff"
+                            border.width: 1
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Quittieren ✕"
+                                color: "white"
+                                font.pixelSize: 16
+                                font.family: "Tahoma"
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: sdcManager.dismissConnectionLoss(model.epr)
                             }
                         }
                     }

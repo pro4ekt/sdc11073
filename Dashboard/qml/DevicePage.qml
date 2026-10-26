@@ -38,6 +38,9 @@ Item {
         value = deviceObj.deviceValue
         alarm = deviceObj.alarmStatus
         priority = parseInt(deviceObj.priority) || 0
+        // Fix 16 / Q2: show the acknowledgement state of THIS device
+        ackState = deviceObj.ackState || ""
+        ackMessage = deviceObj.ackMessage || ""
         // Reset timeout only when switching to a DIFFERENT device —
         // preserves the local bell-silence state when re-entering the same device page.
         if (isNewDevice) {
@@ -123,6 +126,44 @@ Item {
         function onOperationsChanged() {
             refreshOperations()
         }
+
+        // Fix 16 / Q2 (IEC 60601-1-8 §6.11.2.4 a): the state of the operator's
+        // acknowledgement is shown; the local bell-silence tint follows the
+        // RESULT of the transaction, not the press.
+        function onAckStateChanged() {
+            devicePage.ackState = currentDevice.ackState
+            devicePage.ackMessage = currentDevice.ackMessage
+            if (devicePage.ackState === "accepted" || devicePage.ackState === "confirmed") {
+                devicePage.timeout = 1
+            } else if (devicePage.ackState === "failed" || devicePage.ackState === "timeout"
+                       || devicePage.ackState === "error") {
+                devicePage.timeout = 0
+            }
+        }
+    }
+
+    // Fix 16 / Q2: acknowledgement state of the current device (see QtDeviceHandler.ackState)
+    property string ackState: ""
+    property string ackMessage: ""
+
+    function ackStateText(s) {
+        if (s === "pending")            return "Quittierung gesendet …"
+        if (s === "accepted")           return "Quittierung angenommen (Fin)"
+        if (s === "confirmed")          return "Quittierung bestätigt (Presence=Ack)"
+        if (s === "failed")             return "Quittierung ABGELEHNT (Fail)"
+        if (s === "timeout")            return "Quittierung: keine Bestätigung (Timeout)"
+        if (s === "error")              return "Quittierung: Übertragungsfehler"
+        if (s === "no_active_alarm")    return "Kein aktiver Alarm zum Quittieren"
+        if (s === "not_remote_ackable") return "Alarm nicht fernquittierbar"
+        if (s === "unavailable")        return "Gerät nicht erreichbar"
+        return ""
+    }
+
+    function ackStateColor(s) {
+        if (s === "accepted" || s === "confirmed") return "#8fdc8f"
+        if (s === "pending")                        return "#ffffff"
+        if (s === "failed" || s === "timeout" || s === "error" || s === "unavailable") return "#ff8a80"
+        return "#ffd27f"
     }
 
     anchors.fill: parent
@@ -198,20 +239,32 @@ Item {
                     // An audible AlertSignal exists whenever the device is On (Red)
                     // or Warning (Yellow) — INDEPENDENT of the Bayesian risk class.
                     var audible = (alarm === "On" || alarm === "Warning")
-                    if (audible || alarm === "Ack") {
-                        var wasSilenced = (timeout === 1)
-                        timeout = wasSilenced ? 0 : 1
-                        // RECONNECTED (was missing): acknowledge the active AlertSignal
-                        // on the provider (SetAlertState Presence=Ack) to pause the
-                        // alarm audio.  This does NOT touch the aggregator's risk score
-                        // or Red/Yellow visual state — those are driven by the
-                        // AlertCondition, not by the acknowledged AlertSignal.
-                        if (!wasSilenced && currentDevice
-                                && typeof currentDevice.silenceAlarm === "function") {
+                    if (audible) {
+                        // Acknowledge the ACTIVE AlertSignal(s) on the provider
+                        // (SetAlertState Presence=Ack, one transaction per signal).
+                        // The local silence tint (timeout) is set from the RESULT
+                        // (onAckStateChanged), not here — Fix 16 / Q2.  This does
+                        // NOT touch the aggregator's risk score or Red/Yellow state.
+                        if (currentDevice && typeof currentDevice.silenceAlarm === "function") {
                             currentDevice.silenceAlarm()
                         }
+                    } else if (alarm === "Ack") {
+                        timeout = timeout === 0 ? 1 : 0
                     }
                 }
+            }
+
+            // Fix 16 / Q2: state of the operator response (IEC 60601-1-8 §6.11.2.4 a)
+            Text {
+                anchors.top: parent.bottom
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.topMargin: 2
+                visible: devicePage.ackState !== "" && devicePage.ackState !== "idle"
+                text: devicePage.ackStateText(devicePage.ackState)
+                color: devicePage.ackStateColor(devicePage.ackState)
+                font.pixelSize: 14
+                font.family: "Tahoma"
+                font.bold: devicePage.ackState === "failed" || devicePage.ackState === "timeout"
             }
         }
 

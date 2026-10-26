@@ -6,9 +6,10 @@
   "base_prob_P0": 0.5,
 
   "filter_params": {
-    "_comment": "Two-axis adaptive filter tuning. horizon_T [s] couples the FIR window s_j(t) and the hysteresis rate rho=(1-SDC)/T; alpha biases SDC_score toward the peak threat max(v_j).",
+    "_comment": "Two-axis adaptive filter tuning. horizon_T [s] couples the FIR window s_j(t) and the hysteresis rate rho=(1-SDC)/T; alpha balances SDC_score between the peak threat max(v_j) and the diffuse sum (alpha = 0.5 per thesis 3.4.4; all thesis results use this value). delta_eval [s] is the step of the periodic evaluation grid T_P (thesis 3.4.5), must satisfy 0 < delta_eval <= horizon_T.",
     "horizon_T": 10.0,
-    "alpha": 0.7
+    "alpha": 0.5,
+    "delta_eval": 1.0
   },
 
   "priority_map": {
@@ -29,6 +30,17 @@
 
   "device_profiles": {
     "_comment": "Bayesian reliability priors: Manufacturer -> ModelName -> ConceptCode -> {sensitivity, false_alarm_rate}. Stage 2 (ClinicalRiskFilter). prior=0.005.",
+    "SDC Demo": {
+      "_comment": "Screenshot demo for Kapitel 3.2.5 (experiments/screenshots/demo_scenario.py, MDIBs testbed/mdib/*_demo_mdib.xml). Weights w_j = ln(TPR/FPR) reproduce the worked example of Kapitel 3: 5 / 3 / 2.5 / 3, mean 3.375. Fictional values, not calibration data.",
+      "Monitor Demo": {
+        "59408-5": { "sensitivity": 0.9, "false_alarm_rate": 0.00606 },
+        "8889-8":  { "sensitivity": 0.9, "false_alarm_rate": 0.0448 }
+      },
+      "Vent Demo": {
+        "76007-4": { "sensitivity": 0.9, "false_alarm_rate": 0.0739 },
+        "9279-1":  { "sensitivity": 0.9, "false_alarm_rate": 0.0448 }
+      }
+    },
     "Draeger": {
       "Infinity Monitor": {
         "_comment": "Bedside patient monitor — HR channel. Calibrated for escalation testing: LR+ = 0.99/0.01 = 99 → w_j = ln(99) ≈ 4.595.",
@@ -46,7 +58,7 @@
       }
     },
     "Acme Medical": {
-      "_comment": "Legacy single-device test harness (correct_provider.py / provider_ensemble.py).",
+      "_comment": "Legacy single-device profiles from the early test phase (reference provider no longer in the repository).",
       "PatientMonitor Pro 3000": {
         "8867-4":  { "sensitivity": 0.88, "false_alarm_rate": 0.08 },
         "59408-5": { "sensitivity": 0.74, "false_alarm_rate": 0.18 },

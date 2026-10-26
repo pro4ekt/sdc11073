@@ -19,7 +19,7 @@ Canonical mathematics
 
 where R_d(M) ∈ [0, 1] is the relevance indicator of diagnosis d to the connected
 ensemble M (1.0 = fully relevant by default).  This scalar is subtracted from
-the melted quorum barrier in ``AdaptiveAlarmAggregator.tick`` (math_part1.md §6):
+the melted quorum barrier in ``AdaptiveAlarmAggregator.tick`` (docs/model/math_part1.md §6):
         Θ_target = max(ε, k_min · w̄ · δ − Context_Log_Odds)
 
 FHIR side of the SDC/FHIR coupling
@@ -33,7 +33,7 @@ shifts the threshold, both in the same units.
 
 The coupling is one-directional: the context moves the threshold, never the
 evidence.  Unavailability of FHIR therefore does not disable the filter — it
-returns the system to the neutral prior P_0 = 0.5 (math_part1.md §1, note),
+returns the system to the neutral prior P_0 = 0.5 (docs/model/math_part1.md §1, note),
 for which O_0 = 1, ln(O_0) = 0 and Context_Log_Odds = 0, so the threshold is
 determined exclusively by the device ensemble.  In the present configuration
 (``clinical_db.json`` ``base_prob_P0 = 0.5``, no calibrated OR_d, no FHIR

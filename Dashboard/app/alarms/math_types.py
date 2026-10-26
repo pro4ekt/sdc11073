@@ -140,11 +140,11 @@ class EngineConfig:
                    relaxation rate ρ(t) = (1 - SDC)/T (Urgency axis).  Coupling
                    them through one constant keeps the two axes time-consistent.
         alpha:     Blend weight α ∈ [0, 1] in SDC_score(t).  α = 0.5 (default,
-                   math_part1.md §4) weighs the single most-urgent active channel
+                   docs/model/math_part1.md §4) weighs the single most-urgent active channel
                    (peak threat, max v_j) and the diffuse ensemble sum equally.
                    All numerical results in the thesis are computed at α = 0.5.
         delta_min: Melting floor δ_min ∈ (0, 1] of the Time-in-Alarm multiplier
-                   (math_part1.md §6): δ(t) = max(δ_min, e^{−λ·max(0, τ−T)}), so
+                   (docs/model/math_part1.md §6): δ(t) = max(δ_min, e^{−λ·max(0, τ−T)}), so
                    the threshold can never decay below δ_min·Θ_base.  Without it
                    δ → 0 and a chronically noisy patient escalates cyclically.
                    δ_min = 0.5 (default) also bounds single-source escalation to
@@ -175,7 +175,7 @@ class TickResult:
         sdc_score:   SDC_score(t) ∈ [0, 1] — normalised ensemble severity index.
         k_min:       k_min(t) ∈ [2, |M|] — dynamic VMD consensus quorum.
         theta_target: Θ_target(t) = max(ε, Θ_base·δ(t) − Context_Log_Odds) per
-                     math_part1.md §6 — AFTER the Time-in-Alarm multiplier, the
+                     docs/model/math_part1.md §6 — AFTER the Time-in-Alarm multiplier, the
                      context shift and the evidence floor, but BEFORE IIR
                      hysteresis smoothing.  (Θ_base itself is
                      ``UrgencyResult.theta_base`` and is not exported here.)

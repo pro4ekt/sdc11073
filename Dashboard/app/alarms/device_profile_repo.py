@@ -3,7 +3,7 @@ device_profile_repo.py — Lazy-loading Repository for device calibration profil
 
 Problem solved
 --------------
-The previous architecture (mock_clinical_db.py) read the entire clinical_db.json
+The previous implementation read the entire clinical_db.json
 at Python *import time*, loading ALL device profiles into memory before a single
 device connected.  In a hospital with thousands of registered devices this is
 wasteful and does not scale.
@@ -75,7 +75,7 @@ class DeviceProfileRepository:
     """
 
     # Fail-open defaults — used when clinical_db.json is missing a section entirely.
-    # P_0 = 0.5 is the NEUTRAL prior (math_part1.md §1): O_0 = 1, ln(O_0) = 0,
+    # P_0 = 0.5 is the NEUTRAL prior (docs/model/math_part1.md §1): O_0 = 1, ln(O_0) = 0,
     # Context_Log_Odds = 0 — the threshold is set by the device ensemble alone.
     # A missing key must not silently tighten the threshold (0.005 would add
     # +5.29 nat), so the fallback IS the neutral point.
@@ -83,6 +83,9 @@ class DeviceProfileRepository:
     _DEFAULT_PRIORITY_MAP: dict[str, int] = {'None': 0, 'Lo': 1, 'Me': 2, 'Hi': 3}
     _DEFAULT_HORIZON_T: float = 10.0
     _DEFAULT_ALPHA: float = 0.5
+    # Δ_eval — step of the periodic evaluation grid T_P (thesis 3.4.5), must
+    # satisfy 0 < Δ_eval ≤ T.  Default 1 s.
+    _DEFAULT_EVAL_INTERVAL: float = 1.0
 
     def __init__(self) -> None:
         self._lock: threading.Lock = threading.Lock()
@@ -301,6 +304,37 @@ class DeviceProfileRepository:
             result_fp = (horizon_t, alpha)
             self._filter_params = result_fp
             return result_fp
+
+    def get_eval_interval(self) -> float:
+        """Return Δ_eval [s], the step of the periodic evaluation grid T_P.
+
+        Read from ``filter_params.delta_eval``; default 1.0 s.  The model
+        (thesis 3.4.5) requires 0 < Δ_eval ≤ T: a value that is missing,
+        non-numeric, non-positive or larger than the horizon T is rejected with
+        a CRITICAL log line and replaced by ``min(1.0, T)``, so the grid can
+        never be coarser than the window.  Not memoised beyond the underlying
+        sections (cheap).
+        """
+        horizon_t, _alpha = self.get_filter_params()
+        fallback = min(self._DEFAULT_EVAL_INTERVAL, horizon_t)
+        section = (self._raw_clinical_db or {}).get('filter_params', {}) or {}
+        if 'delta_eval' not in section:
+            return fallback
+        try:
+            value = float(section['delta_eval'])
+        except (TypeError, ValueError):
+            _logger.critical(
+                f'[DeviceProfileRepo] filter_params.delta_eval = {section["delta_eval"]!r} '
+                f'is not a number; using Δ_eval = {fallback} s.'
+            )
+            return fallback
+        if not (0.0 < value <= horizon_t):
+            _logger.critical(
+                f'[DeviceProfileRepo] filter_params.delta_eval = {value} violates '
+                f'0 < Δ_eval ≤ T = {horizon_t}; using Δ_eval = {fallback} s.'
+            )
+            return fallback
+        return value
 
 
 # ── Process-wide singleton ────────────────────────────────────────────────────
