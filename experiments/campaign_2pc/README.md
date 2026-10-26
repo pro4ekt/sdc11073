@@ -1,7 +1,7 @@
 # campaign_2pc — one-command measurement campaign (Ziel 1 + Ziel 2) on PC 1
 
-`campaign.py` runs the existing runners (`ziel1/ziel1_experiment.py`,
-`ziel2/ziel2_ack.py`, `ziel2/ziel2_fault.py`) phase by phase under one run
+`campaign.py` runs the existing runners (`experiments/ziel1/ziel1_experiment.py`,
+`experiments/ziel2/ziel2_ack.py`, `experiments/ziel2/ziel2_fault.py`) phase by phase under one run
 directory, each phase as its own process with its own headless dashboard and
 its own journal, with a tshark capture around every phase, a resource log
 (CPU / memory of PC 1 once a minute), a status file updated after every phase,
@@ -24,7 +24,7 @@ and the `netdown` loss type; the phase flow stays the same.
   providers the adapter that owns `ip` is used (may need Npcap "admin only"
   turned off or an elevated console).
 - Firewall: inbound UDP 3702 and TCP for the venv's real `python.exe`
-  (see `ziel2/README.md` §4); irrelevant for the loopback-only step 1.
+  (see `experiments/ziel2/README.md` §4); irrelevant for the loopback-only step 1.
 - Background load (optional): the two C++ providers in VirtualBox (bridged),
   started by hand with `--room ICU-1 --patient-id P009`. They are discovered by
   every phase's dashboard and noted in the report; fewer than
@@ -119,7 +119,7 @@ counts. The interface and filter really used are stored in
 ## 6. Network mode (variant C, two PCs)
 
 The night run with the providers on PC 2 uses no control channel: PC 2 runs `pc2_scheduler.py`
-(bundle `pc2_c/`, see `HANDOFF_PC2.md`), PC 1 runs
+(bundle folder `pc2_c` built by `build_pc2_c.py`, see `HANDOFF_PC2.md`), PC 1 runs
 
 ```
 .venv\Scripts\python experiments\campaign_2pc\campaign.py --listen [--pilot]      # dashboard windows + capture until PC 2 reports done

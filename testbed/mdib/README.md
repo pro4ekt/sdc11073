@@ -69,7 +69,7 @@ Common to all: `Kind="Phy"`, `Manifestation="Aud"`, `AcknowledgementSupported="t
 
 ## DPWS identity (runtime arguments of each provider)
 
-Manufacturer, ModelName and FriendlyName are DPWS `ThisModel`/`ThisDevice` elements, not MDIB content, and are mandatory (MDIB_ANALYSIS A5). Example values, **not tied to `config/clinical_db.json`**:
+Manufacturer, ModelName and FriendlyName are DPWS `ThisModel`/`ThisDevice` elements, not MDIB content, and are mandatory (MDIB_ANALYSIS A5). Example values, **not tied to `Dashboard/config/clinical_db.json`**:
 
 | Device | Manufacturer | ModelName | FriendlyName (example, per instance) |
 |---|---|---|---|

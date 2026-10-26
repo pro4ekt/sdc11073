@@ -27,7 +27,7 @@ timeout + fallback interval) shown by fault injection.
 
 | File : function | What it does |
 |---|---|
-| `device/handler.py` class attributes | `SLEEP_INTERVAL = 5 s`, `T_FALLBACK = 15 s`, `MAX_MISSED = 3`, `METRIC_SILENCE_SEC = 120 s` (values unchanged; class attributes so tests can shrink them). Request timeout τ_sock = 5 s = sdc11073 `SdcConsumer(socket_timeout=5)` default. |
+| `Dashboard/device/handler.py` class attributes | `SLEEP_INTERVAL = 5 s`, `T_FALLBACK = 15 s`, `MAX_MISSED = 3`, `METRIC_SILENCE_SEC = 120 s` (values unchanged; class attributes so tests can shrink them). Request timeout τ_sock = 5 s = sdc11073 `SdcConsumer(socket_timeout=5)` default. |
 | `device/handler.py : _monitoring_loop` | Per iteration: `consumer.is_connected` check → `_ping` → ack-timeout processing → sleep. Three detectors: `is_connected` (subscription ended / renew failed), `t_fallback` (MAX_MISSED failed pings), `metric_silence` (no EpisodicMetricReport for 120 s). On exit `error_occurred = True`, `fallback_cause` set, `fallback` event. |
 | `device/handler.py : _ping` | GetContextStates in a thread; exception → miss, HTTP 4xx → no miss, success → `mark_rx`. |
 | `device/handler.py : _on_subscription_end` | WS-Eventing SubscriptionEnd from the provider: status/reason kept for the `fallback` event. |
