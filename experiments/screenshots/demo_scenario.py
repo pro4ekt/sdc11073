@@ -5,8 +5,8 @@ Verbindung verloren).
 This is a demo for screenshots, not an experiment and not a test.  It replays the worked
 example of Kapitel 3 with four testbed providers on one host, all without TLS:
 
-    bed 1 (ICU-1 / 1, patient DEMO-01):  Monitor Demo + Vent Demo   -> Gelb, then Rot
-    bed 2 (ICU-1 / 2, patient DEMO-02):  Monitor Demo + Vent Demo   -> Gelb only
+    bed 1 (ICU-1 / 1, patient PAT-001, Max Mustermann):  Monitor Demo + Vent Demo   -> Gelb, then Rot
+    bed 2 (ICU-1 / 2, patient PAT-002, Erika Mustermann):  Monitor Demo + Vent Demo   -> Gelb only
 
 Channel set per bed (admitted channels and weights from Dashboard/config/clinical_db.json,
 manufacturer "SDC Demo"):  desaturation Hi w=5, tachycardia Lo w=3, vt_low Lo w=2.5,
@@ -36,22 +36,29 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'experiments'))
 from harness import Prov  # noqa: E402
 
-PROVIDER = REPO / 'testbed' / 'providers' / 'testbed_provider.py'
+PROVIDER = REPO / 'experiments' / 'screenshots' / 'demo_provider.py'   # testbed_provider.py + patient name
 MDIB_DIR = REPO / 'testbed' / 'mdib'
 MANUFACTURER = 'SDC Demo'
 ROOM = 'ICU-1'
 
 # tag, mdib file, DPWS model, friendly name, patient id, bed, port, EPR
 BEDS = [
-    ('MON-1',  'monitor_demo_mdib.xml', 'Monitor Demo', 'Demo monitor, bed 1',    'DEMO-01', '1', 10800,
+    ('MON-1',  'monitor_demo_mdib.xml', 'Monitor Demo', 'Demo monitor, bed 1',    'PAT-001', '1', 10800,
      'urn:uuid:0de30001-0000-4000-8000-000000000001'),
-    ('VENT-1', 'vent_demo_mdib.xml',    'Vent Demo',    'Demo ventilator, bed 1', 'DEMO-01', '1', 10801,
+    ('VENT-1', 'vent_demo_mdib.xml',    'Vent Demo',    'Demo ventilator, bed 1', 'PAT-001', '1', 10801,
      'urn:uuid:0de30001-0000-4000-8000-000000000002'),
-    ('MON-2',  'monitor_demo_mdib.xml', 'Monitor Demo', 'Demo monitor, bed 2',    'DEMO-02', '2', 10802,
+    ('MON-2',  'monitor_demo_mdib.xml', 'Monitor Demo', 'Demo monitor, bed 2',    'PAT-002', '2', 10802,
      'urn:uuid:0de30001-0000-4000-8000-000000000003'),
-    ('VENT-2', 'vent_demo_mdib.xml',    'Vent Demo',    'Demo ventilator, bed 2', 'DEMO-02', '2', 10803,
+    ('VENT-2', 'vent_demo_mdib.xml',    'Vent Demo',    'Demo ventilator, bed 2', 'PAT-002', '2', 10803,
      'urn:uuid:0de30001-0000-4000-8000-000000000004'),
 ]
+
+# fictional patient names -> PatientContextState/CoreData (Givenname, Familyname), identical on
+# both devices of a bed; the ensemble key stays (patient id, room)
+PATIENT_NAMES = {
+    'PAT-001': ('Max', 'Mustermann'),
+    'PAT-002': ('Erika', 'Mustermann'),
+}
 
 
 def ts() -> str:
@@ -63,7 +70,8 @@ def provider_args(ip: str, mdib: str, model: str, friendly: str, patient: str, b
     return [sys.executable, str(PROVIDER),
             '--mdib', str(MDIB_DIR / mdib), '--epr', epr,
             '--manufacturer', MANUFACTURER, '--model', model, '--friendly-name', friendly,
-            '--patient-id', patient, '--room', ROOM, '--bed', bed,
+            '--patient-id', patient, '--patient-given', PATIENT_NAMES[patient][0],
+            '--patient-family', PATIENT_NAMES[patient][1], '--room', ROOM, '--bed', bed,
             '--no-tls', '--ip', ip, '--port', str(port), '--seed', '1']
 
 
@@ -126,7 +134,7 @@ def run_interactive(ip: str, auto: float | None, echo: bool) -> int:
     provs: dict[str, Prov] = {}
     try:
         phase(0, 'four providers connected, no alarms',
-              'two patient cards DEMO-01 / DEMO-02, both Blau')
+              'two patient cards PAT-001 / PAT-002, both Blau')
         provs = start_providers(ip, echo)
         print(f'[{ts()}] waiting for the dashboard to bind the devices (EnsembleContext write-back) ...',
               flush=True)
@@ -211,17 +219,17 @@ def run_headless(ip: str, hold1: float, echo: bool) -> int:
         dash.pump(hold1)
         print(f'[{ts()}] end of phase 1:\n' + _fmt(_cards(dash)), flush=True)
 
-        phase(2, "'alarm vt_low on' on the ventilator of bed 1", 'DEMO-01 Rot (sdc = 0.8333), DEMO-02 Gelb')
+        phase(2, "'alarm vt_low on' on the ventilator of bed 1", 'PAT-001 Rot (sdc = 0.8333), PAT-002 Gelb')
         t0 = time.monotonic()
         send(provs['VENT-1'], 'alarm vt_low on')
-        esc = dash.wait_for(lambda: _cards(dash).get('DEMO-01', {}).get('isEscalated'), 90, step=0.1)
+        esc = dash.wait_for(lambda: _cards(dash).get('PAT-001', {}).get('isEscalated'), 90, step=0.1)
         t_esc = time.monotonic() - t0
-        print(f'[{ts()}] DEMO-01 escalated: {bool(esc)} after {t_esc:.1f} s\n' + _fmt(_cards(dash)), flush=True)
-        print(f'[{ts()}] holding 25 s to confirm that DEMO-02 stays Gelb ...', flush=True)
+        print(f'[{ts()}] PAT-001 escalated: {bool(esc)} after {t_esc:.1f} s\n' + _fmt(_cards(dash)), flush=True)
+        print(f'[{ts()}] holding 25 s to confirm that PAT-002 stays Gelb ...', flush=True)
         dash.pump(25.0)
         cards = _cards(dash)
         print(f'[{ts()}] after 25 s:\n' + _fmt(cards), flush=True)
-        bed2_ok = bool(cards.get('DEMO-02', {}).get('hasActiveAlarms')) and not cards.get('DEMO-02', {}).get('isEscalated')
+        bed2_ok = bool(cards.get('PAT-002', {}).get('hasActiveAlarms')) and not cards.get('PAT-002', {}).get('isEscalated')
         rc = 0 if (esc and bed2_ok) else 2
         print(f'[{ts()}] RESULT: bed 1 Rot={bool(esc)} (t={t_esc:.1f} s), bed 2 Gelb only={bed2_ok}', flush=True)
         return rc

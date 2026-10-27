@@ -8,6 +8,7 @@ two beds, four testbed providers, no TLS. Patient data are fictional.
 | File | Purpose |
 |---|---|
 | `demo_scenario.py` | starts the providers and drives the phases over stdin |
+| `demo_provider.py` | wrapper around `testbed/providers/testbed_provider.py`: same flags plus `--patient-given` / `--patient-family`, writes the fictional patient name into `PatientContextState/CoreData` |
 | `../../testbed/mdib/monitor_demo_mdib.xml` | copy of `spo2_mdib_v2.xml`: `desaturation` Hi, `tachycardia` Lo |
 | `../../testbed/mdib/vent_demo_mdib.xml` | copy of `vent_mdib_v2.xml`: `rr_high` Lo, `vt_low` Lo (unchanged) |
 | `../../Dashboard/config/clinical_db.json` | block `"SDC Demo"`: weights 5 / 3 / 2.5 / 3 (TPR 0.9, FPR 0.00606 / 0.0448 / 0.0739 / 0.0448) |
@@ -16,14 +17,14 @@ Channels without a profile (`ppeak_high`, `mv_low`) stay outside the channel set
 
 ## Beds
 
-| Bed | Device | Model | patient-id | room / bed | port |
-|---|---|---|---|---|---|
-| 1 | monitor | Monitor Demo | DEMO-01 | ICU-1 / 1 | 10800 |
-| 1 | ventilator | Vent Demo | DEMO-01 | ICU-1 / 1 | 10801 |
-| 2 | monitor | Monitor Demo | DEMO-02 | ICU-1 / 2 | 10802 |
-| 2 | ventilator | Vent Demo | DEMO-02 | ICU-1 / 2 | 10803 |
+| Bed | Device | Model | patient-id | patient name (CoreData) | room / bed | port |
+|---|---|---|---|---|---|---|
+| 1 | monitor | Monitor Demo | PAT-001 | Max Mustermann | ICU-1 / 1 | 10800 |
+| 1 | ventilator | Vent Demo | PAT-001 | Max Mustermann | ICU-1 / 1 | 10801 |
+| 2 | monitor | Monitor Demo | PAT-002 | Erika Mustermann | ICU-1 / 2 | 10802 |
+| 2 | ventilator | Vent Demo | PAT-002 | Erika Mustermann | ICU-1 / 2 | 10803 |
 
-The dashboard forms the two ensembles itself from (patient, room).
+The dashboard forms the two ensembles itself from (patient-id, room); the name is shown on the device cards and the device page (`patientName`), the patient card title is the patient-id.
 
 ## Run
 
