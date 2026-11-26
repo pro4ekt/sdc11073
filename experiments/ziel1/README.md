@@ -1,6 +1,6 @@
 # Ziel 1 — Kontextbezogene Topologiefilterung (TRA, vermiedene Subskriptionen)
 
-Kapitel1.md §1.4: providers not assigned to this bed are identified via the
+Goal 1 of the thesis: providers not assigned to this bed are identified via the
 SDC LocationContext and rejected during discovery, BEFORE any WS-Eventing
 subscription. Metric: TRA ≈ 100 % (≥ 99 % in the testbed), measured through
 the avoided subscriptions; FF1 compares with the unfiltered connection.

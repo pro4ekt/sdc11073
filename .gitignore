@@ -7,17 +7,45 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .idea/
+.vscode/
 .claude/
 *.egg-info/
 build/
 dist/
+*.stackdump
 
 # ---- thesis text and figures (not part of the software deliverable) --------
 docs/thesis/
+# appendix drafts, link lists and check reports, wherever they lie
+Anhang_*
+Haupttext_*
+Pfade_*.md
+*_Verweise_*.md
+# ... except the published copy of the shortened appendix parts (linked from appendix H.2)
+!docs/Anhang_ausfuehrlich.md
+# figure scripts, fact checks and images written for single thesis chapters
+doku_kap4/
+doku_kap5/
+# figures exported by export_figures.py / export_ziel3.py, rewritten on every export
+analysis/belastungsmodell_app/figures/
 
-# ---- working documents of the clean-up (local only) -------------------------
+# ---- working documents (local only) -----------------------------------------
 REFACTORING_PLAN*.md
 PROMPT_*.md
+BERICHT_*.md
+NOTIZEN_*.md
+STATUS_*.md
+KONTEXT_*.md
+Faktencheck_*.md
+*_Entwurf*.md
+*_Vorschlag*.md
+*_ru.md
+docs/reports/checks_ziel3_*.md
+# kept: the protocol of the 12 h run (alarm lines of the Dashboard log against journal B)
+!docs/reports/checks_ziel3_12h.md
+# original drop folder of the PC 2 scripts; the published copies live in
+# experiments/ziel3_simulation/pc2/ and experiments/ziel3_simulation/auswertung/
+pc2_scripts/
 
 # ---- keys and certificates: never in git (generate: tools/make_testbed_pki.py)
 pki/

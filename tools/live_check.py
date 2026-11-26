@@ -17,13 +17,7 @@ import time
 import uuid
 import queue
 
-ROOT = pathlib.Path(__file__).resolve()
-for parent in ROOT.parents:
-    if (parent / 'pki').is_dir() and (parent / 'testbed').is_dir():
-        REPO = parent
-        break
-else:
-    REPO = pathlib.Path(r'C:\Users\zheka\Documents\VSCode\sdc11073')
+REPO = pathlib.Path(__file__).resolve().parents[1]      # repository root: tools/ lies directly below it
 
 from sdc11073 import observableproperties as properties  # noqa: E402
 from sdc11073.certloader import mk_ssl_contexts_from_folder  # noqa: E402

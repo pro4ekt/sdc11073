@@ -1,15 +1,18 @@
-# experiments/ — evaluation of the thesis goals (Kapitel1.md §1.4)
+# experiments/ — evaluation of the thesis goals
 
 One folder per goal. Production code stays in `Dashboard/` (layered
 architecture, see `Dashboard/ARCHITECTURE.md`); the folders here hold the
-goal maps (`README.md`), goal-specific helper scripts and the journals of
-experiment runs (`logs/`, empty until a run is made). Experiment runners and
-analyzers are not part of these folders yet — the folders are prepared for them.
+goal maps (`README.md`), the experiment runners and analyzers of each goal and,
+at run time, the journals of the runs (`logs/`, not in git). `harness.py` holds
+the pieces shared by all runners (provider subprocess, headless Dashboard);
+`campaign_2pc/` runs goals 1 and 2 in one campaign on one or two PCs;
+`screenshots/` is a demo scenario and not an experiment.
 
 | Ziel | Production code (file : function) | Tests (run from the repository root) | Experiment folder |
 |---|---|---|---|
 | **Ziel 1** Topologiefilterung | `Dashboard/app/sdcMyConsumer.py : _discovery_loop` (scope filter, `topology_decision@discovery`); `Dashboard/app/topology_filter.py : room_from_scopes / room_from_context_states / decide_room`; `Dashboard/device/handler.py : _phase_connect / _phase_context_precheck / _confirm_scope_room / _subscribe_reports / _phase_check_location`; `Dashboard/app/metrics/topology_metrics.py : TopologyMetrics` | `tests/test_discovery_filter.py` (R1–R7) | [`ziel1/`](ziel1/README.md) |
 | **Ziel 2** Alarmsteuerung + Fallback | `Dashboard/device/alarm_manager.py : AlarmManager._set_alert_presence / acknowledge_alarm / reactivate_alarm`; `Dashboard/app/qtDeviceHandler.py : silenceAlarm / _select_ack_targets / markConnectionLost`; `Dashboard/device/handler.py : _monitoring_loop / _ping / _record_fallback_metric / _on_subscription_end`; `Dashboard/app/sdcMyConsumer.py : remove_device / _raise_technical_alarm / on_device_connected / dismissConnectionLoss`; `Dashboard/app/patientOverviewModel.py : markLost / clearLost`; `Dashboard/app/metrics/latency_metrics.py : LatencyMetrics` | `tests/test_ack_watchdog.py` (K1–K4), `tests/test_connection_lost.py` (L1–L5), `tests/test_watchdog.py` (W1–W4) | [`ziel2/`](ziel2/README.md) |
+| **Ziel 3** Reduktion von Fehlalarmen | `Dashboard/app/alarms/` (decision core: `smartAlertAggregator.py`, `adaptive_alarm_aggregator.py`, `evidence_accumulator.py`, `urgency_engine.py`, `hysteresis_filter.py`), run unchanged in the simulation and replayed offline by `analysis/roc_ziel3/dashcore.py` | `tests/test_math_core.py` and the other Dashboard tests of the alarm model; evaluation: `tests/test_model*.py`, `tests/test_roc_ziel3.py` and the files listed in `tests/README.md`; generator: `ziel3_simulation/pc2/tests` | [`ziel3_simulation/`](ziel3_simulation/README.md) (two-PC simulation), evaluation in `analysis/` |
 
 Metrics per goal:
 
@@ -33,6 +36,13 @@ Metrics per goal:
   staff), intermediate value t_loss → `fallback`, each against the derived
   bound per loss type (graceful shutdown, killed process, silent packet loss;
   see `ziel2/README.md`).
+- **Ziel 3** — no clinical measurement: the alarm reduction is derived
+  analytically (`analysis/belastungsmodell_app/`), and the simulation checks
+  whether the prototype behaves as the model predicts. Counted per run and
+  rule (*adaptiv*, 2-aus-4, 3-aus-4): false escalations per bed and hour,
+  recognised crises (mild: escalation until the end of the crisis + 10 s;
+  strict: until its end) and the delay from the first crossing of a device
+  threshold; result files in `docs/reports/`.
 
 Shared tools stay in `tools/`: `live_check.py` (provider end-to-end check used
 by both goals), `make_testbed_pki.py`, `validate_mdib.py`, `check_mdib_rules.py`.

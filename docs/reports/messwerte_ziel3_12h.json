@@ -1,0 +1,61 @@
+{
+  "name": "ziel3_12h",
+  "time_base": "PC 1",
+  "window": [
+    1793590352.383,
+    1793633544.2287993
+  ],
+  "hours": 11.997734944290585,
+  "patients": 20,
+  "exposure_bed_h": 239.9546988858117,
+  "FPR": {
+    "ECG": 0.023665068457422857,
+    "Vent": 0.02489164628934601,
+    "SpO2": 0.029827298718962933,
+    "ABP": 0.02605867589146141
+  },
+  "TPR": {
+    "ECG": 0.6110782128681984,
+    "Vent": 0.5840176965409491,
+    "SpO2": 0.5851714243632784,
+    "ABP": 0.5819998466035817
+  },
+  "P_C": 0.010873483696177579,
+  "d_false_s": 8.26147280123869,
+  "d_true_s": 30.202304251324325,
+  "n_false_alarms": 10802,
+  "n_crises": 311,
+  "crises_per_bed_day": 31.10587137763002,
+  "false_alarms_per_source_day": {
+    "ECG": 255.84829255298263,
+    "Vent": 262.34951968978635,
+    "SpO2": 290.1547680595006,
+    "ABP": 272.051350955478
+  },
+  "episodes_by_n_sources": {
+    "1": 7304,
+    "2": 925,
+    "3": 419,
+    "4": 90
+  },
+  "episodes_by_n_sources_share": {
+    "1": 0.83588921950103,
+    "2": 0.10585946440833142,
+    "3": 0.04795147631036851,
+    "4": 0.010299839780270085
+  },
+  "c_art_a_all4_time_share": 0.057947089270729536,
+  "c_art_b_ge2_time_share": 0.48249748683511884,
+  "c_art_a_all4_episode_share": 0.010299839780270085,
+  "c_art_b_ge2_episode_share": 0.16411078049897002,
+  "definitions": {
+    "FPR_j": "time of false alarms of source j (not intersecting any crisis +-10 s) / time outside crises, window only",
+    "TPR_j": "time inside crises during which source j is in alarm / total crisis time",
+    "P_C": "total crisis time / (patients x window)",
+    "d_false_s": "mean duration of a false alarm",
+    "d_true_s": "mean crisis duration",
+    "episodes": "union of overlapping false alarms of one patient; n_sources = distinct sources in the episode",
+    "c_art_a": "share of false alarm time that lies in episodes with all 4 sources",
+    "c_art_b": "share of false alarm time that lies in episodes with >= 2 sources"
+  }
+}

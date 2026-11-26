@@ -1,0 +1,59 @@
+{
+  "_comment": "Ziel 3 - Vertrag zwischen PC 2 (Station: 20 Patienten x 4 Provider = 80 Provider, Szenario) und PC 1 (Dashboard ohne Fenster). Beide Seiten lesen diese Datei.",
+  "version": "2026-11-02.2",
+
+  "network": {
+    "pc1_ip": "192.168.0.106",
+    "pc2_ip": "192.168.0.100",
+    "tls": "no_tls",
+    "provider_ports": { "first": 13000, "last": 13079, "formula": "13000 + 4*(i-1) + (j-1); i = Patient 1..20, j = Quelle 1..4" },
+    "clock_port": 5558,
+    "clock_poll_s": 10
+  },
+
+  "room": "ICU-3",
+  "patients": ["SIM-P01", "SIM-P02", "SIM-P03", "SIM-P04", "SIM-P05", "SIM-P06", "SIM-P07", "SIM-P08", "SIM-P09", "SIM-P10",
+               "SIM-P11", "SIM-P12", "SIM-P13", "SIM-P14", "SIM-P15", "SIM-P16", "SIM-P17", "SIM-P18", "SIM-P19", "SIM-P20"],
+  "_patients_comment": "Patient i: --patient-id SIM-Pii, --bed i (das Dashboard ignoriert bed), --room ICU-3; alle vier Provider eines Patienten: dieselbe patient-id, verschiedene EPR.",
+  "manufacturer": "SDC Sim",
+
+  "sources": [
+    { "index": 1, "model": "Sim ECG",  "mdib": "testbed/mdib/ecg_mdib_v2.xml",  "channel": "tachycardia",  "loinc": "8867-4",  "priority": "Hi" },
+    { "index": 2, "model": "Sim Vent", "mdib": "testbed/mdib/vent_mdib_v2.xml", "channel": "mv_low",       "loinc": "76008-2", "priority": "Hi" },
+    { "index": 3, "model": "Sim SpO2", "mdib": "testbed/mdib/spo2_mdib_v2.xml", "channel": "desaturation", "loinc": "59408-5", "priority": "Me" },
+    { "index": 4, "model": "Sim ABP",  "mdib": "testbed/mdib/abp_mdib_v2.xml",  "channel": "dia_low",      "loinc": "8462-4",  "priority": "Lo" }
+  ],
+  "_sources_comment": "Ein Provider = eine Quelle: nur der genannte Kanal wird geschaltet; nur sein LOINC bekommt ein Profil, die uebrigen Kanaele der MDIB bleiben ohne Profil und zaehlen nicht zu M. P = (3, 3, 2, 1).",
+
+  "profile": { "sensitivity": 0.90, "false_alarm_rate": 0.00313 },
+  "context": { "base_prob_P0": 0.5, "odds_ratios": {} },
+  "filter_params": { "horizon_T": 10.0, "alpha": 0.5, "delta_eval": 1.0 },
+  "priority_map": { "None": 0, "Lo": 1, "Me": 2, "Hi": 3 },
+  "delta_min": 0.5,
+  "_delta_min_comment": "Nicht aus JSON lesbar; Standardwert des Codes (Dashboard/app/alarms/math_types.py:156).",
+
+  "acknowledgement": "none",
+  "fhir": "disabled on PC 1 (topology._get_or_fetch_fhir_data -> None); Context_Log_Odds = 0",
+
+  "clock": {
+    "protocol": "UDP JSON wie experiments/campaign_2pc/SPEC_C.md Abschnitt 6",
+    "request": { "t1": "time.time() PC 1", "seq": "n" },
+    "reply": { "t1": "Echo", "seq": "Echo", "t2": "Empfang PC 2", "t3": "Senden PC 2", "state": "running | done",
+               "_extra": "weitere Felder erlaubt; PC 1 wertet nur seq, t2, t3 und state aus" },
+    "offset": "((t2 - t1) + (t3 - t4)) / 2 = Uhr PC 2 - Uhr PC 1",
+    "done": "bei state = done beendet PC 1 den Lauf"
+  },
+
+  "provider_restart": "PC 2 startet einen abgestuerzten Provider mit derselben EPR und demselben Port neu und protokolliert es; PC 1 schreibt nur device_lost / device_back.",
+
+  "runs": [
+    { "name": "pilot10", "minutes": 10,  "mode": "Skript auf PC 2 (je Quelle ein Einzelartefakt, ein gemeinsames Artefakt, eine Krise)" },
+    { "name": "pilot60", "minutes": 60,  "mode": "zufaellig; Renew der Subscriptions nach 30 min pruefen" },
+    { "name": "haupt",   "minutes": 720, "mode": "zufaellig; Ersatz: 4 x 180 min mit verschiedenen Seeds" }
+  ],
+
+  "logs": {
+    "pc1": "experiments/ziel3_simulation/logs/<name>/pc1 (events.jsonl, decisions.jsonl, summary.json, sdc_consumer.log*)",
+    "pc2": "experiments/ziel3_simulation/logs/<name>/pc2 (Wahrheit A, Alarme B)"
+  }
+}

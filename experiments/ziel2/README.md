@@ -1,6 +1,6 @@
 # Ziel 2 — Verteilte normative Alarmsteuerung und funktionale Sicherheit
 
-Kapitel1.md §1.4: remote acknowledgement (Alert User Acknowledgement) over
+Goal 2 of the thesis: remote acknowledgement (Alert User Acknowledgement) over
 standard SDC services (IEC 60601-1-8, IHE SDPi-A, BICEPS), continuous
 connection monitoring and a deterministic transition to a safe fallback state
 on communication loss. Metrics: ack success rate ≥ 99 %, latency as p95 of the

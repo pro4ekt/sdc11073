@@ -1,33 +1,33 @@
-# HANDOFF_PC2 — инструкция для сессии Claude Code на ПК 2 (192.168.0.105)
+# HANDOFF_PC2 — instructions for the Claude Code session on PC 2 (192.168.0.105)
 
-Дата: 22.10.2026. Автор: сессия на ПК 1. Твоя роль на ПК 2: **только подготовка окружения и запуск**.
-Код не менять, файлы не удалять, содержимое `pki/` никогда не выводить и не копировать в чат, git не использовать.
+Date: 22.10.2026. Author: the session on PC 1. Your role on PC 2: **only preparing the environment and starting the run**.
+Do not change code, do not delete files, never print the contents of `pki/` or copy them into the chat, do not use git.
 
-## 1. Что это
+## 1. What this is
 
-Магистерская работа: ICU-Dashboard на SDC/BICEPS (sdc11073 3.0.0). Ночной измерительный прогон на двух ПК:
-ПК 1 (192.168.0.106) запускает headless-Dashboard и наблюдает; ПК 2 (этот ПК, 192.168.0.105) **сам** по расписанию
-запускает тестовые провайдеры (`testbed_provider.py`), поднимает тревоги, делает обрывы (в том числе `netdown`
-правилом брандмауэра) и пишет журнал. Канала управления между ПК нет, только обмен временем по UDP.
-Подробности: `experiments/campaign_2pc/SPEC_C.md` в этой папке.
+Master's thesis: ICU Dashboard on SDC/BICEPS (sdc11073 3.0.0). A night measurement run on two PCs:
+PC 1 (192.168.0.106) starts a headless Dashboard and observes; PC 2 (this PC, 192.168.0.105) starts the test providers
+(`testbed_provider.py`) **by itself** according to a schedule, raises alarms, produces connection losses (including `netdown`
+by a firewall rule) and writes a journal. There is no control channel between the PCs, only a time exchange over UDP.
+Details: `experiments/campaign_2pc/SPEC_C.md` in this folder.
 
-## 2. Что лежит в папке (корень = папка, где лежат `experiments/`, `testbed/`, `pki/`)
+## 2. What is in the folder (root = the folder that contains `experiments/`, `testbed/`, `pki/`)
 
 ```
-experiments/harness.py                      Prov (провайдер как подпроцесс), provider_cmd, DEVICES
-experiments/campaign_2pc/pc2_scheduler.py   планировщик (этот ПК)
-experiments/campaign_2pc/schedule_c.json    расписание (общее для обоих ПК, не менять)
-experiments/campaign_2pc/SPEC_C.md          спецификация
-experiments/campaign_2pc/HANDOFF_PC2.md     этот файл
-testbed/providers/testbed_provider.py       тестовый SDC-провайдер
+experiments/harness.py                      Prov (provider as a subprocess), provider_cmd, DEVICES
+experiments/campaign_2pc/pc2_scheduler.py   scheduler (this PC)
+experiments/campaign_2pc/schedule_c.json    schedule (shared by both PCs, do not change)
+experiments/campaign_2pc/SPEC_C.md          specification
+experiments/campaign_2pc/HANDOFF_PC2.md     this file
+testbed/providers/testbed_provider.py       test SDC provider
 testbed/mdib/{ecg,spo2,abp,vent}_mdib_v2.xml
-pki/{ecg,spo2,abp,vent}/userkey.pem sdccert.pem cacert.pem   (mTLS; не открывать)
-logs/                                       появится при запуске: logs/<scenario_id>/pc2_journal.jsonl, console.txt
+pki/{ecg,spo2,abp,vent}/userkey.pem sdccert.pem cacert.pem   (mTLS; do not open)
+logs/                                       appears at the start: logs/<scenario_id>/pc2_journal.jsonl, console.txt
 ```
 
-## 3. Проверка окружения
+## 3. Checking the environment
 
-Нужны: Python ≥ 3.10 (проверено на 3.13), пакет `sdc11073` 3.0.x с зависимостями (lxml и т. д.).
+Required: Python ≥ 3.10 (checked with 3.13), the package `sdc11073` 3.0.x with its dependencies (lxml etc.).
 
 ```
 python --version
@@ -36,60 +36,60 @@ python -c "import sys; print(sys.executable); print(sys.base_prefix)"
 ipconfig
 ```
 
-Адрес 192.168.0.105 должен быть на адаптере, который смотрит в ту же сеть, что ПК 1 (Ethernet или Wi-Fi).
-Если адрес другой, запускать с `--ip <адрес>`; ПК 1 тогда нужно сообщить новый адрес (он прописан у него в конфиге).
+The address 192.168.0.105 must be on the adapter that faces the same network as PC 1 (Ethernet or Wi-Fi).
+If the address is different, start with `--ip <address>`; PC 1 then has to be told the new address (it is written in its configuration).
 
-## 4. Брандмауэр ПК 2 (нужна консоль администратора, спросить пользователя перед выполнением)
+## 4. Firewall of PC 2 (an administrator console is needed, ask the user before executing)
 
-Входящие соединения от ПК 1 должны доходить до интерпретатора Python, который реально слушает сокеты:
-UDP 3702 (WS-Discovery), TCP 12000–13999 (провайдеры), UDP 5558 (обмен временем). Правило по программе
-для **обоих** путей из п. 3 (`sys.executable` и, если это venv, базовый `python.exe` в `sys.base_prefix`):
+Inbound connections from PC 1 must reach the Python interpreter that actually listens on the sockets:
+UDP 3702 (WS-Discovery), TCP 12000–13999 (providers), UDP 5558 (time exchange). A rule by program
+for **both** paths from section 3 (`sys.executable` and, if this is a venv, the base `python.exe` in `sys.base_prefix`):
 
 ```
-netsh advfirewall firewall add rule name="SDC_C_python_in" dir=in action=allow program="<путь к python.exe>" enable=yes profile=any
+netsh advfirewall firewall add rule name="SDC_C_python_in" dir=in action=allow program="<path to python.exe>" enable=yes profile=any
 ```
 
-Проверка, что брандмауэр включён (нужно для `netdown`): `netsh advfirewall show currentprofile` → `State ON`.
-Если он выключен, `netdown` не сработает (правило блокировки ничего не блокирует), selftest это сообщит.
+Check that the firewall is switched on (needed for `netdown`): `netsh advfirewall show currentprofile` → `State ON`.
+If it is switched off, `netdown` does not work (the blocking rule blocks nothing); the selftest reports this.
 
-## 5. Запуск (из корня папки, консоль администратора из-за `netdown`)
+## 5. Start (from the root of the folder, administrator console because of `netdown`)
 
 ```
 python experiments\campaign_2pc\pc2_scheduler.py --selftest
 ```
-Ожидается `SELFTEST: OK`. Проверяется: Python, sdc11073, MDIB, PKI-файлы (по именам), адрес, UDP 5558,
-права администратора, состояние брандмауэра, запуск одного провайдера с mTLS на порту 12999 (≈ 10 с).
+Expected: `SELFTEST: OK`. Checked are: Python, sdc11073, MDIB, PKI files (by name), address, UDP 5558,
+administrator rights, state of the firewall, start of one provider with mTLS on port 12999 (≈ 10 s).
 
-Необязательно, 10 с: `python experiments\campaign_2pc\pc2_scheduler.py --netdown-test 5` — правило блокировки
-к ПК 1 на 5 с, затем проверка, что оно снято (и сторожевой процесс снял бы его сам). Во время теста `ping 192.168.0.106` не отвечает.
+Optional, 10 s: `python experiments\campaign_2pc\pc2_scheduler.py --netdown-test 5` — a blocking rule
+towards PC 1 for 5 s, then a check that it has been removed (and that the watchdog process would have removed it by itself). During the test `ping 192.168.0.106` does not answer.
 
-Пилот (≈ 15 мин) — только после того, как пользователь сказал, что на ПК 1 запущен `campaign.py --listen --pilot`:
+Pilot (≈ 15 min) — only after the user has said that `campaign.py --listen --pilot` is running on PC 1:
 ```
 python experiments\campaign_2pc\pc2_scheduler.py --pilot
 ```
-Полный прогон (≈ 5,5 ч) — после `PILOT: OK` на ПК 1 и команды пользователя; на ПК 1 должен идти `campaign.py --listen`:
+Full run (≈ 5.5 h) — after `PILOT: OK` on PC 1 and the user's command; `campaign.py --listen` must be running on PC 1:
 ```
 python experiments\campaign_2pc\pc2_scheduler.py
 ```
 
-Что видно в консоли: планировщик ждёт первый запрос времени от ПК 1 (до 30 мин), потом печатает фазы и попытки;
-в конце «scenario finished» и ещё 10 минут отвечает ПК 1 (это нормально, не прерывать). `--dry-run` печатает план без запуска.
+What is visible in the console: the scheduler waits for the first time request from PC 1 (up to 30 min), then prints the phases and trials;
+at the end "scenario finished", and it answers PC 1 for another 10 minutes (this is normal, do not interrupt). `--dry-run` prints the plan without starting anything.
 
-Остановка: Ctrl-C — провайдер убивается, правила брандмауэра снимаются, журнал закрывается. После Ctrl-C планировщик ещё 60 с сообщает ПК 1 состояние `aborted`; ПК 1 продолжает ждать до 30 мин, поэтому перезапуск (при необходимости с `--phases <оставшиеся фазы>`) можно делать без перезапуска ПК 1. Если после аварии
-подозрение на оставшееся правило: `python experiments\campaign_2pc\pc2_scheduler.py --netdown-clear`.
+Stopping: Ctrl-C — the provider is killed, the firewall rules are removed, the journal is closed. After Ctrl-C the scheduler reports the state `aborted` to PC 1 for another 60 s; PC 1 keeps waiting for up to 30 min, so a restart (if necessary with `--phases <remaining phases>`) can be made without restarting PC 1. If after a crash
+a leftover rule is suspected: `python experiments\campaign_2pc\pc2_scheduler.py --netdown-clear`.
 
-## 6. После прогона
+## 6. After the run
 
-Скопировать на ПК 1 **всю папку** `logs\<scenario_id>\` (в ней `pc2_journal.jsonl`, `console.txt`, `scenario.json`,
-`netdown_watchdog.log`). На ПК 1 выполняется `campaign.py --merge … --pc2 <эта папка>`; вердикт выдаёт ПК 1.
+Copy **the whole folder** `logs\<scenario_id>\` to PC 1 (it contains `pc2_journal.jsonl`, `console.txt`, `scenario.json`,
+`netdown_watchdog.log`). On PC 1 `campaign.py --merge … --pc2 <this folder>` is executed; the verdict is given by PC 1.
 
-## 7. Если что-то не так
+## 7. If something is wrong
 
-- `SELFTEST: PROBLEME` с текстом — передать пользователю дословно; типичные причины: не админ-консоль,
-  брандмауэр выключен, нет `sdc11073`, другой IP.
-- Провайдер не печатает `ready:` — посмотреть `logs\<id>\console.txt` (ошибки загрузки MDIB/сертификатов).
-- `PC 1 did not ask for the clock` — ПК 1 не запустил `--listen`, или UDP 5558 закрыт брандмауэром ПК 2; сценарий всё равно
-  начнётся, но слияние без проб времени невозможно → лучше прервать (Ctrl-C) и исправить.
-- Порт занят (`Address already in use`) — остался провайдер от прошлого запуска: `tasklist | findstr python`, завершить.
+- `SELFTEST: PROBLEME` with a text — pass it on to the user verbatim; typical causes: not an administrator console,
+  firewall switched off, no `sdc11073`, a different IP.
+- The provider does not print `ready:` — look at `logs\<id>\console.txt` (errors loading the MDIB or the certificates).
+- `PC 1 did not ask for the clock` — PC 1 has not started `--listen`, or UDP 5558 is closed by the firewall of PC 2; the scenario
+  starts anyway, but a merge without time samples is impossible → better to abort (Ctrl-C) and fix it.
+- Port in use (`Address already in use`) — a provider is left over from the previous start: `tasklist | findstr python`, terminate it.
 
-Ничего из этого не требует правок кода. Если кажется, что без правки не обойтись, остановиться и спросить пользователя.
+None of this requires changes to the code. If it seems that it cannot be done without a change, stop and ask the user.

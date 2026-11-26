@@ -1,7 +1,10 @@
-# experiments/screenshots — UI screenshots for Kapitel 3.2.5
+# experiments/screenshots — demo scenario of the Dashboard
 
-Demo only (no experiment, no test): the worked example of Kapitel 3 on one host,
-two beds, four testbed providers, no TLS. Patient data are fictional.
+Demo only (no experiment, no test): a worked example of the alarm filter on one host,
+two beds with a monitor and a ventilator each (four testbed providers), no TLS. The
+script drives the alarm states step by step, so that every state of the Dashboard can be
+seen: no alarm, Gelb at both beds, Rot at one bed, remote acknowledgement and a lost
+connection. Patient data are fictional.
 
 ## Files
 
@@ -41,11 +44,11 @@ The dashboard forms the two ensembles itself from (patient-id, room); the name i
 
 ## Phases
 
-| Phase | Script sends | Screenshot |
+| Phase | Script sends | Dashboard shows |
 |---|---|---|
 | 0 | nothing (providers bound) | both cards Grün |
 | 1 | `alarm desaturation on` on both monitors | both cards Gelb, Severity ≈ 75 % |
-| 2 | `alarm vt_low on` on the ventilator of bed 1 | bed 1 Rot (≈ 83 %), bed 2 Gelb — main screenshot |
+| 2 | `alarm vt_low on` on the ventilator of bed 1 | bed 1 Rot (≈ 83 %), bed 2 Gelb — the main view |
 | 3 | nothing; acknowledge by hand on the device page of bed 1 | acknowledgement status |
 | 4 | `kill()` of the bed-1 ventilator (silent loss, no Bye) | "Verbindung verloren … während Eskalation" |
 | 5 | alarms off, `shutdown` of all providers | — |

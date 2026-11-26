@@ -1,0 +1,63 @@
+{
+  "name": "ziel3_4h_lang",
+  "time_base": "PC 2 (Journale A/B; Dashboard-Zeiten über export/clock.csv umgerechnet)",
+  "window": [
+    1793954057.3609529,
+    1793968456.3626366
+  ],
+  "hours": 3.9997226899200014,
+  "patients": 20,
+  "exposure_bed_h": 79.99445379840003,
+  "FPR": {
+    "ECG": 0.025434326712325057,
+    "Vent": 0.02606044705379631,
+    "SpO2": 0.032255911055959305,
+    "ABP": 0.02560304339826986
+  },
+  "TPR": {
+    "ECG": 0.761571800592923,
+    "Vent": 0.7521569750501563,
+    "SpO2": 0.7298326316448805,
+    "ABP": 0.7866402892753427
+  },
+  "P_C": 0.02179664999657745,
+  "d_false_s": 8.446744442901318,
+  "d_true_s": 57.06363636363636,
+  "n_false_alarms": 3647,
+  "n_crises": 110,
+  "crises_per_bed_day": 33.00228796677905,
+  "false_alarms_per_source_day": {
+    "ECG": 261.91815813634645,
+    "Vent": 275.1190733230581,
+    "SpO2": 300.9208620970853,
+    "ABP": 256.2177629420846
+  },
+  "episodes_by_n_sources": {
+    "1": 2439,
+    "2": 317,
+    "3": 143,
+    "4": 34
+  },
+  "episodes_by_n_sources_share": {
+    "1": 0.8315717695192636,
+    "2": 0.10808046368905558,
+    "3": 0.04875554040231844,
+    "4": 0.011592226389362428
+  },
+  "c_art_a_all4_time_share": 0.06173439056023356,
+  "c_art_b_ge2_time_share": 0.4838498286545682,
+  "c_art_a_all4_episode_share": 0.011592226389362428,
+  "c_art_b_ge2_episode_share": 0.16842823048073643,
+  "definitions": {
+    "FPR_j": "time of false alarms of source j (not intersecting any crisis +-10 s) / time outside crises, window only",
+    "TPR_j": "time inside crises during which source j is in alarm / total crisis time",
+    "P_C": "total crisis time / (patients x window)",
+    "d_false_s": "mean duration of a false alarm",
+    "d_true_s": "mean crisis duration",
+    "episodes": "union of overlapping false alarms of one patient; n_sources = distinct sources in the episode",
+    "c_art_a": "share of false alarm time that lies in episodes with all 4 sources",
+    "c_art_b": "share of false alarm time that lies in episodes with >= 2 sources"
+  },
+  "quelle": "analysis/roc_ziel3/netzlauf_auswertung.py (PC 1) aus Journal A/B und decisions.jsonl",
+  "erstellt": "2026-11-09T18:47:01"
+}

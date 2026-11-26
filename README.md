@@ -7,40 +7,87 @@ filter across the devices of one patient, a topology filter that admits only the
 of the Dashboard's own room, and remote acknowledgement of alarms together with
 connection-loss detection and a safe fallback state. The testbed provides configurable
 Python SDC providers, experiment runners for the two measured goals and a two-PC
-measurement campaign. The SDC protocol stack is the open-source library
+measurement campaign. For the third goal, the reduction of false alarms, the repository
+contains a two-PC simulation with 20 virtual patients and the evaluation of its runs
+against an analytical load model. The SDC protocol stack is the open-source library
 [sdc11073](https://github.com/Draegerwerk/sdc11073) (version 3.0.0, MIT licence).
 Interoperability was additionally checked with two C++-based SDC stacks; their sources
 are not part of this repository.
+
+**For readers of the thesis.** The appendix of the thesis links into this repository at two
+tagged states. `stand-messungen` is the state in which the measurements of goals 1 and 2 were
+made; all line numbers quoted in the thesis refer to it. `abgabe` is the submitted state; it
+adds the simulation and evaluation of goal 3 (`experiments/ziel3_simulation/`, `analysis/`).
+`Dashboard/`, `testbed/` and the programs in `experiments/campaign_2pc/` are identical in both
+states; in that folder only the two documents `SPEC_C.md` and `HANDOFF_PC2.md` were translated
+into English. The
+parts of the appendix that were shortened for print are in
+[`docs/Anhang_ausfuehrlich.md`](docs/Anhang_ausfuehrlich.md).
+
+## Quick start
+
+Windows, Python 3.13, from the repository root (on Linux replace `.venv\Scripts\python` by
+`.venv/bin/python`):
+
+```
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt -r requirements-app.txt
+.venv\Scripts\python -m unittest discover -s tests -t .
+.venv\Scripts\python -m unittest discover -s experiments\ziel3_simulation\pc2\tests
+```
+
+The first test command ends with `Ran 430 tests … OK (skipped=28)`, the second with
+`Ran 38 tests … OK`. The tests need no network, no certificates and no running device.
+
+To see the Dashboard working with simulated devices on one PC and without certificates, start
+it and then the demo scenario (two beds, four providers) in a second console; replace the
+address by the IPv4 address of your network adapter:
+
+```
+.venv\Scripts\python -m Dashboard --no_tls --ip 192.168.0.106
+.venv\Scripts\python experiments/screenshots/demo_scenario.py --ip 192.168.0.106
+```
 
 ## Repository layout
 
 ```
 .
-├── Dashboard/        the consumer application: python -m Dashboard
-│   ├── app/          manager, Qt/QML bridge, alarm model (app/alarms), metrics journal (app/metrics)
-│   ├── device/       one SDC worker thread per provider: connect, subscribe, ping, acknowledge
-│   ├── qml/          user interface
-│   ├── config/       clinical_db.json (device profiles, model parameters), MDC→LOINC concept map
-│   └── img/          UI images
-├── tests/            194 unit tests (unittest), run from the repository root
+├── Dashboard/            the consumer application: python -m Dashboard
+│   ├── app/              manager, Qt/QML bridge, alarm model (app/alarms), metrics journal (app/metrics)
+│   ├── device/           one SDC worker thread per provider: connect, subscribe, ping, acknowledge
+│   ├── qml/              user interface
+│   ├── config/           clinical_db.json (device profiles, model parameters), MDC→LOINC concept map
+│   └── img/              UI images
 ├── testbed/
-│   ├── providers/    testbed_provider.py — configurable SDC provider, one script for every device
-│   └── mdib/         MDIB files of the four testbed devices (+ template/ with the structural template)
-├── experiments/      evaluation of the thesis goals
-│   ├── harness.py    shared runner pieces: provider subprocess, headless Dashboard
-│   ├── ziel1/        goal 1: topology filter (TRA, avoided subscriptions)
-│   ├── ziel2/        goal 2: acknowledgement success/RTT, fault injection, fallback timing
-│   ├── campaign_2pc/ one-command campaign on one PC and the two-PC variant C
-│   └── screenshots/  demo scenario used for the UI figures
-├── tools/            PKI generator, live provider check, MDIB validators
-├── docs/             model documents and analysis reports (docs/thesis is not in git)
-├── pki/              generated locally by tools/make_testbed_pki.py — not in git
-├── requirements.txt  pinned dependencies
+│   ├── providers/        testbed_provider.py — configurable SDC provider, one script for every device
+│   └── mdib/             MDIB files of the four testbed devices (+ template/ with the structural template)
+├── experiments/          evaluation of the thesis goals
+│   ├── harness.py        shared runner pieces: provider subprocess, headless Dashboard
+│   ├── ziel1/            goal 1: topology filter (TRA, avoided subscriptions)
+│   ├── ziel2/            goal 2: acknowledgement success/RTT, fault injection, fallback timing
+│   ├── campaign_2pc/     one-command campaign on one PC and the two-PC variant C
+│   ├── ziel3_simulation/ goal 3: simulation on two PCs — the Dashboard side (PC 1)
+│   │   ├── pc2/          patient model, crisis scenario, provider pool, threshold sweep (PC 2)
+│   │   └── auswertung/   evaluation of the runs as written on PC 2
+│   └── screenshots/      demo scenario: two beds, four providers on one PC
+├── analysis/             evaluation of goal 3
+│   ├── belastungsmodell_app/  analytical load model and the application that displays it
+│   └── roc_ziel3/        curves over the device thresholds, computed with the unchanged filter core
+├── tests/                unit tests of the Dashboard and of the evaluation, run from the repository root
+├── tools/                PKI generator, live provider check, MDIB validators
+├── docs/
+│   ├── Anhang_ausfuehrlich.md  parts of the thesis appendix shortened for print (German)
+│   ├── model/            normative text of the alarm model and the deviation protocol
+│   └── reports/          MDIB analysis, result files of the goal 3 runs
+├── requirements.txt      pinned dependencies of Dashboard, testbed and tools
+├── requirements-app.txt  pinned dependencies of the evaluation (analysis/, part of the tests)
 └── LICENSE
 ```
 
-Every `logs/` folder (`Dashboard/logs`, `experiments/*/logs`, `experiments/campaign_2pc/logs`)
-is created at run time and ignored by git.
+Not in the repository: every `logs/` folder (`Dashboard/logs`, `experiments/*/logs`; created
+at run time, several gigabytes for the thesis runs), the keys and certificates in `pki/`
+(generated locally by `tools/make_testbed_pki.py`), the bundle folder `pc2_c/` for the second PC
+(built by `experiments/campaign_2pc/build_pc2_c.py`) and the exported figures.
 
 ## Installation
 
@@ -48,9 +95,15 @@ Windows and Linux, Python 3.13 (the measurements were made with 3.13.12).
 
 ```
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt        # Windows
-.venv/bin/python   -m pip install -r requirements.txt          # Linux
+.venv\Scripts\python -m pip install -r requirements.txt -r requirements-app.txt    # Windows
+.venv/bin/python   -m pip install -r requirements.txt -r requirements-app.txt      # Linux
 ```
+
+`requirements.txt` is enough for the Dashboard, the testbed, the tools and the experiments of
+goals 1 and 2. `requirements-app.txt` (numpy, pandas, scipy, matplotlib, streamlit) is needed
+for `analysis/`, for `experiments/ziel3_simulation/auswertung/` and for the tests of the
+evaluation; without it `unittest discover -s tests` reports import
+errors for these test files.
 
 `requirements.txt` pins `sdc11073==3.0.0`, `PySide6`, `lxml`, `cryptography` (PKI tool) and
 `fhirpy` (optional FHIR binding). From sdc11073 the project uses `sdc11073.consumer`
@@ -209,7 +262,7 @@ Phases, trial counts, timeouts and output files are described in
 PC 1 runs the Dashboard and captures traffic; PC 2 runs the providers by itself according to
 `experiments/campaign_2pc/schedule_c.json`. There is no control channel between the PCs,
 only a clock exchange. Specification: `experiments/campaign_2pc/SPEC_C.md`; step-by-step
-instructions for PC 2 (in Russian): `experiments/campaign_2pc/HANDOFF_PC2.md`.
+instructions for PC 2: `experiments/campaign_2pc/HANDOFF_PC2.md`.
 
 1. On PC 1 generate the PKI with both IP addresses (see TLS / PKI below) and build the bundle for PC 2:
    ```
@@ -254,7 +307,44 @@ instructions for PC 2 (in Russian): `experiments/campaign_2pc/HANDOFF_PC2.md`.
    .venv\Scripts\python experiments/campaign_2pc/campaign.py --merge --pc2 <PC 2 run folder>
    ```
 
-## Analysing results
+## Goal 3 — simulation on two PCs (`experiments/ziel3_simulation/`)
+
+PC 2 runs 20 virtual patients with four providers each and knows when a crisis takes place;
+PC 1 runs the Dashboard without a window and only sees SDC reports. The contract of both sides
+is `experiments/ziel3_simulation/ziel3_contract.json`. PC 1 starts first:
+
+```
+.venv\Scripts\python experiments\ziel3_simulation\pc1_dashboard.py --name ziel3_1h --hours 2 --ip 192.168.0.106 --pc2-ip 192.168.0.100     # PC 1
+.venv\Scripts\python experiments\ziel3_simulation\pc2\pc2_run.py --name ziel3_1h --patients 20 --hours 1 --seed 1 --ip 192.168.0.100       # PC 2
+.venv\Scripts\python experiments\ziel3_simulation\pc1_dashboard.py --name trocken --dry-run                                                # PC 1 alone, about 30 s
+```
+
+| Script | Flags |
+|---|---|
+| `pc1_dashboard.py` | `--name NAME` (required, the same on both PCs), `--hours H` (`12`, time limit), `--ip IP`, `--pc2-ip IP` (from the contract), `--contract PATH`, `--dry-run`, `--dry-run-seconds S` (`30`) |
+| `pc2/pc2_run.py` | `--name NAME`, `--hours H` (both required), `--patients N` (`20`), `--seed N` (`1`), `--p-cross P` (`0.9`), `--threshold-scale H` (`1.0`), `--generator prozess\|alarmebene`, `--ip IP`, `--dry-run`; the remaining timing flags are listed in `experiments/ziel3_simulation/pc2/README.md` |
+| `pc2/roc_sweep.py` | no network: repeats the scenario of a finished run for a grid of device thresholds. `--net-run RUN` (`ziel3_12h`), `--out FOLDER` (`ziel3_roc`), `--grid LIST`, `--hours H`, `--seed S`, `--no-check` |
+| `ziel3_export_pc1.py` | CSV digest of the PC 1 journals of one run: `--name RUN`, `--contract PATH` |
+
+The scripts in `experiments/ziel3_simulation/auswertung/` computed the result files of the runs
+on PC 2. They expect the data layout of PC 2 and are included for reading, see the README of
+that folder. Procedure, journals and acceptance checks: `experiments/ziel3_simulation/README.md`.
+
+## Goal 3 — evaluation (`analysis/`)
+
+```
+.venv\Scripts\python -m streamlit run analysis/belastungsmodell_app/app.py          # load model of thesis chapter 5
+.venv\Scripts\python -m streamlit run analysis/belastungsmodell_app/app_ziel3.py    # curves of appendix G, simulation runs, curves over the device thresholds
+```
+
+Both applications open in the browser. The model pages need no data files; the pages on the
+simulation read the result files in `docs/reports/`. The programs in `analysis/roc_ziel3/`
+(`python -m analysis.roc_ziel3.run_roc` and others) recompute the filter decisions with the
+unchanged core of the Dashboard from the journals of the runs; these journals are not part of
+the repository, so the programs run only where the `logs/` folders exist. Commands and modules:
+`analysis/roc_ziel3/README.md`, `analysis/belastungsmodell_app/README.md`.
+
+## Analysing results of goals 1 and 2
 
 ```
 .venv\Scripts\python experiments/ziel1/ziel1_analyze.py experiments/ziel1/logs/<filtered>.jsonl --baseline experiments/ziel1/logs/<baseline>.jsonl --json report.json
@@ -268,7 +358,10 @@ instructions for PC 2 (in Russian): `experiments/campaign_2pc/HANDOFF_PC2.md`.
 | `ziel2_analyze.py JOURNAL [JOURNAL …]` | `--json PATH`, `--per-trial`, `--confidence P` (`0.95`) |
 | `campaign.py --report-only [RUN_DIR]` | see the campaign table above |
 
-## Demo scenario for the UI figures
+## Demo scenario
+
+The worked example of the thesis on one PC: two beds, four providers, no TLS. Start the
+Dashboard with `--no_tls --ip <IP>` first.
 
 ```
 .venv\Scripts\python experiments/screenshots/demo_scenario.py --ip 192.168.0.106
@@ -328,25 +421,42 @@ Exit code 0 means valid / no failure.
 
 ```
 .venv\Scripts\python -m unittest discover -s tests -t .
+.venv\Scripts\python -m unittest discover -s experiments\ziel3_simulation\pc2\tests
+.venv\Scripts\python -m unittest discover -s experiments\ziel3_simulation\tests
 ```
 
-Expected: `Ran 194 tests in … OK`. The tests need no network, no PKI and no running
-provider; they take a few seconds. The Dashboard package uses the bare imports `app.*` and
-`device.*`, which `tests/__init__.py` makes importable from any working directory.
+| Suite | Tests | State |
+|---|---:|---|
+| Dashboard (`tests/`, ten files) | 194 | `stand-messungen` — the number given in the thesis (section 3.2.6, appendix C.2) |
+| Evaluation of goal 3 (`tests/`, ten files) | 236 | added for `abgabe` |
+| `tests/` in total | 430 | `abgabe`: `Ran 430 tests … OK` |
+| Generator of the simulation (`pc2/tests`) | 38 | `abgabe`, second command |
+| PC 1 side of the simulation | 12 | `abgabe`, third command |
+
+In a fresh clone 28 of the 430 tests are skipped, because they compare against the journals of
+the simulation runs, which are not part of the repository; the result is then
+`OK (skipped=28)`. The tests need no network, no PKI and no running provider. The 194 Dashboard
+tests take a few seconds, the whole of `tests/` a few minutes. Both requirement files have to be
+installed. The Dashboard package uses the bare imports `app.*` and `device.*`, which
+`tests/__init__.py` makes importable from any working directory. The files are listed in
+`tests/README.md`.
 
 ## Results and logs
 
-The journals, reports and packet captures of the thesis runs are not part of the repository.
-They are kept separately and can be regenerated with the commands above. At run time the
+The journals and packet captures of the thesis runs are not part of the repository. They are
+kept separately; runs of goals 1 and 2 can be repeated with the commands above. At run time the
 components write to `Dashboard/logs/` (`sdc_consumer.log`, `events.jsonl`),
-`experiments/ziel1/logs/`, `experiments/ziel2/logs/`, `experiments/campaign_2pc/logs/<run>/`
-and `experiments/screenshots/logs/`; all of these are ignored by git.
+`experiments/ziel1/logs/`, `experiments/ziel2/logs/`, `experiments/campaign_2pc/logs/<run>/`,
+`experiments/ziel3_simulation/logs/<run>/` and `experiments/screenshots/logs/`; all of these are
+ignored by git. Included are the result files computed from the goal 3 runs, in `docs/reports/`.
 
 ## Documentation
 
 - `Dashboard/ARCHITECTURE.md` — architecture reference of the consumer (packages, threads, data flow, alarm model).
+- `docs/Anhang_ausfuehrlich.md` — parts of the thesis appendix shortened for print (German).
 - `docs/model/` — the normative model text and the deviation protocol of the implementation.
-- `docs/reports/` — analysis reports behind the testbed MDIBs.
+- `docs/reports/` — MDIB analysis and the result files of the goal 3 runs.
 - `experiments/README.md`, `experiments/ziel1/README.md`, `experiments/ziel2/README.md`, `experiments/campaign_2pc/README.md` — goal maps, metrics and run procedures.
+- `experiments/ziel3_simulation/README.md` (with `pc2/` and `auswertung/`), `analysis/belastungsmodell_app/README.md`, `analysis/roc_ziel3/README.md` — simulation and evaluation of goal 3.
 - `testbed/mdib/README.md` — design notes of the testbed MDIBs.
 - Every component folder has a short `README.md`.
