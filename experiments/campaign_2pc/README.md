@@ -130,3 +130,83 @@ The night run with the providers on PC 2 uses no control channel: PC 2 runs `pc2
 Schedule, journal format, clock exchange and merge rules: `SPEC_C.md`. Config: `campaign.json` section
 `network` (PC 2 IP, capture filter, dossier target `docs/thesis/campaign_netz_ergebnisse.md`) and
 `schedule_c.json`. Results of 2026-10-22: `logs/net_run_20261022_025050/` (PC 1) + `logs/run_20261022_025344/` (PC 2).
+
+## Command-line options of `campaign.py`
+
+All commands are run from the repository root; on Linux replace `.venv\Scripts\python` by `.venv/bin/python`.
+
+```
+.venv\Scripts\python experiments/campaign_2pc/campaign.py --pilot      # ~10 min, ends with PILOT: OK | PILOT: PROBLEME
+.venv\Scripts\python experiments/campaign_2pc/campaign.py              # full run, ends with GESAMT: OK | GESAMT: FEHLER
+.venv\Scripts\python experiments/campaign_2pc/campaign.py --dry-run
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--config PATH` | Campaign configuration. | `experiments/campaign_2pc/campaign.json` |
+| `--pilot` | Small trial counts for every phase. | off |
+| `--resume [RUN_DIR]` | Continue the newest (or given) run; finished phases are skipped. | — |
+| `--report-only [RUN_DIR]` | No phases: redo capture analysis, analyzers, report and dossier of an existing run. | — |
+| `--run-dir PATH` | Run directory. | `experiments/campaign_2pc/logs/<run>_<timestamp>` |
+| `--phases LIST` | Subset of `smoke,ziel1_filtered,ziel1_baseline,ziel2_ack,ziel2_fault`. | all |
+| `--no-capture` | No tshark capture. | capture if tshark is found |
+| `--dry-run` | Print the runner commands, start nothing. | off |
+| `--listen` | Variant C, PC 1: Dashboard windows and capture until PC 2 reports done. | — |
+| `--merge [RUN_DIR]` | Variant C: merge a `--listen` run with the PC 2 journal and analyse. | — |
+| `--pc2 PATH` | PC 2 journal (`pc2_journal.jsonl`) or the folder that holds it. | — |
+| `--selftest-merge` | Synthetic PC 1 + PC 2 journals through `--merge`. | — |
+
+Phases, trial counts, timeouts and output files are described in
+`experiments/campaign_2pc/README.md`.
+
+## Two-PC campaign (variant C), step by step
+
+PC 1 runs the Dashboard and captures traffic; PC 2 runs the providers by itself according to
+`experiments/campaign_2pc/schedule_c.json`. There is no control channel between the PCs,
+only a clock exchange. Specification: `experiments/campaign_2pc/SPEC_C.md`; step-by-step
+instructions for PC 2: `experiments/campaign_2pc/HANDOFF_PC2.md`.
+
+1. On PC 1 generate the PKI with both IP addresses (see TLS / PKI below) and build the bundle for PC 2:
+   ```
+   .venv\Scripts\python experiments/campaign_2pc/build_pc2_c.py
+   ```
+   This script has no flags. It assembles the bundle folder `pc2_c` inside `experiments/campaign_2pc/` (harness, scheduler,
+   schedule, provider script, the four MDIBs and the provider certificates). The folder is
+   ignored by git because it contains private keys; copy it to PC 2.
+2. On PC 2, from the copied folder, in an administrator console (the `netdown` scenario adds a
+   firewall rule):
+   ```
+   python experiments/campaign_2pc/pc2_scheduler.py --selftest
+   python experiments/campaign_2pc/pc2_scheduler.py --ip 192.168.0.105 --pc1 192.168.0.106
+   ```
+
+   | Flag | Meaning | Default |
+   |---|---|---|
+   | `--schedule PATH` | Shared schedule. | `schedule_c.json` next to the script |
+   | `--ip IP` | Adapter IPv4 of PC 2. | `pc2_ip` from the schedule |
+   | `--pc1 IP` | IPv4 of PC 1. | `pc1_ip` from the schedule |
+   | `--log-dir PATH` | Journal folder. | `<root>/logs/<scenario_id>` |
+   | `--pilot` | Short pilot schedule. | off |
+   | `--selftest` | Local self-test of the scheduler. | off |
+   | `--dry-run` | Print the plan, start nothing. | off |
+   | `--phases LIST` | Subset of phase names. | all |
+   | `--netdown-mode firewall\|skip` | How the `netdown` loss type is produced. | `firewall` |
+   | `--wait-pc1-min N` | Wait up to N minutes for the first clock request of PC 1 (0 = start at once). | `30` |
+   | `--no-echo-provider` | Do not print provider output. | off |
+   | `--netdown-clear` | Remove leftover firewall rules and exit. | — |
+   | `--netdown-test SECONDS` | Add the rules for N seconds (with watchdog), verify removal. | — |
+3. On PC 1 (Dashboard window closed):
+   ```
+   .venv\Scripts\python experiments/campaign_2pc/campaign.py --listen [--pilot]
+   ```
+   `--listen` starts `experiments/campaign_2pc/pc1_listener.py` for each observation window.
+   Its flags, if run by hand: `--window filtered|baseline`, `--until baseline|done`, `--ip IP`,
+   `--room` (`ICU-1`), `--pc2 IP`, `--clock-port` (`5558`), `--clock-poll-s` (`10`), `--log PATH`
+   (absolute), `--tls`, `--confirm-timeout` (`5`), `--wait-start-min` (`60`),
+   `--idle-exit-min` (`30`), `--max-hours` (`10`), `--dry-run`.
+4. Copy the PC 2 run folder back to PC 1 and merge:
+   ```
+   .venv\Scripts\python experiments/campaign_2pc/campaign.py --merge --pc2 <PC 2 run folder>
+   ```
+
+`pc2_scheduler.py` has two further options that it uses only for its own watchdog subprocess: `--netdown-watchdog` and `--watchdog-log`.

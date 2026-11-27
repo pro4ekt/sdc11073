@@ -159,3 +159,40 @@ Options: `--order grouped` (roles in blocks instead of round-robin),
 `--port-base` (one port per trial, default 10100 upwards), `--trial-timeout`
 (default 60 s), `--tls no_tls` (plain HTTP on both sides), `--echo-provider`.
 Journals and the `.manifest.json` land in `experiments/ziel1/logs/`.
+
+## Command-line options
+
+All commands are run from the repository root; on Linux replace `.venv\Scripts\python` by `.venv/bin/python`.
+
+```
+.venv\Scripts\python experiments/ziel1/ziel1_run_all.py --ip 192.168.0.106
+.venv\Scripts\python experiments/ziel1/ziel1_run_all.py --ip 192.168.0.106 --dry-run
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--ip IP` | Adapter IPv4 of this host. | required |
+| `--room ROOM` | Target room of the Dashboard / own room of the providers. | `ICU-1` |
+| `--trials-filtered LIST` | Trials per role for the filtered run. | `foreign=150,mismatch=150,own=5,nolocation=5` |
+| `--trials-baseline LIST` | Trials per role for the unfiltered baseline run. | `foreign=20,mismatch=20,own=2,nolocation=2` |
+| `--skip-baseline` | Do not run the baseline. | off |
+| `--capture auto\|off` | Packet capture with tshark if available. | `auto` |
+| `--tshark PATH` | Path to `tshark.exe`. | searched on PATH and in Program Files |
+| `--name NAME` | Label of the output files. | timestamp |
+| `--dry-run` | Print the commands, run nothing. | off |
+
+The script runs `ziel1_experiment.py` twice (`--mode filtered`, `--mode baseline`) and then
+`ziel1_analyze.py`. Flags of `experiments/ziel1/ziel1_experiment.py` for a single run:
+`--ip IP`, `--mode filtered|baseline` (`filtered`), `--room` (`ICU-1`), `--other-room`
+(`ICU-2`), `--trials LIST` (`foreign=10,mismatch=10,own=1,nolocation=1`), `--order
+interleave|grouped`, `--log PATH`, `--port-base N` (`10100`), `--trial-timeout S` (`60`),
+`--settle S` (`3`), `--tls auto|force_tls|no_tls`, `--seed N` (`1`), `--echo-provider`,
+`--dry-run`.
+
+Analysis of a finished run:
+
+```
+.venv\Scripts\python experiments/ziel1/ziel1_analyze.py experiments/ziel1/logs/<filtered>.jsonl --baseline experiments/ziel1/logs/<baseline>.jsonl --json report.json
+```
+
+`ziel1_analyze.py JOURNAL`: `--baseline JOURNAL` (unfiltered run for the traffic comparison), `--json PATH` (machine-readable summary), `--per-trial` (list every EPR), `--confidence P` (`0.95`).

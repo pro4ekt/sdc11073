@@ -14,3 +14,24 @@ The thesis text and its figures are not part of the repository.
 
 Architecture of the consumer: `Dashboard/ARCHITECTURE.md`. Goal maps, metrics and run
 procedures of the experiments: `experiments/README.md` and the READMEs below it.
+
+## Dependencies
+
+`requirements.txt` pins `sdc11073==3.0.0`, `PySide6`, `lxml`, `cryptography` (PKI tool) and
+`fhirpy` (optional FHIR binding). From sdc11073 the project uses `sdc11073.consumer`
+(`SdcConsumer`), `sdc11073.provider` (`SdcProvider`, `BaseProduct`, operations, role provider
+components, scopes factory), `sdc11073.mdib` (`ConsumerMdib`, `ProviderMdib`),
+`sdc11073.wsdiscovery`, `sdc11073.certloader`, `sdc11073.location`, `sdc11073.loghelper`,
+`sdc11073.network`, `sdc11073.observableproperties`, `sdc11073.httpserver`,
+`sdc11073.pysoap` and `sdc11073.xml_types` (`pm_types`, `pm_qnames`, `msg_types`,
+`dpws_types`, `eventing_types`, `actions`).
+
+`requirements-app.txt` pins numpy, pandas, scipy, matplotlib and streamlit. It is needed for
+`analysis/`, for `experiments/ziel3_simulation/auswertung/` and for the tests of the evaluation.
+
+## Further documents
+
+- `Dashboard/ARCHITECTURE.md` — architecture reference of the consumer (packages, threads, data flow, alarm model).
+- `testbed/mdib/README.md` — design notes of the testbed MDIBs.
+- `tests/README.md` — the test files and what each covers.
+- Every component folder has a short `README.md`.

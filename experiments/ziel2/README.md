@@ -195,3 +195,39 @@ runners prints the plan. Observed on 2026-10-16 (smoke): ack RTT ≈ 16–21 ms,
 Presence=Ack report ≈ 15 ms after the request; shutdown ≈ 2 s, kill ≈ 7 s,
 suspend ≈ 12 s — after the first failed ping the library's Renew fails as well,
 so `is_connected` drops before the third missed ping; all within the bounds.
+
+## Command-line options
+
+All commands are run from the repository root; on Linux replace `.venv\Scripts\python` by `.venv/bin/python`.
+
+```
+.venv\Scripts\python experiments/ziel2/ziel2_run_all.py --ip 192.168.0.106
+.venv\Scripts\python experiments/ziel2/ziel2_run_all.py --ip 192.168.0.106 --dry-run
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--ip IP` | Adapter IPv4 of this host. | required |
+| `--room ROOM` | Room of Dashboard and providers. | `ICU-1` |
+| `--accept N` | Acknowledgement trials with provider policy `accept`. | `300` |
+| `--refuse N` | Acknowledgement trials with provider policy `refuse`. | `20` |
+| `--methods LIST` | Fault-injection methods and counts. | `shutdown=30,kill=30,suspend=30,reconnect=5` |
+| `--skip-ack`, `--skip-fault` | Skip one of the two parts. | off |
+| `--name NAME` | Label of the output files. | timestamp |
+| `--dry-run` | Print the commands, run nothing. | off |
+
+Underlying runners: `experiments/ziel2/ziel2_ack.py` (`--ip`, `--room`, `--device
+abp|ecg|spo2|vent` (`ecg`), `--channel`, `--accept` (`300`), `--refuse` (`20`), `--port`
+(`10600`), `--log`, `--confirm-timeout S` (`5`), `--settle S` (`0.5`), `--tls`,
+`--echo-provider`, `--dry-run`) and `experiments/ziel2/ziel2_fault.py` (`--ip`, `--room`,
+`--device`, `--methods`, `--order interleave|grouped`, `--port-base` (`10700`), `--log`,
+`--fallback-timeout S` (`90`), `--reconnect-timeout S` (`120`), `--settle S` (`3`),
+`--tls`, `--echo-provider`, `--dry-run`).
+
+Analysis of finished runs:
+
+```
+.venv\Scripts\python experiments/ziel2/ziel2_analyze.py experiments/ziel2/logs/<ack>.jsonl experiments/ziel2/logs/<fault>.jsonl --json report.json
+```
+
+`ziel2_analyze.py JOURNAL [JOURNAL …]`: `--json PATH`, `--per-trial`, `--confidence P` (`0.95`).

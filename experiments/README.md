@@ -48,3 +48,26 @@ Shared tools stay in `tools/`: `live_check.py` (provider end-to-end check used
 by both goals), `make_testbed_pki.py`, `validate_mdib.py`, `check_mdib_rules.py`.
 Every run writes its journal with `python Dashboard/main.py --event-log
 experiments/ziel<N>/logs/<name>.jsonl`.
+
+## Running the runners on one PC
+
+Close the Dashboard window first: every run starts its own headless Dashboard. Journals,
+console output and analyses go to `experiments/ziel1/logs/` and `experiments/ziel2/logs/`.
+The `--dry-run` form prints the commands and starts nothing.
+The options of every runner and analyzer are listed in the README of its folder: [`ziel1/`](ziel1/README.md), [`ziel2/`](ziel2/README.md), [`campaign_2pc/`](campaign_2pc/README.md), [`ziel3_simulation/`](ziel3_simulation/README.md), [`screenshots/`](screenshots/README.md).
+
+## Journals, captures and the headless Dashboard
+
+The journals and packet captures of the thesis runs are not part of the repository. They are
+kept separately; runs of goals 1 and 2 can be repeated with the runners. At run time the
+components write to `Dashboard/logs/` (`sdc_consumer.log`, `events.jsonl`),
+`experiments/ziel1/logs/`, `experiments/ziel2/logs/`, `experiments/campaign_2pc/logs/<run>/`,
+`experiments/ziel3_simulation/logs/<run>/` and `experiments/screenshots/logs/`; all of these are
+ignored by git. Included are the result files computed from the goal 3 runs, in `docs/reports/`.
+
+Optional: Wireshark with `tshark` on the PATH (or under `C:\Program Files\Wireshark`) for
+packet captures during the experiment runs; the runs work without it.
+
+A headless Dashboard without the QML window is provided by the class `Dashboard` in
+`experiments/harness.py`; the experiment runners and
+`experiments/screenshots/demo_scenario.py --headless` use it.

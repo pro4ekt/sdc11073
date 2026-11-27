@@ -12,11 +12,11 @@ No network, PKI or provider is needed.
 
 | Suite | Tests | Where the number comes from |
 |---|---:|---|
-| Dashboard | **194** | state `stand-messungen` (commit 5e81e55); this is the number given in the thesis (section 3.2.6, appendix C.2) |
-| Evaluation of goal 3 (`analysis/`) | 236 | added for state `abgabe` |
-| **`tests/` in total** | **430** | state `abgabe`: `Ran 430 tests … OK` |
-| Generator of the simulation (`experiments/ziel3_simulation/pc2/tests`) | 38 | separate command, state `abgabe` |
-| PC 1 side of the simulation (`experiments/ziel3_simulation/tests`) | 12 | separate command, state `abgabe` |
+| Dashboard | **194** | present at commit `5e81e55` (the state of the measurements); this is the number given in the thesis (section 3.2.6, appendix C.2) |
+| Evaluation of goal 3 (`analysis/`) | 236 | added after `5e81e55` |
+| **`tests/` in total** | **430** | branch `Dashboard`: `Ran 430 tests … OK` |
+| Generator of the simulation (`experiments/ziel3_simulation/pc2/tests`) | 38 | separate command |
+| PC 1 side of the simulation (`experiments/ziel3_simulation/tests`) | 12 | separate command |
 
 In a fresh clone 28 of the 430 tests are skipped: they compare against the journals of the
 simulation runs under `experiments/ziel3_simulation/logs/`, which are not part of the repository.
